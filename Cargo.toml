@@ -1,0 +1,38 @@
+[package]
+name = "sis-service"
+version = "0.1.0"
+edition = "2021"
+
+# Dependency set intentionally trimmed from admission-services. SIS
+# doesn't handle:
+#   - bcrypt password hashing (auth-services owns it)
+#   - document storage / S3 uploads (admission-services owns it)
+#   - email sending (notification-services owns it)
+# So aws-*, sha2, hex, bcrypt, and the bytes/tokio-util streaming deps
+# are not pulled in. Keeps the image smaller and the compile time
+# shorter on CI.
+[dependencies]
+axum = { version = "0.7", features = ["macros", "json"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+neo4rs = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+dotenv = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace"] }
+thiserror = "1"
+utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
+utoipa-swagger-ui = { version = "8", features = ["axum"] }
+jsonwebtoken = "9"
+reqwest = { version = "0.11", features = ["json"] }
+chrono = { version = "0.4", features = ["serde"] }
+urlencoding = "2"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = "z"
+strip = true

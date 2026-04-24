@@ -1,0 +1,17 @@
+# Rust / cargo
+target/
+Cargo.lock.bak
+
+# Env + secrets (never commit)
+.env
+.env.local
+.env.*.local
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Claude's local notes
+CLAUDE.md
