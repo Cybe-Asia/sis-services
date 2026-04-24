@@ -3,12 +3,8 @@ FROM rust:1.91 as builder
 
 WORKDIR /app
 
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main(){}" > src/main.rs
-RUN cargo build --release
-# Remove dummy build artifacts to force Cargo to rebuild our actual app
-RUN rm -rf src target/release/deps/sis_service* target/release/sis-service* target/release/.fingerprint/sis_service* || true
-
+# No Cargo.lock yet — first build will generate it and we commit it
+# after. Until then, skip the layer-caching trick and build directly.
 COPY . .
 RUN cargo build --release
 
