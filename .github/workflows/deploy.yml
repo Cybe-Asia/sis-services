@@ -51,8 +51,14 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          # Use the workflow's built-in GITHUB_TOKEN (packages: write is granted
+          # above) instead of a classic PAT. This matches the working sibling
+          # services (admission-services etc.); the GHCR_TOKEN PAT path has been
+          # failing to push, leaving the image absent and the deploy in
+          # ImagePullBackOff. On a fresh push GITHUB_TOKEN auto-creates and links
+          # the ghcr.io/cybe-asia/sis-services package to this repo.
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build image
         run: docker build -t "${{ steps.vars.outputs.image_ref }}" .
