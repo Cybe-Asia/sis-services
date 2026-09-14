@@ -9,6 +9,7 @@ use thiserror::Error;
 // lookups that can't go direct-to-graph), add it here.
 #[derive(Debug, Clone)]
 pub struct AppConfig {
+    pub tenant_id: String,
     pub server_port: u16,
     pub neo4j_uri: String,
     pub neo4j_user: String,
@@ -46,6 +47,7 @@ impl AppConfig {
         let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| "super-secret-key".to_string());
 
         Ok(Self {
+            tenant_id: env::var("TENANT_ID").unwrap_or_else(|_| "TENANT-001".into()),
             server_port,
             neo4j_uri,
             neo4j_user,

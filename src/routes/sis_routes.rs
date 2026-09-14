@@ -11,6 +11,7 @@ use crate::AppState;
 
 pub fn sis_router() -> Router<AppState> {
     Router::new()
+        .route("/api/leads/v1/admin/sis/sections/:section_id/members", get(crate::handlers::learning_roster_handler::members))
         // Admin.
         .route("/api/leads/v1/admin/sis/sections", get(admin_list_sections_handler).post(admin_create_section_handler))
         .route("/api/leads/v1/admin/sis/sections/:section_id", get(admin_section_detail_handler))

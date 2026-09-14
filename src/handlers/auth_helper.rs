@@ -118,3 +118,21 @@ fn bearer_from(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
+
+/// School operations use canonical staff authority, independently of admissions
+/// and finance permissions. No parent credential or email allowlist fallback.
+pub async fn require_academic(
+    state: &AppState, headers: &HeaderMap,
+) -> Result<String, (StatusCode, String)> {
+    let denied = || (StatusCode::FORBIDDEN, "Academic staff permission required".into());
+    let token = bearer_from(headers).ok_or_else(denied)?;
+    let key = std::env::var("STAFF_DOWNSTREAM_JWT_SECRET").map_err(|_| denied())?;
+    let issuer = std::env::var("STAFF_DOWNSTREAM_JWT_ISSUER").map_err(|_| denied())?;
+    if key == state.config.jwt_secret { return Err(denied()); }
+    let claims = crate::utils::staff_api::decode_staff_api_claims(&token,&key,&issuer).map_err(|_| denied())?;
+    match crate::repositories::canonical_staff_repository::resolve_staff(&state.graph,&claims.sub).await.map_err(|_| denied())? {
+        crate::repositories::canonical_staff_repository::CanonicalStaff::Active{id,roles}
+            if id==claims.staff_member_id && roles.iter().any(|role| role=="owner" || role=="school_admin") => Ok(id),
+        _ => Err(denied()),
+    }
+}

@@ -82,6 +82,7 @@ pub async fn create_section(
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ListSectionFilters {
+    pub tenant_id: String,
     pub school: Option<String>,
     pub academic_year: Option<String>,
     pub year_group: Option<String>,
@@ -92,7 +93,7 @@ pub async fn list_sections(
     graph: &Graph,
     filters: &ListSectionFilters,
 ) -> Result<Vec<Section>, RepositoryError> {
-    let mut wheres: Vec<String> = Vec::new();
+    let mut wheres: Vec<String> = vec!["s.tenant_id=$tenant".into()];
     if filters.school.is_some() { wheres.push("s.school_id = $school".to_string()); }
     if filters.academic_year.is_some() { wheres.push("s.academic_year = $academic_year".to_string()); }
     if filters.year_group.is_some() { wheres.push("s.year_group = $year_group".to_string()); }
@@ -106,7 +107,7 @@ pub async fn list_sections(
          RETURN s, enrolledCount \
          ORDER BY s.academic_year DESC, s.school_id, s.year_group, s.name"
     );
-    let mut q = query(&cy);
+    let mut q = query(&cy).param("tenant", filters.tenant_id.clone());
     if let Some(v) = &filters.school { q = q.param("school", v.clone()); }
     if let Some(v) = &filters.academic_year { q = q.param("academic_year", v.clone()); }
     if let Some(v) = &filters.year_group { q = q.param("year_group", v.clone()); }
@@ -210,11 +211,15 @@ pub async fn assign_students(
         "MATCH (sec:Section {section_id: $section_id}) \
          UNWIND $ids AS appId \
          MATCH (s:Student {studentId: appId})-[:ENROLLED_AS]->(e:EnrolledStudent) \
+         WHERE e.tenant_id=sec.tenant_id AND e.school_id=sec.school_id AND sec.status='active' \
+           AND e.status IN ['onboarding_pending','active'] \
+         SET e.section_assignment_lock=true \
+         WITH sec,s,e \
          OPTIONAL MATCH (e)-[old:ENROLLED_IN]->(:Section) \
          DELETE old \
          MERGE (e)-[r:ENROLLED_IN]->(sec) \
          ON CREATE SET r.assigned_at = datetime($now) \
-         SET sec.updated_at = datetime($now) \
+         SET sec.updated_at = datetime($now),s.onboarding_status=CASE WHEN e.status='active' THEN 'active' ELSE 'class_assigned' END,e.class_placement_status='assigned',e.updated_at=datetime($now) \
          RETURN count(DISTINCT e) AS assigned"
     )
     .param("section_id", section_id.to_string())
@@ -230,6 +235,7 @@ pub async fn assign_students(
 #[derive(Clone, serde::Serialize, ToSchema)]
 #[allow(non_snake_case)]
 pub struct SectionMemberRow {
+    pub enrolledStudentId: String,
     pub applicantStudentId: String,
     pub studentNumber: String,
     pub fullName: String,
@@ -245,8 +251,9 @@ pub async fn list_section_members(
     let q = query(
         "MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section {section_id: $id}) \
          MATCH (s:Student)-[:ENROLLED_AS]->(e) \
-         OPTIONAL MATCH (l:Lead)-[:HAS_STUDENT]->(s) \
+         MATCH (l:Lead)-[:HAS_STUDENT]->(s) WHERE e.tenant_id=sec.tenant_id AND l.tenant_id=sec.tenant_id \
          RETURN \
+           e.student_id AS enrolledStudentId, \
            s.studentId AS applicantStudentId, \
            e.student_number AS studentNumber, \
            s.fullName AS fullName, \
@@ -260,6 +267,7 @@ pub async fn list_section_members(
     let mut out = Vec::new();
     while let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
         out.push(SectionMemberRow {
+            enrolledStudentId: row.get::<String>("enrolledStudentId").unwrap_or_default(),
             applicantStudentId: row.get::<String>("applicantStudentId").unwrap_or_default(),
             studentNumber: row.get::<String>("studentNumber").unwrap_or_default(),
             fullName: row.get::<String>("fullName").unwrap_or_default(),
@@ -705,4 +713,42 @@ fn parse_dt(val: Option<String>) -> chrono::DateTime<chrono::Utc> {
     val.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
         .map(|d| d.with_timezone(&chrono::Utc))
         .unwrap_or_else(chrono::Utc::now)
+}
+
+
+pub async fn school_in_tenant(graph: &Graph, school: &str, tenant: &str) -> bool {
+    let Ok(mut rows)=graph.execute(query("MATCH (s:School {school_id:$school,tenant_id:$tenant}) RETURN count(s)>0 AS allowed").param("school",school).param("tenant",tenant)).await else {return false;};
+    matches!(rows.next().await,Ok(Some(row)) if row.get::<bool>("allowed").unwrap_or(false))
+}
+
+#[cfg(test)]
+mod onboarding_tests {
+    use super::*;
+    #[tokio::test]
+    #[ignore = "requires disposable ADMISSIONS_TEST_NEO4J_URI"]
+    async fn placement_and_roster_preserve_child_and_tenant_boundaries() {
+        let graph = Graph::new(std::env::var("ADMISSIONS_TEST_NEO4J_URI").unwrap(), "neo4j", std::env::var("ADMISSIONS_TEST_NEO4J_PASSWORD").unwrap()).await.unwrap();
+        let id = format!("sis-placement-{}", Uuid::new_v4());
+        graph.run(query("CREATE (:Section {section_id:$id,tenant_id:$id,school_id:$id,status:'active'})").param("id",id.clone())).await.unwrap();
+        let mut ids = Vec::new();
+        for (suffix, tenant, school) in [("own",id.clone(),id.clone()),("tenant",format!("{id}-foreign"),id.clone()),("school",id.clone(),format!("{id}-foreign"))] {
+            let child = format!("{id}-{suffix}");
+            graph.run(query("CREATE (l:Lead {lead_id:$child,tenant_id:$tenant})-[:HAS_STUDENT]->(s:Student {studentId:$child,fullName:$child})-[:ENROLLED_AS]->(e:EnrolledStudent {applicant_student_id:$child,student_id:$child,student_number:$child,tenant_id:$tenant,school_id:$school,status:'onboarding_pending'}) SET l.test_fixture=$id,s.test_fixture=$id,e.test_fixture=$id").param("child",child.clone()).param("tenant",tenant).param("school",school).param("id",id.clone())).await.unwrap();
+            ids.push(child);
+        }
+        assert_eq!(assign_students(&graph,&id,&ids).await.unwrap(),1);
+        assert_eq!(assign_students(&graph,&id,&ids).await.unwrap(),1);
+        let members = list_section_members(&graph,&id).await.unwrap();
+        assert_eq!(members.len(),1);
+        assert_eq!(members[0].applicantStudentId,ids[0]);
+        let mut rows=graph.execute(query("MATCH (s:Student {studentId:$child})-[:ENROLLED_AS]->(e) RETURN s.onboarding_status AS progress,e.status AS status").param("child",ids[0].clone())).await.unwrap();
+        let row=rows.next().await.unwrap().unwrap();
+        assert_eq!(row.get::<String>("progress").unwrap(),"class_assigned");
+        assert_eq!(row.get::<String>("status").unwrap(),"onboarding_pending");
+        drop(rows);
+        // An inconsistent historic edge must not leak a foreign child's details.
+        graph.run(query("MATCH (sec:Section {section_id:$id}),(e:EnrolledStudent {student_id:$foreign}) MERGE (e)-[:ENROLLED_IN]->(sec)").param("id",id.clone()).param("foreign",ids[1].clone())).await.unwrap();
+        assert_eq!(list_section_members(&graph,&id).await.unwrap().len(),1);
+        graph.run(query("MATCH (n) WHERE n.test_fixture=$id OR n.section_id=$id DETACH DELETE n").param("id",id)).await.unwrap();
+    }
 }

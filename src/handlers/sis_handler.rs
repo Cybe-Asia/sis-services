@@ -11,10 +11,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::handlers::auth_helper::{require_admin, resolve_lead_id_from_bearer};
+use crate::handlers::auth_helper::{require_academic, require_admin, resolve_lead_id_from_bearer};
 use crate::models::section_model::Section;
 use crate::repositories::{sis_repository, user_repository};
-use crate::utils::jwt::decode_verification_token;
 use crate::utils::response::ApiResponse;
 use crate::AppState;
 
@@ -34,12 +33,17 @@ use crate::AppState;
 pub async fn admin_create_section_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(payload): Json<sis_repository::CreateSectionInput>,
+    Json(mut payload): Json<sis_repository::CreateSectionInput>,
 ) -> (StatusCode, Json<ApiResponse<Section>>) {
-    let admin = match require_admin(&state, &headers).await {
+    let admin = match require_academic(&state, &headers).await {
         Ok(id) => id,
         Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
     };
+    if payload.tenant_id.as_deref().is_some_and(|tenant| tenant != state.config.tenant_id)
+        || !sis_repository::school_in_tenant(&state.graph, &payload.school_id, &state.config.tenant_id).await {
+        return (StatusCode::FORBIDDEN, Json(ApiResponse::error("Resource outside current tenant",403)));
+    }
+    payload.tenant_id=Some(state.config.tenant_id.clone());
     match sis_repository::create_section(&state.graph, &payload).await {
         Ok(s) => {
             let diff = format!(
@@ -82,11 +86,12 @@ pub async fn admin_list_sections_handler(
     headers: HeaderMap,
     Query(q): Query<AdminListSectionsQuery>,
 ) -> (StatusCode, Json<ApiResponse<Vec<Section>>>) {
-    if let Err((c, m)) = require_admin(&state, &headers).await {
+    if let Err((c, m)) = require_academic(&state, &headers).await {
         return (c, Json(ApiResponse::error(&m, c.as_u16() as i32)));
     }
     let strip = |o: &Option<String>| o.as_ref().and_then(|s| if s.trim().is_empty() { None } else { Some(s.trim().to_string()) });
     let filters = sis_repository::ListSectionFilters {
+        tenant_id: state.config.tenant_id.clone(),
         school: strip(&q.school),
         academic_year: strip(&q.academic_year),
         year_group: strip(&q.year_group),
@@ -120,8 +125,11 @@ pub async fn admin_section_detail_handler(
     headers: HeaderMap,
     Path(section_id): Path<String>,
 ) -> (StatusCode, Json<ApiResponse<AdminSectionDetailResponse>>) {
-    if let Err((c, m)) = require_admin(&state, &headers).await {
+    if let Err((c, m)) = require_academic(&state, &headers).await {
         return (c, Json(ApiResponse::error(&m, c.as_u16() as i32)));
+    }
+    if !matches!(sis_repository::find_section_by_id(&state.graph,&section_id).await,Ok(Some(section)) if section.tenantId==state.config.tenant_id) {
+        return (StatusCode::FORBIDDEN, Json(ApiResponse::error("Resource outside current tenant",403)));
     }
     let section = match sis_repository::find_section_by_id(&state.graph, &section_id).await {
         Ok(Some(s)) => s,
@@ -162,10 +170,13 @@ pub async fn admin_assign_students_handler(
     Path(section_id): Path<String>,
     Json(payload): Json<AssignStudentsRequest>,
 ) -> (StatusCode, Json<ApiResponse<AssignStudentsResponse>>) {
-    let admin = match require_admin(&state, &headers).await {
+    let admin = match require_academic(&state, &headers).await {
         Ok(id) => id,
         Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
     };
+    if !matches!(sis_repository::find_section_by_id(&state.graph,&section_id).await,Ok(Some(section)) if section.tenantId==state.config.tenant_id) {
+        return (StatusCode::FORBIDDEN, Json(ApiResponse::error("Resource outside current tenant",403)));
+    }
     if payload.applicant_student_ids.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(ApiResponse::error("applicant_student_ids required", 400)));
     }
@@ -198,10 +209,13 @@ pub async fn admin_update_homeroom_teacher_handler(
     Path(section_id): Path<String>,
     Json(payload): Json<UpdateHomeroomTeacherRequest>,
 ) -> (StatusCode, Json<ApiResponse<Section>>) {
-    let admin = match require_admin(&state, &headers).await {
+    let admin = match require_academic(&state, &headers).await {
         Ok(id) => id,
         Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
     };
+    if !matches!(sis_repository::find_section_by_id(&state.graph,&section_id).await,Ok(Some(section)) if section.tenantId==state.config.tenant_id) {
+        return (StatusCode::FORBIDDEN, Json(ApiResponse::error("Resource outside current tenant",403)));
+    }
     let name = payload.name.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
     let email = payload.email.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
     if let Some(e) = email {
@@ -244,8 +258,11 @@ pub async fn admin_update_section_status_handler(
     Path(section_id): Path<String>,
     Json(payload): Json<UpdateSectionStatusRequest>,
 ) -> (StatusCode, Json<ApiResponse<Section>>) {
-    if let Err((c, m)) = require_admin(&state, &headers).await {
+    if let Err((c, m)) = require_academic(&state, &headers).await {
         return (c, Json(ApiResponse::error(&m, c.as_u16() as i32)));
+    }
+    if !matches!(sis_repository::find_section_by_id(&state.graph,&section_id).await,Ok(Some(section)) if section.tenantId==state.config.tenant_id) {
+        return (StatusCode::FORBIDDEN, Json(ApiResponse::error("Resource outside current tenant",403)));
     }
     match sis_repository::set_section_status(&state.graph, &section_id, &payload.status).await {
         Ok(s) => (StatusCode::OK, Json(ApiResponse::success(s))),
