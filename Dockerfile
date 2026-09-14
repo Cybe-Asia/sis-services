@@ -3,10 +3,9 @@ FROM rust:1.91 as builder
 
 WORKDIR /app
 
-# No Cargo.lock yet — first build will generate it and we commit it
-# after. Until then, skip the layer-caching trick and build directly.
+# Use the committed lockfile for reproducible dependency resolution.
 COPY . .
-RUN cargo build --release
+RUN cargo build --release --locked
 
 # 2. Runtime stage
 #
@@ -16,8 +15,8 @@ FROM debian:trixie-slim
 
 WORKDIR /app
 
-# Install ca-certificates required for HTTPS requests via reqwest
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+# Install HTTPS trust roots and the security-patched Perl base package.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates perl-base && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/sis-service .
 
