@@ -1,7 +1,7 @@
-use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey};
-use serde::{Serialize, Deserialize};
+use chrono::{Duration, Utc};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use serde::{Deserialize, Serialize};
 use std::env;
-use chrono::{Utc, Duration};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
@@ -15,6 +15,8 @@ pub struct Claims {
     // a graph lookup first. Magic-link tokens omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 pub fn generate_verification_token(id: &str) -> Result<String, String> {
@@ -28,6 +30,7 @@ pub fn generate_verification_token(id: &str) -> Result<String, String> {
         sub: id.to_owned(),
         exp: expiration,
         email: None,
+        scope: None,
     };
 
     encode(
@@ -54,6 +57,9 @@ pub fn decode_verification_token_email(token: &str) -> Result<String, String> {
 fn decode_full_claims(token: &str) -> Result<Claims, String> {
     let secret = env::var("JWT_SECRET").unwrap_or_else(|_| "secret".to_string());
 
+    decode_parent_claims(token, &secret)
+}
+fn decode_parent_claims(token: &str, secret: &str) -> Result<Claims, String> {
     let token_data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_ref()),
@@ -61,5 +67,35 @@ fn decode_full_claims(token: &str) -> Result<Claims, String> {
     )
     .map_err(|e| e.to_string())?;
 
+    if token_data.claims.scope.is_some() {
+        return Err("token scope mismatch".into());
+    }
     Ok(token_data.claims)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn parent_records_reject_setup_proofs() {
+        let secret = "test-sis-scope";
+        for scope in [None, Some("eoi_setup"), Some("password_setup")] {
+            let claims = Claims {
+                sub: "parent-id".into(),
+                exp: usize::MAX / 2,
+                email: Some("parent@example.test".into()),
+                scope: scope.map(str::to_string),
+            };
+            let token = encode(
+                &Header::default(),
+                &claims,
+                &EncodingKey::from_secret(secret.as_bytes()),
+            )
+            .unwrap();
+            assert_eq!(
+                decode_parent_claims(&token, secret).is_ok(),
+                scope.is_none()
+            );
+        }
+    }
 }

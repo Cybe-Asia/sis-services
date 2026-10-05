@@ -13,16 +13,18 @@
 //                            (ApplicantStudent), TestSchedule,
 //                            TestSession, TestResult, DocumentRequest,
 //                            DocumentArtifact, DocumentReview, Offer,
-//                            OfferAcceptance, AdmissionDecision,
-//                            EnrolledStudent (created from Offer
-//                            acceptance; read by sis-service)
+//                            OfferAcceptance, AdmissionDecision.
 //
 //   sis-services owns:       Section, AttendanceRecord, GradeEntry,
-//                            and the :ENROLLED_IN edge between
-//                            EnrolledStudent and Section.
+//                            permanent EnrolledStudent creation through
+//                            explicit paid-offer handover, its receipt/audit,
+//                            and the :ENROLLED_IN placement. The existing
+//                            handed_to_sis applicant stage mirrors that
+//                            committed handover; legacy enrollment records
+//                            remain unchanged.
 //
-// JWT auth is shared via the JWT_SECRET env var (same value both
-// services verify). auth-services issues the tokens.
+// auth-services owns the credentials. Parent sessions use JWT_SECRET;
+// Admin enrollment/billing use the distinct typed staff downstream key.
 
 use axum::{routing::get, Router};
 use serde_json::json;
@@ -34,8 +36,14 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 mod config;
+mod billing_owner;
+mod enrollment_handover;
 mod database;
 mod handlers;
+mod learning_access;
+mod school_portal;
+mod education_calendar;
+mod extra_curricular;
 mod models;
 mod repositories;
 mod routes;
@@ -96,6 +104,16 @@ async fn main() {
     let graph: neo4rs::Graph = init_neo4j(&cfg)
         .await
         .expect("failed to connect to neo4j");
+    if std::env::args().nth(1).as_deref()==Some("migrate-learning-access") {
+        learning_access::migrate(&graph).await.expect("failed to initialize governed learning access schema");
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("--migrate-enrollment-handover") {
+        enrollment_handover::migrate(&graph)
+            .await
+            .expect("failed to initialize enrollment handover schema");
+        return;
+    }
 
     // Index setup for labels owned by this service.
     // Lead/Student indexes are owned by admission-services; don't
@@ -103,6 +121,12 @@ async fn main() {
     repositories::sis_repository::init_section_indexes(&graph)
         .await
         .expect("failed to initialize section indexes");
+    school_portal::repository::init(&graph)
+        .await
+        .expect("failed to initialize school portal indexes");
+
+    education_calendar::repository::init(&graph).await.expect("failed to initialize education calendar indexes");
+    extra_curricular::repository::init(&graph).await.expect("extracurricular schema initialization failed");
 
     let state = AppState {
         graph,
@@ -112,12 +136,18 @@ async fn main() {
     let app = Router::new()
         .route("/api/v1/sis-service/health", get(health_check))
         .merge(sis_router())
+        .merge(billing_owner::router())
+        .merge(enrollment_handover::router())
+        .merge(learning_access::router())
+        .merge(school_portal::router())
+        .merge(education_calendar::router())
+        .merge(extra_curricular::router())
         .merge(
             SwaggerUi::new("/api/v1/sis-service/swagger-ui")
                 .url("/api/v1/sis-service/api-docs/openapi.json", ApiDoc::openapi()),
         )
         .with_state(state.clone())
-        .layer(TraceLayer::new_for_http());
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<axum::body::Body>| tracing::info_span!("sis_request",method=%request.method())));
 
     let addr: SocketAddr = format!("0.0.0.0:{}", cfg.server_port)
         .parse()

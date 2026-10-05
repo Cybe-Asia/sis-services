@@ -10,6 +10,13 @@
 //   new one. Mid-year section moves are a later feature; for v0.1 the
 //   straight-line case (one section per kid per year) is enough.
 
+mod admin_boundary;
+use crate::handlers::auth_helper::AdminActor;
+use admin_boundary::{execute, invalid, Resource, CHILD};
+pub(crate) async fn check_admin(graph: &Graph, actor: &AdminActor) -> Result<(), RepositoryError> {
+    admin_boundary::check(graph, actor).await
+}
+
 use chrono::Utc;
 use neo4rs::{query, Graph, Node};
 use serde::{Deserialize, Serialize};
@@ -44,6 +51,7 @@ pub struct CreateSectionInput {
 
 pub async fn create_section(
     graph: &Graph,
+    actor: &AdminActor,
     input: &CreateSectionInput,
 ) -> Result<Section, RepositoryError> {
     if input.school_id.trim().is_empty()
@@ -51,18 +59,32 @@ pub async fn create_section(
         || input.year_group.trim().is_empty()
         || input.academic_year.trim().is_empty()
     {
-        return Err(RepositoryError::DbError("all fields required".into()));
+        return Err(invalid());
+    }
+    if input.school_id.len() > 128
+        || input.name.len() > 200
+        || input.year_group.len() > 128
+        || input.academic_year.len() > 128
+        || input
+            .tenant_id
+            .as_ref()
+            .map_or(false, |t| t.trim().is_empty() || t.len() > 128)
+    {
+        return Err(invalid());
     }
     let section_id = format!("SEC-{}", Uuid::new_v4());
     let now = Utc::now();
-    let tenant = input.tenant_id.clone().unwrap_or_else(|| "TENANT-001".to_string());
+    let tenant = input
+        .tenant_id
+        .clone()
+        .unwrap_or_else(|| "TENANT-001".to_string());
     let q = query(
         "CREATE (s:Section { \
             section_id: $id, tenant_id: $tenant, school_id: $school, \
             name: $name, year_group: $year_group, academic_year: $academic_year, \
             status: $status, \
             created_at: datetime($now), updated_at: datetime($now) \
-         }) RETURN s"
+         }) RETURN s",
     )
     .param("id", section_id.clone())
     .param("tenant", tenant.clone())
@@ -72,9 +94,19 @@ pub async fn create_section(
     .param("academic_year", input.academic_year.clone())
     .param("status", SECTION_STATUS_ACTIVE.to_string())
     .param("now", now.to_rfc3339());
-    let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
-    if let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
-        let node: Node = row.get("s").map_err(|e| RepositoryError::DbError(e.to_string()))?;
+    let rs = execute(
+        graph,
+        actor,
+        Resource::School(&input.school_id, &tenant),
+        q,
+        Some(("section.created", &section_id)),
+        None,
+    )
+    .await?;
+    if let Some(row) = rs.into_iter().next() {
+        let node: Node = row
+            .get("s")
+            .map_err(|e| RepositoryError::DbError(e.to_string()))?;
         return Ok(map_node_to_section(node, 0));
     }
     Err(RepositoryError::DbError("failed to create section".into()))
@@ -90,31 +122,62 @@ pub struct ListSectionFilters {
 
 pub async fn list_sections(
     graph: &Graph,
+    actor: &AdminActor,
     filters: &ListSectionFilters,
 ) -> Result<Vec<Section>, RepositoryError> {
-    let mut wheres: Vec<String> = Vec::new();
-    if filters.school.is_some() { wheres.push("s.school_id = $school".to_string()); }
-    if filters.academic_year.is_some() { wheres.push("s.academic_year = $academic_year".to_string()); }
-    if filters.year_group.is_some() { wheres.push("s.year_group = $year_group".to_string()); }
-    if filters.status.is_some() { wheres.push("s.status = $status".to_string()); }
-    let where_sql = if wheres.is_empty() { String::new() } else { format!("WHERE {}", wheres.join(" AND ")) };
+    let mut wheres: Vec<String> = vec!["EXISTS {MATCH(school:School {school_id:s.school_id,tenant_id:s.tenant_id}) WHERE NOT EXISTS {MATCH(other:School {school_id:s.school_id}) WHERE other<>school}}".into(), "NOT EXISTS {MATCH(other:Section {section_id:s.section_id}) WHERE other<>s}".into(), "(('owner' IN coalesce(a.roles,[]) AND size(coalesce(a.schoolIds,[]))=0 AND size(coalesce(a.tenantIds,[]))=0) OR (s.school_id IN coalesce(a.schoolIds,[]) AND s.tenant_id IN coalesce(a.tenantIds,[])))".into()];
+    if filters.school.is_some() {
+        wheres.push("s.school_id = $school".to_string());
+    }
+    if filters.academic_year.is_some() {
+        wheres.push("s.academic_year = $academic_year".to_string());
+    }
+    if filters.year_group.is_some() {
+        wheres.push("s.year_group = $year_group".to_string());
+    }
+    if filters.status.is_some() {
+        wheres.push("s.status = $status".to_string());
+    }
+    let where_sql = if wheres.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", wheres.join(" AND "))
+    };
 
     let cy = format!(
-        "MATCH (s:Section) {where_sql} \
-         OPTIONAL MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(s) \
+        "{} WITH a MATCH (s:Section) {where_sql} \
+         OPTIONAL MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(s) WHERE e.status='active' AND e.school_id=s.school_id AND e.tenant_id=s.tenant_id \
          WITH s, count(DISTINCT e) AS enrolledCount \
          RETURN s, enrolledCount \
-         ORDER BY s.academic_year DESC, s.school_id, s.year_group, s.name"
+         ORDER BY s.academic_year DESC, s.school_id, s.year_group, s.name", admin_boundary::ACTOR
     );
     let mut q = query(&cy);
-    if let Some(v) = &filters.school { q = q.param("school", v.clone()); }
-    if let Some(v) = &filters.academic_year { q = q.param("academic_year", v.clone()); }
-    if let Some(v) = &filters.year_group { q = q.param("year_group", v.clone()); }
-    if let Some(v) = &filters.status { q = q.param("status", v.clone()); }
-    let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
+    if let Some(v) = &filters.school {
+        q = q.param("school", v.clone());
+    }
+    if let Some(v) = &filters.academic_year {
+        q = q.param("academic_year", v.clone());
+    }
+    if let Some(v) = &filters.year_group {
+        q = q.param("year_group", v.clone());
+    }
+    if let Some(v) = &filters.status {
+        q = q.param("status", v.clone());
+    }
+    let rs = execute(
+        graph,
+        actor,
+        Resource::List(filters.school.as_deref()),
+        q,
+        None,
+        None,
+    )
+    .await?;
     let mut out = Vec::new();
-    while let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
-        let node: Node = row.get("s").map_err(|e| RepositoryError::DbError(e.to_string()))?;
+    for row in rs {
+        let node: Node = row
+            .get("s")
+            .map_err(|e| RepositoryError::DbError(e.to_string()))?;
         let cnt = row.get::<i64>("enrolledCount").unwrap_or(0);
         out.push(map_node_to_section(node, cnt));
     }
@@ -123,17 +186,20 @@ pub async fn list_sections(
 
 pub async fn find_section_by_id(
     graph: &Graph,
+    actor: &AdminActor,
     section_id: &str,
 ) -> Result<Option<Section>, RepositoryError> {
     let q = query(
         "MATCH (s:Section {section_id: $id}) \
-         OPTIONAL MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(s) \
+         OPTIONAL MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(s) WHERE e.status='active' AND e.school_id=s.school_id AND e.tenant_id=s.tenant_id \
          RETURN s, count(DISTINCT e) AS enrolledCount"
     )
     .param("id", section_id.to_string());
-    let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
-    if let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
-        let node: Node = row.get("s").map_err(|e| RepositoryError::DbError(e.to_string()))?;
+    let rs = execute(graph, actor, Resource::Section(section_id), q, None, None).await?;
+    if let Some(row) = rs.into_iter().next() {
+        let node: Node = row
+            .get("s")
+            .map_err(|e| RepositoryError::DbError(e.to_string()))?;
         let cnt = row.get::<i64>("enrolledCount").unwrap_or(0);
         return Ok(Some(map_node_to_section(node, cnt)));
     }
@@ -144,26 +210,40 @@ pub async fn find_section_by_id(
 /// can be None to clear it. Leaves other Section properties alone.
 pub async fn set_homeroom_teacher(
     graph: &Graph,
+    actor: &AdminActor,
     section_id: &str,
     name: Option<&str>,
     email: Option<&str>,
 ) -> Result<Section, RepositoryError> {
+    if name.map_or(false, |v| v.len() > 200) || email.map_or(false, |v| v.len() > 254) {
+        return Err(invalid());
+    }
     let now = Utc::now();
     let q = query(
         "MATCH (s:Section {section_id: $id}) \
          SET s.homeroom_teacher_name = $name, \
              s.homeroom_teacher_email = $email, \
-             s.updated_at = datetime($now) \
-         OPTIONAL MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(s) \
+             s.updated_at = datetime($now) WITH s \
+         OPTIONAL MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(s) WHERE e.status='active' AND e.school_id=s.school_id AND e.tenant_id=s.tenant_id \
          RETURN s, count(DISTINCT e) AS enrolledCount"
     )
     .param("id", section_id.to_string())
     .param("name", name.unwrap_or(""))
     .param("email", email.unwrap_or(""))
     .param("now", now.to_rfc3339());
-    let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
-    if let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
-        let node: Node = row.get("s").map_err(|e| RepositoryError::DbError(e.to_string()))?;
+    let rs = execute(
+        graph,
+        actor,
+        Resource::Section(section_id),
+        q,
+        Some(("section.homeroom.set", section_id)),
+        None,
+    )
+    .await?;
+    if let Some(row) = rs.into_iter().next() {
+        let node: Node = row
+            .get("s")
+            .map_err(|e| RepositoryError::DbError(e.to_string()))?;
         let cnt = row.get::<i64>("enrolledCount").unwrap_or(0);
         return Ok(map_node_to_section(node, cnt));
     }
@@ -172,24 +252,35 @@ pub async fn set_homeroom_teacher(
 
 pub async fn set_section_status(
     graph: &Graph,
+    actor: &AdminActor,
     section_id: &str,
     status: &str,
 ) -> Result<Section, RepositoryError> {
     if !is_valid_section_status(status) {
-        return Err(RepositoryError::DbError(format!("invalid section status: {}", status)));
+        return Err(invalid());
     }
     let now = Utc::now();
     let q = query(
         "MATCH (s:Section {section_id: $id}) \
          SET s.status = $status, s.updated_at = datetime($now) \
-         RETURN s"
+         RETURN s",
     )
     .param("id", section_id.to_string())
     .param("status", status.to_string())
     .param("now", now.to_rfc3339());
-    let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
-    if let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
-        let node: Node = row.get("s").map_err(|e| RepositoryError::DbError(e.to_string()))?;
+    let rs = execute(
+        graph,
+        actor,
+        Resource::Section(section_id),
+        q,
+        Some(("section.status.set", section_id)),
+        None,
+    )
+    .await?;
+    if let Some(row) = rs.into_iter().next() {
+        let node: Node = row
+            .get("s")
+            .map_err(|e| RepositoryError::DbError(e.to_string()))?;
         return Ok(map_node_to_section(node, 0));
     }
     Err(RepositoryError::NotFound)
@@ -198,13 +289,17 @@ pub async fn set_section_status(
 /// Assigns a set of EnrolledStudents to a Section. Removes any existing
 /// `[:ENROLLED_IN]` edges from each student first so a kid is never in
 /// two sections at once. Returns the number of successfully assigned
-/// students (students that don't exist as EnrolledStudent are silently
-/// skipped — caller can diff the response against the input to know).
+/// students. Every requested student must have a current enrollment in the
+/// same school, tenant and academic context; otherwise the batch rolls back.
 pub async fn assign_students(
     graph: &Graph,
+    actor: &AdminActor,
     section_id: &str,
     applicant_student_ids: &[String],
 ) -> Result<i64, RepositoryError> {
+    if !admin_boundary::ids_valid(applicant_student_ids, 200) {
+        return Err(invalid());
+    }
     let now = Utc::now();
     let q = query(
         "MATCH (sec:Section {section_id: $section_id}) \
@@ -215,13 +310,21 @@ pub async fn assign_students(
          MERGE (e)-[r:ENROLLED_IN]->(sec) \
          ON CREATE SET r.assigned_at = datetime($now) \
          SET sec.updated_at = datetime($now) \
-         RETURN count(DISTINCT e) AS assigned"
+         RETURN count(DISTINCT e) AS assigned",
     )
     .param("section_id", section_id.to_string())
     .param("ids", applicant_student_ids.to_vec())
     .param("now", now.to_rfc3339());
-    let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
-    if let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
+    let rs = execute(
+        graph,
+        actor,
+        Resource::Section(section_id),
+        q,
+        Some(("section.assign", section_id)),
+        Some((applicant_student_ids, false)),
+    )
+    .await?;
+    if let Some(row) = rs.into_iter().next() {
         return Ok(row.get::<i64>("assigned").unwrap_or(0));
     }
     Ok(0)
@@ -240,11 +343,12 @@ pub struct SectionMemberRow {
 
 pub async fn list_section_members(
     graph: &Graph,
+    actor: &AdminActor,
     section_id: &str,
 ) -> Result<Vec<SectionMemberRow>, RepositoryError> {
-    let q = query(
-        "MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section {section_id: $id}) \
-         MATCH (s:Student)-[:ENROLLED_AS]->(e) \
+    let q = query(&format!(
+        "MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section {{section_id: $id}}) \
+         MATCH (s:Student)-[:ENROLLED_AS]->(e) WHERE {CHILD} \
          OPTIONAL MATCH (l:Lead)-[:HAS_STUDENT]->(s) \
          RETURN \
            s.studentId AS applicantStudentId, \
@@ -254,16 +358,19 @@ pub async fn list_section_members(
            coalesce(l.parent_name, '') AS parentName, \
            coalesce(l.email, '') AS parentEmail \
          ORDER BY s.fullName"
-    )
+    ))
     .param("id", section_id.to_string());
-    let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
+    let rs = execute(graph, actor, Resource::Section(section_id), q, None, None).await?;
     let mut out = Vec::new();
-    while let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
+    for row in rs {
         out.push(SectionMemberRow {
             applicantStudentId: row.get::<String>("applicantStudentId").unwrap_or_default(),
             studentNumber: row.get::<String>("studentNumber").unwrap_or_default(),
             fullName: row.get::<String>("fullName").unwrap_or_default(),
-            yearGroup: row.get::<String>("yearGroup").ok().filter(|s| !s.is_empty()),
+            yearGroup: row
+                .get::<String>("yearGroup")
+                .ok()
+                .filter(|s| !s.is_empty()),
             parentName: row.get::<String>("parentName").unwrap_or_default(),
             parentEmail: row.get::<String>("parentEmail").unwrap_or_default(),
         });
@@ -292,10 +399,15 @@ pub struct ParentSectionRow {
 pub async fn list_parent_sections(
     graph: &Graph,
     lead_ids: &[String],
+    principal: &str,
 ) -> Result<Vec<ParentSectionRow>, RepositoryError> {
-    let q = query(
-        "MATCH (l:Lead)-[:HAS_STUDENT]->(s:Student)-[:ENROLLED_AS]->(e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section) \
-         WHERE l.lead_id IN $lead_ids \
+    let q = query(&format!(
+        "{} AND l.lead_id IN $lead_ids WITH DISTINCT u,l,s \
+         MATCH(s)-[:ENROLLED_AS]->(e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section) \
+         OPTIONAL MATCH (homeroom:StaffMember {{id:sec.homeroom_staff_member_id,membershipStatus:'ACTIVE'}}) \
+         WHERE 'teacher' IN coalesce(homeroom.roles,[]) AND sec.status='active' AND e.status='active' \
+           AND e.school_id=sec.school_id AND e.tenant_id=sec.tenant_id \
+           AND sec.school_id IN coalesce(homeroom.schoolIds,[]) AND sec.tenant_id IN coalesce(homeroom.tenantIds,[]) \
          RETURN \
            s.studentId AS applicantStudentId, \
            s.fullName AS studentName, \
@@ -305,11 +417,11 @@ pub async fn list_parent_sections(
            sec.year_group AS yearGroup, \
            sec.academic_year AS academicYear, \
            sec.school_id AS schoolId, \
-           sec.homeroom_teacher_name AS homeroomTeacherName, \
-           sec.homeroom_teacher_email AS homeroomTeacherEmail \
-         ORDER BY s.fullName"
-    )
-    .param("lead_ids", lead_ids.to_vec());
+           homeroom.fullName AS homeroomTeacherName, \
+           homeroom.email AS homeroomTeacherEmail \
+         ORDER BY s.fullName", crate::school_portal::repository::PARENT
+    ))
+    .param("lead_ids", lead_ids.to_vec()).param("sub",principal);
     let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
     let mut out = Vec::new();
     while let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
@@ -342,33 +454,40 @@ pub struct BulkAttendanceEntry {
 
 /// Upserts attendance for a set of students on one date. Idempotent —
 /// MERGE keyed on (section_id, applicant_student_id, date) so replaying
-/// the same call corrects instead of duplicating. Invalid status values
-/// are silently skipped and counted; admin UI can diff requested vs
-/// written to surface the drop.
+/// the same call corrects instead of duplicating. Invalid or foreign entries
+/// reject the entire batch; no partial writes or audit are committed.
 pub async fn upsert_attendance_batch(
     graph: &Graph,
+    actor: &AdminActor,
     section_id: &str,
     date: &str,
     entries: &[BulkAttendanceEntry],
-    recorded_by: &str,
 ) -> Result<i64, RepositoryError> {
-    if entries.is_empty() {
-        return Ok(0);
+    if chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err() || date.len() != 10 {
+        return Err(invalid());
     }
-    // Cypher-side: UNWIND over the entries and MERGE per row. Cheaper
-    // than round-trip-per-student and stays atomic under neo4j's
-    // transaction boundary.
-    let valid: Vec<_> = entries.iter()
-        .filter(|e| is_valid_attendance_status(&e.status) && !e.applicant_student_id.trim().is_empty())
+    let requested_ids: Vec<String> = entries
+        .iter()
+        .map(|e| e.applicant_student_id.clone())
         .collect();
-    if valid.is_empty() {
-        return Ok(0);
+    if !admin_boundary::ids_valid(&requested_ids, 500)
+        || !entries.iter().all(|e| {
+            is_valid_attendance_status(&e.status)
+                && e.notes.as_ref().map_or(true, |n| n.len() <= 2000)
+        })
+    {
+        return Err(invalid());
     }
-    // Flatten into parallel arrays so neo4rs can pass them as params
-    // without needing a custom parameter type.
-    let ids: Vec<String> = valid.iter().map(|e| e.applicant_student_id.clone()).collect();
+    let valid: Vec<_> = entries.iter().collect();
+    let ids: Vec<String> = valid
+        .iter()
+        .map(|e| e.applicant_student_id.clone())
+        .collect();
     let statuses: Vec<String> = valid.iter().map(|e| e.status.clone()).collect();
-    let notes: Vec<String> = valid.iter().map(|e| e.notes.clone().unwrap_or_default()).collect();
+    let notes: Vec<String> = valid
+        .iter()
+        .map(|e| e.notes.clone().unwrap_or_default())
+        .collect();
 
     let q = query(
         "MATCH (sec:Section {section_id: $section_id}) \
@@ -390,13 +509,21 @@ pub async fn upsert_attendance_batch(
     )
     .param("section_id", section_id.to_string())
     .param("date", date.to_string())
-    .param("ids", ids)
+    .param("ids", ids.clone())
     .param("statuses", statuses)
     .param("notes", notes)
-    .param("by", recorded_by.to_string());
+    .param("by", actor.staff.clone());
 
-    let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
-    if let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
+    let rs = execute(
+        graph,
+        actor,
+        Resource::Section(section_id),
+        q,
+        Some(("attendance.recorded", section_id)),
+        Some((&ids, true)),
+    )
+    .await?;
+    if let Some(row) = rs.into_iter().next() {
         return Ok(row.get::<i64>("n").unwrap_or(0));
     }
     Ok(0)
@@ -420,13 +547,17 @@ pub struct AttendanceRosterRow {
 
 pub async fn list_attendance_for_date(
     graph: &Graph,
+    actor: &AdminActor,
     section_id: &str,
     date: &str,
 ) -> Result<Vec<AttendanceRosterRow>, RepositoryError> {
-    let q = query(
-        "MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section {section_id: $section_id}) \
-         MATCH (s:Student)-[:ENROLLED_AS]->(e) \
-         OPTIONAL MATCH (r:AttendanceRecord {section_id: $section_id, applicant_student_id: s.studentId, date: $date}) \
+    if chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err() || date.len() != 10 {
+        return Err(invalid());
+    }
+    let q = query(&format!(
+        "MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section {{section_id: $section_id}}) \
+         MATCH (s:Student)-[:ENROLLED_AS]->(e) WHERE {CHILD} \
+         OPTIONAL MATCH (r:AttendanceRecord {{section_id: $section_id, applicant_student_id: s.studentId, date: $date}}) \
          RETURN \
            s.studentId AS applicantStudentId, \
            e.student_number AS studentNumber, \
@@ -436,20 +567,26 @@ pub async fn list_attendance_for_date(
            toString(r.recorded_at) AS recordedAt, \
            r.recorded_by AS recordedBy \
          ORDER BY s.fullName"
-    )
+    ))
     .param("section_id", section_id.to_string())
     .param("date", date.to_string());
-    let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
+    let rs = execute(graph, actor, Resource::Section(section_id), q, None, None).await?;
     let mut out = Vec::new();
-    while let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
+    for row in rs {
         out.push(AttendanceRosterRow {
             applicantStudentId: row.get::<String>("applicantStudentId").unwrap_or_default(),
             studentNumber: row.get::<String>("studentNumber").unwrap_or_default(),
             fullName: row.get::<String>("fullName").unwrap_or_default(),
             status: row.get::<String>("status").ok().filter(|s| !s.is_empty()),
             notes: row.get::<String>("notes").ok().filter(|s| !s.is_empty()),
-            recordedAt: row.get::<String>("recordedAt").ok().filter(|s| !s.is_empty() && s != "null"),
-            recordedBy: row.get::<String>("recordedBy").ok().filter(|s| !s.is_empty()),
+            recordedAt: row
+                .get::<String>("recordedAt")
+                .ok()
+                .filter(|s| !s.is_empty() && s != "null"),
+            recordedBy: row
+                .get::<String>("recordedBy")
+                .ok()
+                .filter(|s| !s.is_empty()),
         });
     }
     Ok(out)
@@ -507,7 +644,9 @@ pub async fn list_attendance_for_parent(
 // grow the domain. Next patch will surface individual records to
 // admins for correction after initial roll-call.
 #[allow(dead_code)]
-fn _keep_attendance_model_import(r: AttendanceRecord) -> AttendanceRecord { r }
+fn _keep_attendance_model_import(r: AttendanceRecord) -> AttendanceRecord {
+    r
+}
 
 // ---- end attendance -------------------------------------------------------
 
@@ -527,25 +666,46 @@ pub struct BulkGradeEntry {
 /// repository only requires max_score > 0.
 pub async fn upsert_grades_batch(
     graph: &Graph,
+    actor: &AdminActor,
     section_id: &str,
     subject: &str,
     term: &str,
     entries: &[BulkGradeEntry],
-    recorded_by: &str,
 ) -> Result<i64, RepositoryError> {
-    if entries.is_empty() {
-        return Ok(0);
+    if subject.trim().is_empty()
+        || term.trim().is_empty()
+        || subject.len() > 128
+        || term.len() > 128
+    {
+        return Err(invalid());
     }
-    let valid: Vec<_> = entries.iter()
-        .filter(|e| e.max_score > 0.0 && e.score >= 0.0 && e.score <= e.max_score && !e.applicant_student_id.trim().is_empty())
+    let requested_ids: Vec<String> = entries
+        .iter()
+        .map(|e| e.applicant_student_id.clone())
         .collect();
-    if valid.is_empty() {
-        return Ok(0);
+    if !admin_boundary::ids_valid(&requested_ids, 500)
+        || !entries.iter().all(|e| {
+            e.score.is_finite()
+                && e.max_score.is_finite()
+                && e.max_score > 0.0
+                && e.score >= 0.0
+                && e.score <= e.max_score
+                && e.notes.as_ref().map_or(true, |n| n.len() <= 2000)
+        })
+    {
+        return Err(invalid());
     }
-    let ids: Vec<String> = valid.iter().map(|e| e.applicant_student_id.clone()).collect();
+    let valid: Vec<_> = entries.iter().collect();
+    let ids: Vec<String> = valid
+        .iter()
+        .map(|e| e.applicant_student_id.clone())
+        .collect();
     let scores: Vec<f64> = valid.iter().map(|e| e.score).collect();
     let maxes: Vec<f64> = valid.iter().map(|e| e.max_score).collect();
-    let notes: Vec<String> = valid.iter().map(|e| e.notes.clone().unwrap_or_default()).collect();
+    let notes: Vec<String> = valid
+        .iter()
+        .map(|e| e.notes.clone().unwrap_or_default())
+        .collect();
 
     let q = query(
         "MATCH (sec:Section {section_id: $section_id}) \
@@ -565,14 +725,22 @@ pub async fn upsert_grades_batch(
     .param("section_id", section_id.to_string())
     .param("subject", subject.to_string())
     .param("term", term.to_string())
-    .param("ids", ids)
+    .param("ids", ids.clone())
     .param("scores", scores)
     .param("maxes", maxes)
     .param("notes", notes)
-    .param("by", recorded_by.to_string());
+    .param("by", actor.staff.clone());
 
-    let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
-    if let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
+    let rs = execute(
+        graph,
+        actor,
+        Resource::Section(section_id),
+        q,
+        Some(("grades.recorded", section_id)),
+        Some((&ids, true)),
+    )
+    .await?;
+    if let Some(row) = rs.into_iter().next() {
         return Ok(row.get::<i64>("n").unwrap_or(0));
     }
     Ok(0)
@@ -592,17 +760,25 @@ pub struct GradeRosterRow {
 
 pub async fn list_grades_for_subject_term(
     graph: &Graph,
+    actor: &AdminActor,
     section_id: &str,
     subject: &str,
     term: &str,
 ) -> Result<Vec<GradeRosterRow>, RepositoryError> {
-    let q = query(
-        "MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section {section_id: $section_id}) \
-         MATCH (s:Student)-[:ENROLLED_AS]->(e) \
-         OPTIONAL MATCH (g:GradeEntry { \
+    if subject.trim().is_empty()
+        || term.trim().is_empty()
+        || subject.len() > 128
+        || term.len() > 128
+    {
+        return Err(invalid());
+    }
+    let q = query(&format!(
+        "MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section {{section_id: $section_id}}) \
+         MATCH (s:Student)-[:ENROLLED_AS]->(e) WHERE {CHILD} \
+         OPTIONAL MATCH (g:GradeEntry {{ \
             section_id: $section_id, applicant_student_id: s.studentId, \
             subject: $subject, term: $term \
-         }) \
+         }}) \
          RETURN \
            s.studentId AS applicantStudentId, \
            e.student_number AS studentNumber, \
@@ -612,21 +788,27 @@ pub async fn list_grades_for_subject_term(
            toString(g.recorded_at) AS recordedAt, \
            g.recorded_by AS recordedBy \
          ORDER BY s.fullName"
-    )
+    ))
     .param("section_id", section_id.to_string())
     .param("subject", subject.to_string())
     .param("term", term.to_string());
-    let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
+    let rs = execute(graph, actor, Resource::Section(section_id), q, None, None).await?;
     let mut out = Vec::new();
-    while let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
+    for row in rs {
         out.push(GradeRosterRow {
             applicantStudentId: row.get::<String>("applicantStudentId").unwrap_or_default(),
             studentNumber: row.get::<String>("studentNumber").unwrap_or_default(),
             fullName: row.get::<String>("fullName").unwrap_or_default(),
             score: row.get::<f64>("score").ok(),
             maxScore: row.get::<f64>("maxScore").ok(),
-            recordedAt: row.get::<String>("recordedAt").ok().filter(|s| !s.is_empty() && s != "null"),
-            recordedBy: row.get::<String>("recordedBy").ok().filter(|s| !s.is_empty()),
+            recordedAt: row
+                .get::<String>("recordedAt")
+                .ok()
+                .filter(|s| !s.is_empty() && s != "null"),
+            recordedBy: row
+                .get::<String>("recordedBy")
+                .ok()
+                .filter(|s| !s.is_empty()),
         });
     }
     Ok(out)
@@ -692,10 +874,18 @@ fn map_node_to_section(node: Node, enrolled_count: i64) -> Section {
         name: node.get::<String>("name").unwrap_or_default(),
         yearGroup: node.get::<String>("year_group").unwrap_or_default(),
         academicYear: node.get::<String>("academic_year").unwrap_or_default(),
-        status: node.get::<String>("status").unwrap_or_else(|_| SECTION_STATUS_ACTIVE.to_string()),
+        status: node
+            .get::<String>("status")
+            .unwrap_or_else(|_| SECTION_STATUS_ACTIVE.to_string()),
         enrolledCount: enrolled_count,
-        homeroomTeacherName: node.get::<String>("homeroom_teacher_name").ok().filter(|s| !s.is_empty()),
-        homeroomTeacherEmail: node.get::<String>("homeroom_teacher_email").ok().filter(|s| !s.is_empty()),
+        homeroomTeacherName: node
+            .get::<String>("homeroom_teacher_name")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        homeroomTeacherEmail: node
+            .get::<String>("homeroom_teacher_email")
+            .ok()
+            .filter(|s| !s.is_empty()),
         createdAt: parse_dt(node.get::<String>("created_at").ok()),
         updatedAt: parse_dt(node.get::<String>("updated_at").ok()),
     }

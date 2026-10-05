@@ -12,6 +12,7 @@ edition = "2021"
 # are not pulled in. Keeps the image smaller and the compile time
 # shorter on CI.
 [dependencies]
+base64 = "0.22"
 axum = { version = "0.7", features = ["macros", "json"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 serde = { version = "1", features = ["derive"] }
@@ -36,3 +37,7 @@ codegen-units = 1
 lto = "fat"
 opt-level = "z"
 strip = true
+
+[[bin]]
+name = "extracurricular-preview"
+path = "src/extra_curricular_preview.rs"

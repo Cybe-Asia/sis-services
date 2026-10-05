@@ -27,6 +27,8 @@ pub fn sis_router() -> Router<AppState> {
             "/api/leads/v1/admin/sis/sections/:section_id/grades",
             get(admin_grade_roster_handler).post(admin_grades_upsert_handler),
         )
+        // Parent school requests are durable reports, never an attendance override or confirmed booking.
+        .route("/api/leads/v1/me/school-requests", get(crate::handlers::parent_request_handler::list).post(crate::handlers::parent_request_handler::create))
         // Parent.
         .route("/api/leads/v1/me/sections", get(parent_list_sections_handler))
         .route("/api/leads/v1/me/attendance", get(parent_list_attendance_handler))

@@ -1,26 +1,22 @@
-# 1. Build stage
-FROM rust:1.91 as builder
-
+# Build-only recipe; no invocation or image publication is performed by this file.
+# Build context must be the canonical SIS source or a verified allowlist copy.
+FROM rust:1.91 AS builder
 WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY src/ ./src/
+COPY migrations/ ./migrations/
+RUN cargo build --release --locked --bin sis-service
 
-# No Cargo.lock yet — first build will generate it and we commit it
-# after. Until then, skip the layer-caching trick and build directly.
-COPY . .
-RUN cargo build --release
-
-# 2. Runtime stage
-#
-# Same base as admission-services — debian:trixie-slim ships glibc 2.39
-# which covers the rust:1.91 builder's glibc 2.38 requirement.
 FROM debian:trixie-slim
-
 WORKDIR /app
-
-# Install ca-certificates required for HTTPS requests via reqwest
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /app/target/release/sis-service .
-
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3t64 && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/sis-service ./sis-service
 EXPOSE 8081
-
 CMD ["./sis-service"]
+
+ARG SOURCE_REPOSITORY
+ARG SOURCE_REVISION
+ARG SOURCE_TREE_SHA256
+LABEL org.opencontainers.image.source=$SOURCE_REPOSITORY \
+      org.opencontainers.image.revision=$SOURCE_REVISION \
+      tech.cybe.digital-school.source-tree-sha256=$SOURCE_TREE_SHA256
