@@ -4,6 +4,56 @@ use super::{
 };
 use axum::http::{HeaderMap, StatusCode};
 use serde::Deserialize;
+use std::{io::Read, path::Path};
+
+// The private Learning trust anchor belongs only to this owner transport.
+// Keep default public roots and hostname verification on both TLS backends.
+fn client_builder(ca_file: Option<&Path>) -> Result<reqwest::ClientBuilder, Failure> {
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(5));
+    if let Some(path) = ca_file {
+        let mut pem = Vec::new();
+        std::fs::File::open(path)
+            .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
+            .take(262_145)
+            .read_to_end(&mut pem)
+            .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+        for certificate in private_roots(&pem)? {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
+    Ok(builder)
+}
+fn private_roots(pem: &[u8]) -> Result<Vec<reqwest::Certificate>, Failure> {
+    let unavailable = || failure(StatusCode::SERVICE_UNAVAILABLE);
+    if pem.len() > 262_144 {
+        return Err(unavailable());
+    }
+    let mut remaining = std::str::from_utf8(pem).map_err(|_| unavailable())?.trim();
+    let mut roots = Vec::new();
+    // Accept certificate PEM blocks only: no keys, ignored garbage or partial
+    // bundles. A configured invalid file must never fall back to default trust.
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+    while !remaining.is_empty() {
+        if roots.len() == 32 || !remaining.starts_with(BEGIN) {
+            return Err(unavailable());
+        }
+        let end = remaining.find(END).ok_or_else(unavailable)? + END.len();
+        let mut parsed = reqwest::Certificate::from_pem_bundle(remaining[..end].as_bytes())
+            .map_err(|_| unavailable())?;
+        if parsed.len() != 1 {
+            return Err(unavailable());
+        }
+        roots.push(parsed.remove(0));
+        remaining = remaining[end..].trim();
+    }
+    if roots.is_empty() {
+        return Err(unavailable());
+    }
+    Ok(roots)
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope {
@@ -41,9 +91,8 @@ pub async fn read(headers: &HeaderMap, input: &Import) -> Result<Export, Failure
             "attempts",
             &input.attempt_id,
         ]);
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(5))
+    let ca_file = std::env::var_os("LEARNING_SERVICE_CA_FILE");
+    let client = client_builder(ca_file.as_deref().map(Path::new))?
         .build()
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
     let mut response = client
@@ -75,3 +124,6 @@ pub async fn read(headers: &HeaderMap, input: &Import) -> Result<Export, Failure
         .map(|v| v.data)
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))
 }
+
+#[cfg(test)]
+mod tls_tests;
