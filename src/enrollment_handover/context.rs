@@ -1,12 +1,12 @@
 use super::{
     auth::Actor,
-    repository::{directory, Error},
+    repository::{directory, placement_roles, Error},
 };
 use neo4rs::Graph;
 use serde_json::{json, Value};
 const CURRENT: &str = include_str!("current.cypher");
 pub async fn context(graph: &Graph, actor: &Actor) -> Result<Value, Error> {
-    let mut rows=graph.execute(directory(actor,vec!["owner".into(),"school_admin".into(),"admissions_admin".into()],"RETURN school.school_id AS school,school.tenant_id AS tenant,coalesce(school.name,school.school_id) AS name ORDER BY school,tenant LIMIT 65")).await.map_err(|_|Error::Unavailable)?;
+    let mut rows=graph.execute(directory(actor,placement_roles(),"RETURN school.school_id AS school,school.tenant_id AS tenant,coalesce(school.name,school.school_id) AS name ORDER BY school,tenant LIMIT 65")).await.map_err(|_|Error::Unavailable)?;
     let mut scopes = Vec::new();
     while let Some(row) = rows.next().await.map_err(|_| Error::Unavailable)? {
         if scopes.len() == 64 {
@@ -80,7 +80,7 @@ pub async fn context(graph: &Graph, actor: &Actor) -> Result<Value, Error> {
     );
     for (school, tenant, name) in scopes {
         schools.push(json!({"schoolId":school,"tenantId":tenant,"name":name}));
-        let mut found=graph.execute(directory(actor,vec!["owner".into(),"school_admin".into(),"admissions_admin".into()],"AND school.school_id=$school AND school.tenant_id=$tenant CALL { MATCH(sec:Section {school_id:$school,tenant_id:$tenant,status:'active'}) WHERE NOT EXISTS {MATCH(other:Section {section_id:sec.section_id}) WHERE other<>sec} RETURN sec.section_id AS id,sec.name AS name,sec.year_group AS year,sec.academic_year AS academic ORDER BY name,id LIMIT 201 } RETURN id,name,year,academic").param("school",school.clone()).param("tenant",tenant.clone())).await.map_err(|_|Error::Unavailable)?;
+        let mut found=graph.execute(directory(actor,placement_roles(),"AND school.school_id=$school AND school.tenant_id=$tenant CALL { MATCH(sec:Section {school_id:$school,tenant_id:$tenant,status:'active'}) WHERE NOT EXISTS {MATCH(other:Section {section_id:sec.section_id}) WHERE other<>sec} RETURN sec.section_id AS id,sec.name AS name,sec.year_group AS year,sec.academic_year AS academic ORDER BY name,id LIMIT 201 } RETURN id,name,year,academic").param("school",school.clone()).param("tenant",tenant.clone())).await.map_err(|_|Error::Unavailable)?;
         let mut count = 0;
         while let Some(row) = found.next().await.map_err(|_| Error::Unavailable)? {
             count += 1;
@@ -92,7 +92,7 @@ pub async fn context(graph: &Graph, actor: &Actor) -> Result<Value, Error> {
         let body=format!("{family} WITH DISTINCT u,l,s {current} RETURN DISTINCT s.studentId AS student,u.id AS payer,l.lead_id AS admission,app.application_id AS application,o.offer_id AS offer,p.payment_id AS payment,o.revision AS revision,o.pricing_snapshot_hash AS hash,s.fullName AS name,coalesce(u.fullName,l.parent_name,'') AS parent,o.target_year_group AS year,o.academic_year AS academic ORDER BY student,offer LIMIT 201");
         let mut found = graph
             .execute(
-                directory(actor,vec!["owner".into(),"school_admin".into(),"admissions_admin".into()],&format!("AND school.school_id=$school AND school.tenant_id=$tenant CALL {{ {body} }} RETURN student,payer,admission,application,offer,payment,revision,hash,name,parent,year,academic"))
+                directory(actor,placement_roles(),&format!("AND school.school_id=$school AND school.tenant_id=$tenant CALL {{ {body} }} RETURN student,payer,admission,application,offer,payment,revision,hash,name,parent,year,academic"))
                     .param("school", school.clone())
                     .param("tenant", tenant.clone()),
             )

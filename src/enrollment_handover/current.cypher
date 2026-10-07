@@ -1,8 +1,10 @@
 MATCH (staff_user:User {id:$subject})-[staff_link:STAFF_MEMBER]->(actor:StaffMember {id:$actor,membershipStatus:'ACTIVE'})
-WHERE any(role IN coalesce(actor.roles,[]) WHERE role IN ['owner','school_admin','admissions_admin'])
+WHERE any(role IN coalesce(actor.roles,[]) WHERE role IN ['owner','school_admin','admissions_admin','admissions_manager'])
   AND size(coalesce(actor.teamIds,[]))=0
   AND (('owner' IN coalesce(actor.roles,[]) AND size(coalesce(actor.schoolIds,[]))=0 AND size(coalesce(actor.tenantIds,[]))=0)
-       OR ($school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[])))
+       OR ($school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[]))
+       OR (any(role IN coalesce(actor.roles,[]) WHERE role IN ['admissions_manager','admissions_admin'])
+           AND size(coalesce(actor.schoolIds,[]))=0 AND size(coalesce(actor.tenantIds,[]))=0))
   AND datetime.realtime().epochSeconds<$expires
   AND NOT EXISTS { MATCH(other:User {id:$subject}) WHERE other<>staff_user }
   AND NOT EXISTS { MATCH(other:StaffMember {id:$actor}) WHERE other<>actor }

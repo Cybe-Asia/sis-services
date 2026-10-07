@@ -106,7 +106,18 @@ pub async fn execute(graph: &Graph, actor: &Actor, c: &Command) -> Result<Receip
     }
 }
 
-const DIRECTORY: &str = "MATCH(staff_user:User {id:$subject})-[link:STAFF_MEMBER]->(actor:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) WHERE any(r IN coalesce(actor.roles,[]) WHERE r IN $roles) AND size(coalesce(actor.teamIds,[]))=0 AND datetime.realtime().epochSeconds<$expires AND NOT EXISTS {MATCH(other:User {id:$subject}) WHERE other<>staff_user} AND NOT EXISTS {MATCH(other:StaffMember {id:$actor}) WHERE other<>actor} AND NOT EXISTS {MATCH(staff_user)-[other:STAFF_MEMBER]->() WHERE other<>link} AND NOT EXISTS {MATCH(other:User)-[:STAFF_MEMBER]->(actor) WHERE other<>staff_user} WITH actor MATCH(school:School) WHERE (('owner' IN coalesce(actor.roles,[]) AND size(coalesce(actor.schoolIds,[]))=0 AND size(coalesce(actor.tenantIds,[]))=0) OR (school.school_id IN coalesce(actor.schoolIds,[]) AND school.tenant_id IN coalesce(actor.tenantIds,[]))) AND coalesce(school.school_id,'')<>'' AND coalesce(school.tenant_id,'')<>'' AND NOT EXISTS {MATCH(other:School {school_id:school.school_id,tenant_id:school.tenant_id}) WHERE other<>school}";
+/// Who may place a paid, accepted applicant into a SIS section. Admissions
+/// managers (`admissions_admin` is the legacy name) may act school-scoped or
+/// unscoped (tenant-wide, as in admission-service); school administrators
+/// only within their schools; owners unscoped. Keep in sync with
+/// `current.cypher` (asserted by a unit test).
+pub(super) const PLACEMENT_ROLES: [&str; 4] =
+    ["owner", "school_admin", "admissions_admin", "admissions_manager"];
+pub(super) fn placement_roles() -> Vec<String> {
+    PLACEMENT_ROLES.iter().map(|role| role.to_string()).collect()
+}
+
+const DIRECTORY: &str = "MATCH(staff_user:User {id:$subject})-[link:STAFF_MEMBER]->(actor:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) WHERE any(r IN coalesce(actor.roles,[]) WHERE r IN $roles) AND size(coalesce(actor.teamIds,[]))=0 AND datetime.realtime().epochSeconds<$expires AND NOT EXISTS {MATCH(other:User {id:$subject}) WHERE other<>staff_user} AND NOT EXISTS {MATCH(other:StaffMember {id:$actor}) WHERE other<>actor} AND NOT EXISTS {MATCH(staff_user)-[other:STAFF_MEMBER]->() WHERE other<>link} AND NOT EXISTS {MATCH(other:User)-[:STAFF_MEMBER]->(actor) WHERE other<>staff_user} WITH actor MATCH(school:School) WHERE (('owner' IN coalesce(actor.roles,[]) AND size(coalesce(actor.schoolIds,[]))=0 AND size(coalesce(actor.tenantIds,[]))=0) OR (school.school_id IN coalesce(actor.schoolIds,[]) AND school.tenant_id IN coalesce(actor.tenantIds,[])) OR (any(r IN coalesce(actor.roles,[]) WHERE r IN $roles AND r IN ['admissions_manager','admissions_admin']) AND size(coalesce(actor.schoolIds,[]))=0 AND size(coalesce(actor.tenantIds,[]))=0)) AND coalesce(school.school_id,'')<>'' AND coalesce(school.tenant_id,'')<>'' AND NOT EXISTS {MATCH(other:School {school_id:school.school_id,tenant_id:school.tenant_id}) WHERE other<>school}";
 pub(super) fn directory(actor: &Actor, roles: Vec<String>, suffix: &str) -> Query {
     query(&format!("{DIRECTORY} {suffix}"))
         .param("subject", actor.subject.clone())

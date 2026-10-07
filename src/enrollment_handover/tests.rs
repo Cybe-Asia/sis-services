@@ -229,3 +229,69 @@ async fn denial_gates_legacy_preservation_and_queued_revocation() {
         g.run(query("MATCH(n) WHERE n.hs_test=$mark OR (n:EnrolledStudent AND n.applicant_student_id=$student) OR (n:SISEnrollmentHandover AND n.student_id=$student) OR (n:SISEnrollmentAudit AND n.student_id=$student) DETACH DELETE n").param("mark",mark).param("student",c.student_id)).await.unwrap();
     }
 }
+
+#[test]
+fn placement_roles_match_the_execution_guard() {
+    let guard = include_str!("current.cypher");
+    for role in repository::PLACEMENT_ROLES {
+        assert!(guard.contains(&format!("'{role}'")), "{role} missing from current.cypher");
+    }
+    assert!(repository::PLACEMENT_ROLES.contains(&"admissions_manager"));
+    assert!(!repository::PLACEMENT_ROLES.contains(&"admissions_staff"));
+}
+
+/// Admissions managers place students school-scoped or unscoped (tenant-wide,
+/// as in admission-service); admissions staff, unscoped school admins and
+/// managers scoped to another school are refused.
+#[tokio::test]
+#[ignore = "requires isolated graph; never primary3213/3223"]
+async fn admissions_managers_can_place_but_staff_and_foreign_scopes_cannot() {
+    let g = graph().await;
+    repository::migrate(&g).await.unwrap();
+    for (roles, scope, allowed) in [
+        (vec!["admissions_manager"], "unscoped", true),
+        (vec!["admissions_manager"], "own", true),
+        (vec!["admissions_admin"], "unscoped", true),
+        (vec!["admissions_manager"], "other", false),
+        (vec!["admissions_staff"], "unscoped", false),
+        (vec!["admissions_staff"], "own", false),
+        (vec!["school_admin"], "unscoped", false),
+        (vec!["marketing_manager", "finance_approver"], "unscoped", false),
+    ] {
+        let mark = format!("hs-{}", uuid::Uuid::new_v4());
+        let c = command(&mark);
+        let a = Actor {
+            subject: format!("{mark}-admin"),
+            staff: format!("{mark}-staff"),
+            expires: chrono::Utc::now().timestamp() + 600,
+        };
+        fixture(&g, &mark, &c, &a).await;
+        let (schools, tenants): (Vec<String>, Vec<String>) = match scope {
+            "own" => (vec![c.school_id.clone()], vec![c.tenant_id.clone()]),
+            "other" => (vec![format!("{mark}-other-school")], vec![c.tenant_id.clone()]),
+            _ => (vec![], vec![]),
+        };
+        g.run(
+            query("MATCH(s:StaffMember {id:$id}) SET s.roles=$roles, s.schoolIds=$schools, s.tenantIds=$tenants")
+                .param("id", a.staff.clone())
+                .param("roles", roles.clone())
+                .param("schools", schools)
+                .param("tenants", tenants),
+        )
+        .await
+        .unwrap();
+        let context = super::context::context(&g, &a).await;
+        let outcome = repository::execute(&g, &a, &c).await;
+        let placed = count(&g, "MATCH(e:EnrolledStudent {applicant_student_id:$student}) RETURN count(e) AS n", &c.student_id).await;
+        g.run(query("MATCH(n) WHERE n.hs_test=$mark OR (n:EnrolledStudent AND n.applicant_student_id=$student) OR (n:SISEnrollmentHandover AND n.student_id=$student) OR (n:SISEnrollmentAudit AND n.student_id=$student) DETACH DELETE n").param("mark", mark.clone()).param("student", c.student_id.clone()))
+            .await
+            .unwrap();
+        assert_eq!(outcome.is_ok(), allowed, "{roles:?} {scope}: {outcome:?}");
+        assert_eq!(placed, i64::from(allowed), "{roles:?} {scope}");
+        if allowed {
+            assert!(context.is_ok(), "{roles:?} {scope} context");
+        } else if scope != "other" {
+            assert!(matches!(context, Err(repository::Error::Denied)), "{roles:?} {scope} context");
+        }
+    }
+}
