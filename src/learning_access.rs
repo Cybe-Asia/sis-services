@@ -202,6 +202,7 @@ pub(crate) async fn administrator_actor(
 mod class_meetings;
 mod context;
 mod owner;
+mod parent_binding;
 mod prework_policy;
 pub(crate) mod timetable;
 
@@ -421,6 +422,7 @@ pub fn router() -> Router<AppState> {
         .merge(class_meetings::router())
         .merge(timetable::router())
         .merge(owner::router())
+        .merge(parent_binding::router())
         .route(
             "/api/v1/sis-service/learning/context",
             axum::routing::get(context::context),

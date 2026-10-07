@@ -42,7 +42,7 @@
     "src/handlers/mod.rs": "9c772fe95d3c6480debf8649293243d90d26be7a1896c38723a84b7861eed976",
     "src/handlers/parent_request_handler.rs": "0ef09ca4facd7468c561a4d8065531961ad9938a1b115a1944c1f0865ec0d553",
     "src/handlers/sis_handler.rs": "25c36ec04d61524b57fdf0f37e4d603a1e210f937dc853540ae04389a677615c",
-    "src/learning_access.rs": "8b4027b3d8a89ac8114d99a7d9f779b83778ec25d5bfba4c3f67521d55a6d4ea",
+    "src/learning_access.rs": "b24eaa1b49d18f4a24f019c4e0657b442b4551125549e938776377168f59795b",
     "src/learning_access/class_meetings.rs": "9f95505c79f6ed76a8201de455bc11e291ee48d259fa4764a2376cd67d0eafd2",
     "src/learning_access/context.rs": "8402a407e8837965b56f30db3bb95839e10afa3799469423b4790f12fa818393",
     "src/learning_access/database_tests.rs": "d2f5d7056453ed5ebda64a2b15dbb125453f5f16d99d1f73bf1f8e306bbf79cc",
@@ -100,7 +100,8 @@
     "src/utils/mod.rs": "63d7d1b476d50a5a95b26c61a69de6af35b3ef4adb3fee359ebf61d62afc3adc",
     "src/utils/response.rs": "fc7482bd9cdb4baeebc7414e4c0f9eab9399f0d998a6f70f0b0e2280b4ba6af2",
     "Dockerfile": "298aa76ec0efc38b8b25b6828a7093df88351d13dd08f713679d2de46528accb",
-    ".dockerignore": "358b746c9957fa4be9d98980415ecad7ec539cd712c004df60d7a39414c75e73"
+    ".dockerignore": "358b746c9957fa4be9d98980415ecad7ec539cd712c004df60d7a39414c75e73",
+    "src/learning_access/parent_binding.rs": "f61bf246a723295fea30d1087e4caa46e8b5b0dfc6319c7aee782ded34a20d72"
   },
   "testedRuntimeFreeze": {
     "Cargo.lock": "0e912aecca4edad25752a70f20b022e9774b8fb5d66f776eabba3617e40be888",
