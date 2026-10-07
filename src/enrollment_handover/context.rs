@@ -5,6 +5,13 @@ use super::{
 use neo4rs::Graph;
 use serde_json::{json, Value};
 const CURRENT: &str = include_str!("current.cypher");
+/// Paid, accepted, not yet enrolled offers in `$school`/`$tenant` whose year
+/// group and academic year have no active class (grouped, counts only).
+const WAITING: &str = "MATCH (s:Student {applicantStatus:'enrolment_paid'})-[:HAS_OFFER]->(o:Offer {tenant_id:$tenant,target_school_id:$school,status:'accepted',payment_status:'paid'}) \
+WHERE NOT EXISTS {MATCH(s)-[:ENROLLED_AS]->()} AND NOT EXISTS {MATCH(:EnrolledStudent {applicant_student_id:s.studentId})} \
+AND coalesce(o.target_year_group,'')<>'' AND coalesce(o.academic_year,'')<>'' \
+AND NOT EXISTS {MATCH(:Section {school_id:$school,tenant_id:$tenant,status:'active',year_group:o.target_year_group,academic_year:o.academic_year})} \
+RETURN o.target_year_group AS year,o.academic_year AS academic,count(DISTINCT s) AS students ORDER BY year,academic LIMIT 50";
 pub async fn context(graph: &Graph, actor: &Actor) -> Result<Value, Error> {
     let mut rows=graph.execute(directory(actor,placement_roles(),"RETURN school.school_id AS school,school.tenant_id AS tenant,coalesce(school.name,school.school_id) AS name ORDER BY school,tenant LIMIT 65")).await.map_err(|_|Error::Unavailable)?;
     let mut scopes = Vec::new();
@@ -26,6 +33,10 @@ pub async fn context(graph: &Graph, actor: &Actor) -> Result<Value, Error> {
     let mut schools = Vec::new();
     let mut sections = Vec::new();
     let mut candidates = Vec::new();
+    // Paid, accepted offers that cannot be placed yet because no active class
+    // matches their school, year group and academic year. Aggregated counts
+    // only: staff need the class to create, not the children's details.
+    let mut waiting = Vec::new();
     let family = include_str!("family.cypher")
         .split("WITH collect")
         .next()
@@ -106,6 +117,35 @@ pub async fn context(graph: &Graph, actor: &Actor) -> Result<Value, Error> {
             }
             candidates.push(json!({"studentId":row.get::<String>("student").map_err(|_|Error::Unavailable)?,"payerUserId":row.get::<String>("payer").map_err(|_|Error::Unavailable)?,"admissionId":row.get::<String>("admission").map_err(|_|Error::Unavailable)?,"applicationId":row.get::<String>("application").map_err(|_|Error::Unavailable)?,"offerId":row.get::<String>("offer").map_err(|_|Error::Unavailable)?,"paymentId":row.get::<String>("payment").map_err(|_|Error::Unavailable)?,"offerRevision":row.get::<i64>("revision").map_err(|_|Error::Unavailable)?,"pricingSnapshotHash":row.get::<String>("hash").map_err(|_|Error::Unavailable)?,"studentName":row.get::<String>("name").map_err(|_|Error::Unavailable)?,"payerName":row.get::<String>("parent").map_err(|_|Error::Unavailable)?,"yearGroup":row.get::<String>("year").map_err(|_|Error::Unavailable)?,"academicYear":row.get::<String>("academic").map_err(|_|Error::Unavailable)?,"schoolId":school,"tenantId":tenant}));
         }
+        let mut found = graph
+            .execute(
+                directory(actor,placement_roles(),&format!("AND school.school_id=$school AND school.tenant_id=$tenant CALL {{ {WAITING} }} RETURN year,academic,students"))
+                    .param("school", school.clone())
+                    .param("tenant", tenant.clone()),
+            )
+            .await
+            .map_err(|_| Error::Unavailable)?;
+        while let Some(row) = found.next().await.map_err(|_| Error::Unavailable)? {
+            if waiting.len() >= 50 {
+                break;
+            }
+            waiting.push(json!({"schoolId":school,"tenantId":tenant,"yearGroup":row.get::<String>("year").map_err(|_|Error::Unavailable)?,"academicYear":row.get::<String>("academic").map_err(|_|Error::Unavailable)?,"students":row.get::<i64>("students").map_err(|_|Error::Unavailable)?}));
+        }
     }
-    Ok(json!({"contractVersion":1,"schools":schools,"sections":sections,"candidates":candidates}))
+    Ok(json!({"contractVersion":1,"schools":schools,"sections":sections,"candidates":candidates,"waiting":waiting}))
+}
+
+#[cfg(test)]
+mod waiting_tests {
+    use super::WAITING;
+    #[test]
+    fn waiting_classes_are_scoped_aggregated_and_exclude_enrolled_or_placeable_students() {
+        assert!(WAITING.contains("target_school_id:$school") && WAITING.contains("tenant_id:$tenant"));
+        assert!(WAITING.contains("status:'accepted',payment_status:'paid'"));
+        assert!(WAITING.contains("NOT EXISTS {MATCH(s)-[:ENROLLED_AS]->()}"));
+        assert!(WAITING.contains("NOT EXISTS {MATCH(:Section {school_id:$school,tenant_id:$tenant,status:'active',year_group:o.target_year_group,academic_year:o.academic_year})}"));
+        let returned = WAITING.split("RETURN").nth(1).unwrap();
+        assert!(!returned.contains("fullName") && !returned.contains("studentId"));
+        assert!(returned.contains("count(DISTINCT s) AS students"));
+    }
 }
