@@ -49,6 +49,8 @@ async fn seed_owned_browser_fixture() {
     };
     let a = Activity {
         presentation: None,
+        featured: false,
+        competitive: false,
         id: mark.clone(),
         title: Text {
             en: "Robotics · synthetic acceptance".into(),
@@ -75,6 +77,7 @@ async fn seed_owned_browser_fixture() {
                 id: "Workshop sensor".into(),
             },
             location: text("Lab"),
+            kind: "training".into(),
         }],
         criteria: vec![Criterion {
             id: format!("{mark}-criterion"),

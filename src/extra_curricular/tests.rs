@@ -10,6 +10,8 @@ fn text(s: &str) -> Text {
 fn activity(id: &str, coach: &str, section: &str) -> Activity {
     Activity {
         presentation: None,
+        featured: false,
+        competitive: false,
         id: id.into(),
         title: text("Robotics"),
         summary: text("School robotics"),
@@ -27,6 +29,7 @@ fn activity(id: &str, coach: &str, section: &str) -> Activity {
             end: "16:00".into(),
             title: text("Build"),
             location: text("Lab"),
+            kind: "training".into(),
         }],
         criteria: vec![Criterion {
             id: "collaboration".into(),
@@ -46,6 +49,27 @@ fn validation_rejects_unknown_authority_and_invalid_catalog() {
     assert!(!a.valid());
     let raw = json!({"scope":{"schoolId":"s","tenantId":"t","academicYear":"2026","studentId":null,"after":null},"activityId":"a","revision":0,"requestId":"r","command":{"action":"enroll","role":"admin"}});
     assert!(serde_json::from_value::<Change>(raw).is_err());
+    a.image = None;
+    assert!(a.valid());
+    a.meetings[0].kind = "tournament".into();
+    assert!(!a.valid());
+    let stored: Meeting = serde_json::from_value(json!({"id":"m","date":"2026-10-08","start":"15:00","end":"16:00","title":{"en":"A","id":"A"},"location":{"en":"B","id":"B"}})).unwrap();
+    assert_eq!(stored.kind, "training");
+}
+#[test]
+fn role_and_result_commands_are_bounded() {
+    let change = |student: Option<&str>, command: serde_json::Value| {
+        serde_json::from_value::<Change>(json!({"scope":{"schoolId":"s","tenantId":"t","academicYear":"2026","studentId":student,"after":null},"activityId":"a","revision":0,"requestId":"r","command":command})).map(|c| c.valid())
+    };
+    let role = json!({"action":"role","role":{"en":"Captain","id":"Kapten"},"roleStatus":null,"jersey":"#7"});
+    assert_eq!(change(Some("s1"), role.clone()).unwrap(), true);
+    assert_eq!(change(None, role).unwrap(), false);
+    for bad in ["#1234", "seven", "#", ""] {
+        assert_eq!(change(Some("s1"), json!({"action":"role","role":{"en":"Captain","id":"Kapten"},"roleStatus":null,"jersey":bad})).unwrap(), false);
+    }
+    assert_eq!(change(None, json!({"action":"result","meetingId":"m1","outcome":"draw","score":"2 : 2"})).unwrap(), true);
+    assert_eq!(change(None, json!({"action":"result","meetingId":"m1","outcome":"forfeit","score":null})).unwrap(), false);
+    assert_eq!(change(None, json!({"action":"result","meetingId":"m1","outcome":"win","score":"<b>3</b>"})).unwrap(), false);
 }
 #[tokio::test]
 #[ignore = "requires isolated EXTRACURRICULAR_TEST_BOLT=127.0.0.1:3223"]
@@ -98,7 +122,20 @@ async fn owner_lifecycle_capacity_consent_retry_release_and_isolation() {
         revision: 0,
         request_id: "save".into(),
         command: Command::Save {
-            activity: activity("robotics", &coach, &section),
+            activity: {
+                let mut a = activity("robotics", &coach, &section);
+                a.competitive = true;
+                a.meetings.push(Meeting {
+                    id: "match-1".into(),
+                    date: "2026-10-10".into(),
+                    start: "09:00".into(),
+                    end: "11:00".into(),
+                    title: text("Regional round"),
+                    location: text("Hall"),
+                    kind: "match".into(),
+                });
+                a
+            },
         },
     };
     assert_eq!(
@@ -235,6 +272,43 @@ async fn owner_lifecycle_capacity_consent_retry_release_and_isolation() {
         list(&g, &pa, &approve.scope).await.unwrap().unwrap()["items"][0]["outcome"],
         released
     );
+    // Coach-assigned role is versioned apart from the family's enrollment revision.
+    let mut role = attendance.clone();
+    role.scope.student_id = Some(student.0.clone());
+    role.revision = 0;
+    role.request_id = "role".into();
+    role.command = Command::Role {
+        role: text("Captain"),
+        role_status: Some(text("Starter")),
+        jersey: Some("#7".into()),
+    };
+    assert!(change(&g, &sa, &role).await.unwrap().is_none());
+    assert_eq!(change(&g, &teacher, &role).await.unwrap().unwrap()["revision"], 1);
+    role.request_id = "role-stale".into();
+    assert!(change(&g, &teacher, &role).await.unwrap().is_none());
+    // Results only for matches of a competitive activity, versioned with the meeting record.
+    let mut result = attendance.clone();
+    result.request_id = "result-training".into();
+    result.revision = 0;
+    result.command = Command::Result {
+        meeting_id: "meet-1".into(),
+        outcome: "win".into(),
+        score: None,
+    };
+    assert!(change(&g, &teacher, &result).await.unwrap().is_none());
+    result.request_id = "result-match".into();
+    result.command = Command::Result {
+        meeting_id: "match-1".into(),
+        outcome: "win".into(),
+        score: Some("54–48".into()),
+    };
+    assert_eq!(change(&g, &teacher, &result).await.unwrap().unwrap()["revision"], 1);
+    let family = list(&g, &pa, &approve.scope).await.unwrap().unwrap();
+    assert_eq!(family["items"][0]["enrollment"]["role"]["en"], "Captain");
+    assert_eq!(family["items"][0]["enrollment"]["jersey"], "#7");
+    assert_eq!(family["items"][0]["enrollment"]["revision"], 2);
+    assert_eq!(family["items"][0]["meetingResults"]["match-1"]["outcome"], "win");
+    assert_eq!(family["items"][0]["meetingResults"]["match-1"]["score"], "54–48");
     v.revision = 1;
     let mut consent_change = v.clone();
     consent_change.request_id = "edit-consent-policy".into();
@@ -258,6 +332,9 @@ async fn owner_lifecycle_capacity_consent_retry_release_and_isolation() {
         change(&g, &pa, &withdraw).await.unwrap().unwrap()["status"],
         "withdrawn"
     );
+    let kept = list(&g, &pa, &approve.scope).await.unwrap().unwrap();
+    assert_eq!(kept["items"][0]["enrollment"]["status"], "withdrawn");
+    assert_eq!(kept["items"][0]["enrollment"]["roleStatus"]["en"], "Starter");
     let other = if winner == 0 { a1 } else { a0 };
     assert!(change(&g, &other, &enroll).await.unwrap().is_some());
     g.run(

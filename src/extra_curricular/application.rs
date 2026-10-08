@@ -71,10 +71,22 @@ pub async fn execute<S: ChangeStore>(
             ) else {
                 return Ok(None);
             };
-            let e = Enrollment {
-                student_id: student.into(),
-                revision: old.map_or(1, |e| e.revision + 1),
-                status,
+            // A family status change keeps the coach-assigned role and its own revision.
+            let e = match old {
+                Some(old) => Enrollment {
+                    revision: old.revision + 1,
+                    status,
+                    ..old
+                },
+                None => Enrollment {
+                    student_id: student.into(),
+                    revision: 1,
+                    status,
+                    role: None,
+                    role_status: None,
+                    jersey: None,
+                    role_revision: 0,
+                },
             };
             store.save_enrollment(&e).await?;
             Receipt {
@@ -141,6 +153,62 @@ pub async fn execute<S: ChangeStore>(
             let mut receipt = Receipt::revision(revision);
             receipt.released = Some(false);
             receipt
+        }
+        Command::Role {
+            role,
+            role_status,
+            jersey,
+        } => {
+            let Some(student) = input.scope.student_id.as_deref() else {
+                return Ok(None);
+            };
+            if !matches!(actor.role.as_str(), "teacher" | "owner")
+                || !store.roster_authorized(&[student.into()]).await?
+            {
+                return Ok(None);
+            }
+            let Some(mut e) = store.enrollment(student).await? else {
+                return Ok(None);
+            };
+            if e.status != "enrolled" || e.role_revision != input.revision {
+                return Ok(None);
+            }
+            e.role = Some(role.clone());
+            e.role_status = role_status.clone();
+            e.jersey = jersey.clone();
+            e.role_revision += 1;
+            store.save_enrollment(&e).await?;
+            Receipt {
+                revision: e.role_revision,
+                student_id: Some(e.student_id),
+                status: None,
+                released: None,
+            }
+        }
+        Command::Result {
+            meeting_id,
+            outcome,
+            score,
+        } => {
+            let Some(c) = current.as_ref() else {
+                return Ok(None);
+            };
+            if !matches!(actor.role.as_str(), "teacher" | "owner")
+                || !c.activity.competitive
+                || !c
+                    .activity
+                    .meetings
+                    .iter()
+                    .any(|m| &m.id == meeting_id && m.kind == "match")
+                || store.meeting_revision(meeting_id).await? != input.revision
+            {
+                return Ok(None);
+            }
+            let revision = input.revision + 1;
+            store
+                .save_result(meeting_id, revision, outcome, score.as_deref())
+                .await?;
+            Receipt::revision(revision)
         }
         Command::Release {} => {
             let Some(student) = input.scope.student_id.as_deref() else {

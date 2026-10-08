@@ -209,6 +209,18 @@ impl ChangeStore for GraphChange<'_> {
         self.row(q).await?.ok_or("meeting missing")?;
         Ok(())
     }
+    async fn save_result(
+        &mut self,
+        meeting: &str,
+        revision: u32,
+        outcome: &str,
+        score: Option<&str>,
+    ) -> Result<(), Error> {
+        let payload = json!({"meetingId":meeting,"outcome":outcome,"score":score,"revision":revision});
+        let q=query("MERGE(m:ExtraCurricularMeetingRecord {key:$mk}) SET m.activity_key=$key,m.meeting_id=$meeting,m.revision=$revision,m.result=$payload RETURN m.revision AS revision").param("mk",format!("{}|{meeting}",self.key)).param("key",self.key.clone()).param("meeting",meeting).param("revision",i64::from(revision)).param("payload",serde_json::to_string(&payload)?);
+        self.row(q).await?.ok_or("meeting missing")?;
+        Ok(())
+    }
     async fn outcome(&mut self, student: &str) -> Result<Option<Outcome>, Error> {
         let q = query("MATCH(r:ExtraCurricularOutcome {key:$ok}) RETURN r.payload AS payload")
             .param("ok", format!("{}|{student}", self.key));

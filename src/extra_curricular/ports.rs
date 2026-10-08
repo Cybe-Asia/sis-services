@@ -14,6 +14,18 @@ pub struct Enrollment {
     pub student_id: String,
     pub revision: u32,
     pub status: String,
+    /// Coach-assigned team role; versioned apart from the family's enrollment revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Text>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_status: Option<Text>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jersey: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub role_revision: u32,
+}
+fn is_zero(v: &u32) -> bool {
+    *v == 0
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +82,13 @@ pub trait ChangeStore {
         meeting: &str,
         revision: u32,
         marks: &[Mark],
+    ) -> Result<(), Self::Error>;
+    async fn save_result(
+        &mut self,
+        meeting: &str,
+        revision: u32,
+        outcome: &str,
+        score: Option<&str>,
     ) -> Result<(), Self::Error>;
     async fn outcome(&mut self, student: &str) -> Result<Option<Outcome>, Self::Error>;
     async fn save_outcome(&mut self, outcome: &Outcome) -> Result<(), Self::Error>;

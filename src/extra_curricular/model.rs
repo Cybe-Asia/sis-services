@@ -23,6 +23,12 @@ pub struct Meeting {
     pub end: String,
     pub title: Text,
     pub location: Text,
+    /// `training` (practice hours) or `match` (the activity's event: match, ceremony, showcase).
+    #[serde(default = "training")]
+    pub kind: String,
+}
+fn training() -> String {
+    "training".into()
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -86,6 +92,12 @@ pub struct Activity {
     pub criteria: Vec<Criterion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presentation: Option<CatalogPresentation>,
+    /// Highlighted in the student catalogue.
+    #[serde(default)]
+    pub featured: bool,
+    /// Matches record a win, loss or draw.
+    #[serde(default)]
+    pub competitive: bool,
 }
 fn unique<'a>(ids: impl Iterator<Item = &'a str>) -> bool {
     let mut seen = BTreeSet::new();
@@ -130,6 +142,7 @@ impl Activity {
                     && m.start < m.end
                     && m.title.valid(160)
                     && m.location.valid(160)
+                    && matches!(m.kind.as_str(), "training" | "match")
             })
             && self.criteria.len() <= 30
             && unique(self.criteria.iter().map(|c| c.id.as_str()))
@@ -214,6 +227,32 @@ pub enum Command {
         achievements: Vec<Text>,
     },
     Release {},
+    /// Coach-assigned team role for `scope.studentId`; `revision` is the enrollment's role revision.
+    Role {
+        role: Text,
+        #[serde(rename = "roleStatus")]
+        role_status: Option<Text>,
+        jersey: Option<String>,
+    },
+    /// Result of a `match` meeting of a competitive activity; `revision` is the meeting's revision.
+    Result {
+        #[serde(rename = "meetingId")]
+        meeting_id: String,
+        outcome: String,
+        score: Option<String>,
+    },
+}
+/// "#7", "7" or "07"; at most three digits.
+pub fn jersey(s: &str) -> bool {
+    let digits = s.strip_prefix('#').unwrap_or(s);
+    (1..=3).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit())
+}
+/// "54–48", "3-1", "2 : 0"; digits, separators and spaces only.
+pub fn score(s: &str) -> bool {
+    !s.trim().is_empty()
+        && s.chars().count() <= 20
+        && s.chars().any(|c| c.is_ascii_digit())
+        && s.chars().all(|c| c.is_ascii_digit() || matches!(c, ' ' | '-' | '–' | ':' | '/'))
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -253,6 +292,25 @@ impl Change {
                         && feedback.valid(4000)
                         && achievements.len() <= 30
                         && achievements.iter().all(|t| t.valid(500))
+                }
+                Command::Role {
+                    role,
+                    role_status,
+                    jersey: number,
+                } => {
+                    self.scope.student_id.is_some()
+                        && role.valid(60)
+                        && role_status.as_ref().is_none_or(|t| t.valid(60))
+                        && number.as_deref().is_none_or(jersey)
+                }
+                Command::Result {
+                    meeting_id,
+                    outcome,
+                    score: value,
+                } => {
+                    identifier(meeting_id)
+                        && matches!(outcome.as_str(), "win" | "loss" | "draw")
+                        && value.as_deref().is_none_or(score)
                 }
                 _ => true,
             }

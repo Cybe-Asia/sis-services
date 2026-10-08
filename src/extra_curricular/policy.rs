@@ -92,6 +92,8 @@ mod tests {
         };
         let a = Activity {
             presentation: None,
+            featured: false,
+            competitive: false,
             id: "a".into(),
             title: text.clone(),
             summary: text.clone(),

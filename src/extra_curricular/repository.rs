@@ -92,6 +92,17 @@ pub async fn list(g: &Graph, a: &Actor, s: &Scope) -> Result<Option<Value>, Erro
             .ok_or("coach missing")?
             .get::<String>("name")?;
         let mut item = json!({"activity":activity,"revision":row.get::<i64>("revision")?,"archived":row.get::<bool>("archived")?,"occupied":count,"enrolledCount":enrolled_count,"coachName":coach_name});
+        // Match results are team records, visible to everyone who can see the activity.
+        let mut recorded=g.execute(query("MATCH(m:ExtraCurricularMeetingRecord {activity_key:$key}) WHERE m.result IS NOT NULL RETURN m.meeting_id AS id,m.result AS result ORDER BY id LIMIT 101").param("key",key.clone())).await?;
+        let mut results = serde_json::Map::new();
+        while let Some(r) = recorded.next().await? {
+            if results.len() == 100 {
+                return Err("result limit".into());
+            }
+            let value: Value = serde_json::from_str(&r.get::<String>("result")?)?;
+            results.insert(r.get::<String>("id")?, json!({"outcome":value["outcome"],"score":value["score"]}));
+        }
+        item["meetingResults"] = json!(results);
         if family {
             let student: String = row.get("student")?;
             item["studentId"] = json!(student);
