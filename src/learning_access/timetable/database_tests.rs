@@ -108,6 +108,8 @@ fn meeting(mark: &str, id: &str, class: &str, teacher: &str, room: &str, day: u6
         ends_at: starts + 3_600_000,
         academic_year: "2030/2031".into(),
         room_id: room.into(),
+        chapter_id: None,
+        lesson_id: None,
     }
 }
 fn staff_token(who: &str) -> String {

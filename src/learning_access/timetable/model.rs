@@ -17,6 +17,11 @@ pub struct Meeting {
     pub ends_at: u64,
     pub academic_year: String,
     pub room_id: String,
+    /// Optional material link: the published course chapter (and lesson) taught in this meeting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapter_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lesson_id: Option<String>,
 }
 impl Meeting {
     pub fn valid(&self) -> bool {
@@ -32,6 +37,9 @@ impl Meeting {
         ]
         .iter()
         .all(|s| identifier(s))
+            && self.chapter_id.as_deref().is_none_or(identifier)
+            && self.lesson_id.as_deref().is_none_or(identifier)
+            && (self.lesson_id.is_none() || self.chapter_id.is_some())
             && !self.academic_year.trim().is_empty()
             && self.academic_year.len() <= 32
             && !self.academic_year.chars().any(char::is_control)

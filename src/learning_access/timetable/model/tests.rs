@@ -17,6 +17,8 @@ fn meeting() -> Meeting {
             .timestamp_millis() as u64,
         academic_year: "2030/2031".into(),
         room_id: "room-a".into(),
+        chapter_id: None,
+        lesson_id: None,
     }
 }
 #[test]
@@ -90,4 +92,31 @@ fn meeting_key_matches_existing_owner_and_scope_is_unambiguous() {
     let old = m.school_key();
     m.school_id = "other".into();
     assert_ne!(old, m.school_key());
+}
+#[test]
+fn material_link_is_optional_and_lesson_needs_its_chapter() {
+    let mut m = meeting();
+    m.chapter_id = Some("chapter-1".into());
+    assert!(m.valid());
+    m.lesson_id = Some("lesson-1".into());
+    assert!(m.valid());
+    m.lesson_id = Some("lesson / injected".into());
+    assert!(!m.valid());
+    m.chapter_id = None;
+    m.lesson_id = Some("lesson-1".into());
+    assert!(!m.valid());
+    let legacy = serde_json::to_value(meeting()).unwrap();
+    assert!(legacy.get("chapterId").is_none() && legacy.get("lessonId").is_none());
+    let linked: Meeting = serde_json::from_value(
+        serde_json::json!({"chapterId":"chapter-1","lessonId":"lesson-1"})
+            .as_object()
+            .unwrap()
+            .iter()
+            .fold(legacy, |mut v, (k, x)| {
+                v[k] = x.clone();
+                v
+            }),
+    )
+    .unwrap();
+    assert_eq!(linked.lesson_id.as_deref(), Some("lesson-1"));
 }
