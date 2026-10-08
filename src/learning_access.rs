@@ -199,7 +199,7 @@ pub(crate) async fn administrator_actor(
         if owner { "owner" } else { "school_admin" }.into(),
     ))
 }
-mod class_meetings;
+pub(crate) mod class_meetings;
 mod context;
 mod owner;
 mod parent_binding;

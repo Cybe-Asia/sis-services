@@ -72,7 +72,7 @@ pub(super) async fn learning_context(
         }
     }
     let year = year.ok_or_else(|| failure(StatusCode::FORBIDDEN))?;
-    let mut rows=state.graph.execute(query("MATCH(m:LearningClassMeeting {school_id:$school,tenant_id:$tenant}) WHERE coalesce(m.status,'published')='published' AND coalesce(m.room_id,'')<>'' RETURN DISTINCT m.room_id AS room ORDER BY room LIMIT 201").param("school",scope.school_id.clone()).param("tenant",scope.tenant_id.clone())).await.map_err(|_|unavailable())?;
+    let mut rows=state.graph.execute(query("CALL { MATCH(m:LearningClassMeeting {school_id:$school,tenant_id:$tenant}) WHERE coalesce(m.status,'published')='published' AND coalesce(m.room_id,'')<>'' RETURN m.room_id AS room UNION MATCH(r:SchoolRoom {school_id:$school,tenant_id:$tenant,status:'active'}) RETURN r.id AS room } RETURN DISTINCT room ORDER BY room LIMIT 201").param("school",scope.school_id.clone()).param("tenant",scope.tenant_id.clone())).await.map_err(|_|unavailable())?;
     let mut rooms = vec![];
     while let Some(row) = rows.next().await.map_err(|_| unavailable())? {
         if rooms.len() == 200 {
@@ -139,7 +139,7 @@ pub(super) async fn context(
     if classes.is_empty() {
         return Err(failure(StatusCode::FORBIDDEN));
     }
-    let mut rooms=state.graph.execute(query("MATCH(m:LearningClassMeeting {school_id:$school,tenant_id:$tenant}) WHERE coalesce(m.status,'published')='published' AND coalesce(m.room_id,'')<>'' RETURN DISTINCT m.room_id AS room ORDER BY room LIMIT 201").param("school",scope.school_id).param("tenant",scope.tenant_id)).await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    let mut rooms=state.graph.execute(query("CALL { MATCH(m:LearningClassMeeting {school_id:$school,tenant_id:$tenant}) WHERE coalesce(m.status,'published')='published' AND coalesce(m.room_id,'')<>'' RETURN m.room_id AS room UNION MATCH(r:SchoolRoom {school_id:$school,tenant_id:$tenant,status:'active'}) RETURN r.id AS room } RETURN DISTINCT room ORDER BY room LIMIT 201").param("school",scope.school_id).param("tenant",scope.tenant_id)).await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
     let mut ids = vec![];
     while let Some(r) = rooms
         .next()

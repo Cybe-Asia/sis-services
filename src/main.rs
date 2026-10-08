@@ -43,6 +43,7 @@ mod handlers;
 mod learning_access;
 mod school_portal;
 mod education_calendar;
+mod school_rooms;
 mod extra_curricular;
 mod models;
 mod repositories;
@@ -126,6 +127,7 @@ async fn main() {
         .expect("failed to initialize school portal indexes");
 
     education_calendar::repository::init(&graph).await.expect("failed to initialize education calendar indexes");
+    school_rooms::init(&graph).await.expect("failed to initialize school room indexes");
     extra_curricular::repository::init(&graph).await.expect("extracurricular schema initialization failed");
 
     let state = AppState {
@@ -141,6 +143,7 @@ async fn main() {
         .merge(learning_access::router())
         .merge(school_portal::router())
         .merge(education_calendar::router())
+        .merge(school_rooms::router())
         .merge(extra_curricular::router())
         .merge(
             SwaggerUi::new("/api/v1/sis-service/swagger-ui")

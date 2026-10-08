@@ -78,17 +78,25 @@ pub(super) async fn migrate(
     super::timetable::repository::migrate(graph).await?;
     Ok(())
 }
+/// Published meetings of one class with read-time display names (teacher, active catalogue room).
+pub(crate) const READ: &str = "MATCH (m:LearningClassMeeting {school_id:$school,tenant_id:$tenant,class_id:$class}) WHERE coalesce(m.status,'published')='published' AND ($id='' OR m.id=$id) OPTIONAL MATCH (t:StaffMember {id:m.teacher_id}) OPTIONAL MATCH (room:SchoolRoom {key:m.tenant_id+'|'+m.school_id+'|'+toLower(coalesce(m.room_id,'')),status:'active'}) RETURN m.payload AS payload,t.displayName AS teacher_name,room.name AS room_name ORDER BY m.starts_at,m.id LIMIT 501";
 fn view(r: neo4rs::Row) -> Result<Value, Failure> {
     let payload: String = r
         .get("payload")
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
     let mut value: Value =
         serde_json::from_str(&payload).map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
-    // Read-time display name for the schedule card; never persisted in the meeting payload.
+    // Read-time display names for the schedule card; never persisted in the meeting payload.
     if let Ok(Some(name)) = r.get::<Option<String>>("teacher_name") {
         let name = name.trim();
         if !name.is_empty() && name.len() <= 256 {
             value["teacherName"] = json!(name);
+        }
+    }
+    if let Ok(Some(name)) = r.get::<Option<String>>("room_name") {
+        let name = name.trim();
+        if !name.is_empty() && name.len() <= 120 {
+            value["roomName"] = json!(name);
         }
     }
     Ok(value)
@@ -103,7 +111,7 @@ async fn read(
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let _ = owner::class_actor(&state, &headers, &s.school_id, &s.tenant_id, &s.class_id).await?;
-    let mut rows=state.graph.execute(query("MATCH (m:LearningClassMeeting {school_id:$school,tenant_id:$tenant,class_id:$class}) WHERE coalesce(m.status,'published')='published' AND ($id='' OR m.id=$id) OPTIONAL MATCH (t:StaffMember {id:m.teacher_id}) RETURN m.payload AS payload,t.displayName AS teacher_name ORDER BY m.starts_at,m.id LIMIT 501").param("school",s.school_id.clone()).param("tenant",s.tenant_id.clone()).param("class",s.class_id.clone()).param("id",s.id.clone().unwrap_or_default())).await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    let mut rows=state.graph.execute(query(READ).param("school",s.school_id.clone()).param("tenant",s.tenant_id.clone()).param("class",s.class_id.clone()).param("id",s.id.clone().unwrap_or_default())).await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
     let mut items = vec![];
     while let Some(r) = rows
         .next()
