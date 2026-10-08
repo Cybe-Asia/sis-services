@@ -85,7 +85,7 @@ pub async fn list(g: &Graph, a: &Actor, s: &Scope) -> Result<Option<Value>, Erro
         let count_row = counts.next().await?.ok_or("count missing")?;
         let count = count_row.get::<i64>("count")?;
         let enrolled_count = count_row.get::<i64>("enrolled_count")?;
-        let mut staff=g.execute(query("MATCH(t:StaffMember {id:$coach}) RETURN coalesce(t.fullName,t.name,t.id) AS name").param("coach",activity.coach_id.clone())).await?;
+        let mut staff=g.execute(query("MATCH(t:StaffMember {id:$coach}) RETURN coalesce(t.fullName,t.name,t.displayName,t.id) AS name").param("coach",activity.coach_id.clone())).await?;
         let coach_name = staff
             .next()
             .await?
