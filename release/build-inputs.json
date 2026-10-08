@@ -43,7 +43,7 @@
     "src/handlers/parent_request_handler.rs": "0ef09ca4facd7468c561a4d8065531961ad9938a1b115a1944c1f0865ec0d553",
     "src/handlers/sis_handler.rs": "25c36ec04d61524b57fdf0f37e4d603a1e210f937dc853540ae04389a677615c",
     "src/learning_access.rs": "b24eaa1b49d18f4a24f019c4e0657b442b4551125549e938776377168f59795b",
-    "src/learning_access/class_meetings.rs": "9f95505c79f6ed76a8201de455bc11e291ee48d259fa4764a2376cd67d0eafd2",
+    "src/learning_access/class_meetings.rs": "bb17e7a11c2b78bbd12782f180fe95dc122bf9a17cd74643536e547e5a6b90fb",
     "src/learning_access/context.rs": "8402a407e8837965b56f30db3bb95839e10afa3799469423b4790f12fa818393",
     "src/learning_access/database_tests.rs": "d2f5d7056453ed5ebda64a2b15dbb125453f5f16d99d1f73bf1f8e306bbf79cc",
     "src/learning_access/owner.rs": "bd3ce5597e79ebf539b83976f8fbcdc968f8c234711e82c0eaf96faa0de1983a",
