@@ -158,9 +158,38 @@ async fn learning_weekly(
     if !matches!(role.as_str(), "teacher" | "owner") {
         return Err(failure(StatusCode::FORBIDDEN));
     }
-    weekly::apply(&state.graph, &actor, &role, &headers, &input)
-        .await
-        .map(|data| Json(json!({"responseCode":200,"data":data})))
+    weekly::apply(
+        &state.graph,
+        &actor,
+        &role,
+        &headers,
+        repository::Family::Learning,
+        &input,
+    )
+    .await
+    .map(|data| Json(json!({"responseCode":200,"data":data})))
+}
+async fn portal_weekly(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    input: Result<Json<weekly::Weekly>, JsonRejection>,
+) -> Result<Json<Value>, Failure> {
+    let Json(input) = input.map_err(|_| failure(StatusCode::BAD_REQUEST))?;
+    if !input.valid() {
+        return Err(failure(StatusCode::BAD_REQUEST));
+    }
+    let (actor, role) =
+        super::administrator_actor(&headers, &input.tenant_id, &input.school_id).await?;
+    weekly::apply(
+        &state.graph,
+        &actor,
+        &role,
+        &headers,
+        repository::Family::Portal,
+        &input,
+    )
+    .await
+    .map(|data| Json(json!({"responseCode":200,"data":data})))
 }
 pub(super) fn router() -> Router<AppState> {
     Router::new()
@@ -185,6 +214,10 @@ pub(super) fn router() -> Router<AppState> {
                 .route(
                     "/api/v1/sis-service/learning/timetable/weekly",
                     axum::routing::post(learning_weekly),
+                )
+                .route(
+                    "/api/v1/sis-service/timetable/weekly",
+                    axum::routing::post(portal_weekly),
                 )
                 .layer(axum::extract::DefaultBodyLimit::max(131_072)),
         )

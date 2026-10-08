@@ -52,7 +52,7 @@
     "src/learning_access/prework_policy.rs": "e8909d70244ce4ba20b9607e36b7d9d81f7bc5ec0246158b53b5598e4efafb39",
     "src/learning_access/timetable/calendar_guard.rs": "d749404ea2795a3c6a04a8c5945b10c942dacc3e666815cbbf42784cc9cb76af",
     "src/learning_access/timetable/database_tests.rs": "d8823ef51fed5a53ed2b1ed3799dafd75c8153343bf2e8b392834ddda12bb51f",
-    "src/learning_access/timetable/mod.rs": "5bd175db98e5dfb2e427c6a15c6a6ab83d2b7fbeeb45b64f2d7acf29b19f09b8",
+    "src/learning_access/timetable/mod.rs": "d736570f38108d8a44835a1edc993a899d71aeb06da112d90bd6fa20275c600f",
     "src/learning_access/timetable/model.rs": "1762774527677516fbb53867d7f4fce928821fdd88a10a311ce87f834a52b488",
     "src/learning_access/timetable/model/tests.rs": "8a140e256819687c6494b7b0e1094454c96b8b56a3187bf75c5c2ed9b079e9af",
     "src/learning_access/timetable/reads.rs": "6437adc8b150c4e00188b27e257c6c9e5ff02d134d7c742c4b32d60649482fd7",
@@ -104,7 +104,7 @@
     "src/learning_access/parent_binding.rs": "f61bf246a723295fea30d1087e4caa46e8b5b0dfc6319c7aee782ded34a20d72",
     "src/school_rooms/mod.rs": "c06f9918bc42e0225ba0f3310e18fb1532db8b5e9764df720a96709a9ed2418b",
     "src/school_rooms/tests.rs": "4ae344b63ceff8be62ebda32c774876744907ce3a5e5a4b7052808aaa19708fc",
-    "src/learning_access/timetable/weekly.rs": "ebf40538abc3a495f3f478da2bd0c9ead048083df6a8e983dbe88415e3f09a14",
+    "src/learning_access/timetable/weekly.rs": "0f96234eb0432cbfe2c0cd64548fd589fa889a0932db2a0efe4a9bac17000681",
     "src/learning_access/timetable/weekly/tests.rs": "c2852714177785bc84df552eda3d1a1fe2844850f3122049200dd5b8eb8b31af"
   },
   "testedRuntimeFreeze": {

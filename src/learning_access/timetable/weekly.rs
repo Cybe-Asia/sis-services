@@ -1,7 +1,12 @@
 //! Weekly timetable: one set of weekly slots published as dated meetings over a bounded range.
 //! Each occurrence goes through the same calendar, time and conflict validation as a single
 //! meeting; existing occurrences are kept and invalid ones are reported, never forced.
-use super::{failure, model::Meeting, repository, validation, Failure};
+use super::{
+    failure,
+    model::Meeting,
+    repository::{self, Family},
+    validation, Failure,
+};
 use crate::school_portal::model::identifier;
 use axum::http::{HeaderMap, StatusCode};
 use chrono::{Datelike, NaiveDate, NaiveTime};
@@ -185,13 +190,14 @@ pub(super) async fn apply(
     actor: &str,
     role: &str,
     headers: &HeaderMap,
+    family: Family,
     input: &Weekly,
 ) -> Result<Value, Failure> {
     let mut tx = graph
         .start_txn()
         .await
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
-    match apply_locked(&mut tx, actor, role, headers, input).await {
+    match apply_locked(&mut tx, actor, role, headers, family, input).await {
         Ok(value) => {
             tx.commit()
                 .await
@@ -209,13 +215,16 @@ async fn apply_locked(
     actor: &str,
     role: &str,
     headers: &HeaderMap,
+    family: Family,
     input: &Weekly,
 ) -> Result<Value, Failure> {
     let denied = || failure(StatusCode::FORBIDDEN);
     let conflict = || failure(StatusCode::CONFLICT);
     let unavailable = || failure(StatusCode::SERVICE_UNAVAILABLE);
     let teachers: BTreeSet<String> = input.slots.iter().map(|s| s.teacher_id.clone()).collect();
-    if role == "teacher" && teachers.iter().any(|t| t != actor) {
+    if role == "teacher"
+        && (teachers.iter().any(|t| t != actor) || !matches!(family, Family::Learning))
+    {
         return Err(denied());
     }
     // Same lock order as single-meeting changes: school -> Teachers (sorted) -> Staff -> Section.
@@ -231,12 +240,23 @@ async fn apply_locked(
     if field::<i64>(&count, "count")? != ids.len() as i64 {
         return Err(denied());
     }
-    let staff =
-        crate::school_portal::auth::teacher_in(headers, &input.school_id, &input.tenant_id).await?;
-    if (staff.staff_member_id.as_str(), staff.role()) != (actor, role) {
+    // Revalidate the caller after taking locks, through its own family (Admin Portal or Learning).
+    let current = match family {
+        Family::Portal => {
+            super::super::administrator_actor(headers, &input.tenant_id, &input.school_id).await?
+        }
+        Family::Learning => {
+            let staff =
+                crate::school_portal::auth::teacher_in(headers, &input.school_id, &input.tenant_id)
+                    .await?;
+            let role = staff.role().to_string();
+            (staff.staff_member_id, role)
+        }
+    };
+    if current != (actor.to_string(), role.to_string()) {
         return Err(denied());
     }
-    let authorized=format!("{} WITH a,sec WHERE sec.academic_year=$year AND (($role='owner' AND 'owner' IN coalesce(a.roles,[])) OR ($role='teacher' AND NOT 'owner' IN coalesce(a.roles,[]))) SET sec.timetable_write_lock=coalesce(sec.timetable_write_lock,0)+1 RETURN timestamp() AS now",repository::authority(role));
+    let authorized=format!("{} WITH a,sec WHERE sec.academic_year=$year AND (($role='owner' AND 'owner' IN coalesce(a.roles,[])) OR ($role IN ['teacher','school_admin'] AND NOT 'owner' IN coalesce(a.roles,[]))) SET sec.timetable_write_lock=coalesce(sec.timetable_write_lock,0)+1 RETURN timestamp() AS now",repository::authority(role));
     let row = repository::one(
         tx,
         query(&authorized)
