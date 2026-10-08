@@ -131,7 +131,7 @@ async fn catalogue_and_meeting_join() -> Result<(), Box<dyn std::error::Error + 
                             .param("school", school)
                             .param("tenant", tenant)
                             .param("class", "c1")
-                            .param("id", ""),
+                            .param("id", "").param("from", None::<i64>).param("to", None::<i64>),
                     )
                     .await?;
                 let row = rows.next().await?.ok_or("meeting")?;

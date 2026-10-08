@@ -4,6 +4,7 @@ pub(crate) mod model;
 pub(crate) mod reads;
 pub(crate) mod repository;
 mod validation;
+pub(crate) mod weekly;
 use crate::AppState;
 use axum::{
     extract::{rejection::JsonRejection, Query, State},
@@ -137,6 +138,30 @@ async fn learning_change(
     .await
     .map(|data| Json(json!({"responseCode":200,"data":data})))
 }
+async fn learning_weekly(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    input: Result<Json<weekly::Weekly>, JsonRejection>,
+) -> Result<Json<Value>, Failure> {
+    let Json(input) = input.map_err(|_| failure(StatusCode::BAD_REQUEST))?;
+    if !input.valid() {
+        return Err(failure(StatusCode::BAD_REQUEST));
+    }
+    let (actor, role) = super::owner::class_actor(
+        &state,
+        &headers,
+        &input.school_id,
+        &input.tenant_id,
+        &input.class_id,
+    )
+    .await?;
+    if !matches!(role.as_str(), "teacher" | "owner") {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    weekly::apply(&state.graph, &actor, &role, &headers, &input)
+        .await
+        .map(|data| Json(json!({"responseCode":200,"data":data})))
+}
 pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/sis-service/timetable/context", get(reads::context))
@@ -154,6 +179,15 @@ pub(super) fn router() -> Router<AppState> {
             get(reads::learning_context),
         )
         .layer(axum::extract::DefaultBodyLimit::max(16_384))
+        // Weekly slots plus per-course material order exceed the single-meeting body limit.
+        .merge(
+            Router::new()
+                .route(
+                    "/api/v1/sis-service/learning/timetable/weekly",
+                    axum::routing::post(learning_weekly),
+                )
+                .layer(axum::extract::DefaultBodyLimit::max(131_072)),
+        )
         .layer(axum::middleware::map_response(
             |mut r: axum::response::Response| async move {
                 r.headers_mut().insert(

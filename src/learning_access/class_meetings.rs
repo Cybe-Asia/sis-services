@@ -11,7 +11,12 @@ struct Scope {
     tenant_id: String,
     class_id: String,
     id: Option<String>,
+    /// Optional [from, to) window on `startsAt` (ms); classes with a whole-year timetable read by window.
+    from: Option<u64>,
+    to: Option<u64>,
 }
+/// Widest read window: an academic year plus margins.
+const MAX_WINDOW_MS: u64 = 400 * 86_400_000;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Change {
@@ -33,6 +38,11 @@ fn valid(s: &Scope) -> bool {
         && valid_id(&s.tenant_id)
         && valid_id(&s.class_id)
         && s.id.as_deref().is_none_or(valid_id)
+        && match (s.from, s.to) {
+            (None, None) => true,
+            (Some(from), Some(to)) => from < to && to - from <= MAX_WINDOW_MS && to <= 4_102_444_800_000,
+            _ => false,
+        }
 }
 fn key(s: &Scope, id: &str) -> String {
     format!(
@@ -79,7 +89,7 @@ pub(super) async fn migrate(
     Ok(())
 }
 /// Published meetings of one class with read-time display names (teacher, active catalogue room).
-pub(crate) const READ: &str = "MATCH (m:LearningClassMeeting {school_id:$school,tenant_id:$tenant,class_id:$class}) WHERE coalesce(m.status,'published')='published' AND ($id='' OR m.id=$id) OPTIONAL MATCH (t:StaffMember {id:m.teacher_id}) OPTIONAL MATCH (room:SchoolRoom {key:m.tenant_id+'|'+m.school_id+'|'+toLower(coalesce(m.room_id,'')),status:'active'}) RETURN m.payload AS payload,t.displayName AS teacher_name,room.name AS room_name ORDER BY m.starts_at,m.id LIMIT 501";
+pub(crate) const READ: &str = "MATCH (m:LearningClassMeeting {school_id:$school,tenant_id:$tenant,class_id:$class}) WHERE coalesce(m.status,'published')='published' AND ($id='' OR m.id=$id) AND ($from IS NULL OR (m.starts_at>=$from AND m.starts_at<$to)) OPTIONAL MATCH (t:StaffMember {id:m.teacher_id}) OPTIONAL MATCH (room:SchoolRoom {key:m.tenant_id+'|'+m.school_id+'|'+toLower(coalesce(m.room_id,'')),status:'active'}) RETURN m.payload AS payload,t.displayName AS teacher_name,room.name AS room_name ORDER BY m.starts_at,m.id LIMIT 501";
 fn view(r: neo4rs::Row) -> Result<Value, Failure> {
     let payload: String = r
         .get("payload")
@@ -111,7 +121,7 @@ async fn read(
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let _ = owner::class_actor(&state, &headers, &s.school_id, &s.tenant_id, &s.class_id).await?;
-    let mut rows=state.graph.execute(query(READ).param("school",s.school_id.clone()).param("tenant",s.tenant_id.clone()).param("class",s.class_id.clone()).param("id",s.id.clone().unwrap_or_default())).await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    let mut rows=state.graph.execute(query(READ).param("school",s.school_id.clone()).param("tenant",s.tenant_id.clone()).param("class",s.class_id.clone()).param("id",s.id.clone().unwrap_or_default()).param("from",s.from.map(|v| v as i64)).param("to",s.to.map(|v| v as i64))).await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
     let mut items = vec![];
     while let Some(r) = rows
         .next()
@@ -139,6 +149,8 @@ async fn update(
         tenant_id: c.tenant_id,
         class_id: c.class_id,
         id: Some(c.id.clone()),
+        from: None,
+        to: None,
     };
     if !valid(&s)
         || !valid_id(&c.course_id)
@@ -509,6 +521,8 @@ mod owner_tests {
             tenant_id: tenant.clone(),
             class_id: class.clone(),
             id: None,
+            from: None,
+            to: None,
         };
         let teacher_key = key(&scope, "teacher-meeting");
         let mut held = graph.start_txn().await.unwrap();

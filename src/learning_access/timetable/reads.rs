@@ -206,7 +206,8 @@ pub(super) async fn list(
         }
         items.push(value);
     }
-    let mut published=graph.execute(params(query("MATCH(m:LearningClassMeeting {school_id:$school,tenant_id:$tenant,class_id:$class}) WHERE coalesce(m.status,'published')='published' RETURN m.payload AS payload ORDER BY m.starts_at,m.id LIMIT 501"))).await.map_err(|_|unavailable())?;
+    // Only editable meetings (yesterday .. +62 days): a whole-year weekly timetable stays bounded.
+    let mut published=graph.execute(params(query("MATCH(m:LearningClassMeeting {school_id:$school,tenant_id:$tenant,class_id:$class}) WHERE coalesce(m.status,'published')='published' AND m.starts_at>=timestamp()-86400000 AND m.starts_at<timestamp()+62*86400000 RETURN m.payload AS payload ORDER BY m.starts_at,m.id LIMIT 501"))).await.map_err(|_|unavailable())?;
     let mut records = vec![];
     while let Some(r) = published.next().await.map_err(|_| unavailable())? {
         if records.len() == 500 {

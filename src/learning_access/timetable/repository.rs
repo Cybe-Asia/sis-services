@@ -327,7 +327,7 @@ async fn change_locked(
     one(tx,scoped("CREATE(o:LearningTimetableOperation {key:$op,actor:$actor,role:$role,request:$request,receipt:$receipt,created_at:timestamp()}) CREATE(:LearningTimetableAudit {id:$audit,school_id:$school,tenant_id:$tenant,class_id:$class,meeting_key:$key,actor_id:$actor,actor_role:$role,assigned_teacher_id:$teacher,operation_id:$op,action:$action,version:$version,published_version:$pv,receipt:$receipt,created_at:timestamp()}) RETURN o.key AS key",actor,m).param("op",op).param("role",role).param("request",request).param("receipt",receipt.to_string()).param("audit",uuid::Uuid::new_v4().to_string()).param("action",serde_json::to_value(input.action).map_err(|_|failure(StatusCode::BAD_REQUEST))?.as_str().unwrap_or("")).param("version",next_version).param("pv",next_pv)).await?.ok_or_else(conflict)?;
     Ok(receipt)
 }
-async fn publish(
+pub(super) async fn publish(
     tx: &mut Txn,
     actor: &str,
     role: &str,
