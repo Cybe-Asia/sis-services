@@ -21,6 +21,14 @@ pub async fn parent_snapshot(graph: &Graph, sub: &str) -> Result<Value, Error> {
             published.push(json!({"studentId":r.get::<String>("student")?,"content":serde_json::from_str::<Value>(&raw)?,"createdAt":r.get::<String>("created")?,"response":r.get::<String>("response").ok()}));
         }
     }
+    // Class announcements per child, with this Parent's own answer and read mark. They travel apart
+    // from `records`, so a client that predates them keeps reading the snapshot.
+    let mut posted=graph.execute(query(&format!("{PARENT} WITH DISTINCT u,s {PARENT_SECTION} MATCH(r:SchoolPublishedRecord {{kind:'announcement'}})-[:FOR_SECTION]->(sec) OPTIONAL MATCH(reply:SchoolRsvp {{key:u.id+'|'+s.studentId+'|'+r.key}}) RETURN DISTINCT s.studentId AS student,r.payload AS payload,toString(r.created_at) AS created,reply.response AS response,reply.read_at IS NOT NULL AS read ORDER BY created DESC LIMIT 100")).param("sub",sub)).await?;
+    let mut announcements = vec![];
+    while let Some(r) = posted.next().await? {
+        let raw: String = r.get("payload")?;
+        announcements.push(json!({"studentId":r.get::<String>("student")?,"content":serde_json::from_str::<Value>(&raw)?,"createdAt":r.get::<String>("created")?,"response":r.get::<String>("response").ok().filter(|v|!v.is_empty()),"read":r.get::<bool>("read")?}));
+    }
     let education_calendar = crate::education_calendar::repository::published(graph, query(&format!("{PARENT} WITH DISTINCT u,s {PARENT_SECTION} {} RETURN DISTINCT r.payload AS payload,r.version AS version,s.studentId AS student,r.start_date AS calendar_start,r.id AS calendar_id ORDER BY calendar_start,calendar_id,student LIMIT 101", crate::education_calendar::repository::PUBLISHED)).param("sub",sub)).await?;
     let class_meetings=crate::learning_access::timetable::reads::published(graph,query(&format!("{PARENT} WITH DISTINCT u,s {PARENT_SECTION} {} RETURN DISTINCT m.payload AS payload,s.studentId AS student,m.starts_at AS starts,m.id AS id ORDER BY starts,id,student LIMIT 201",crate::learning_access::timetable::reads::PUBLISHED)).param("sub",sub)).await?;
     let mut arrivals=graph.execute(query(&format!("{PARENT} WITH DISTINCT s {PARENT_SECTION} MATCH(a:AttendanceRecord {{section_id:sec.section_id,applicant_student_id:s.studentId}}) RETURN DISTINCT s.studentId AS student,a.date AS date,a.arrived_at AS arrived,a.dismissed_at AS dismissed ORDER BY date DESC LIMIT 1000")).param("sub",sub)).await?;
@@ -37,7 +45,7 @@ pub async fn parent_snapshot(graph: &Graph, sub: &str) -> Result<Value, Error> {
     let r = prefs.next().await?.ok_or("Parent missing")?;
     let preferences = json!({"version":r.get::<i64>("version")?,"locale":r.get::<String>("locale")?,"theme":r.get::<String>("theme")?,"notifications":r.get::<bool>("notifications")?});
     Ok(
-        json!({"records":published,"educationCalendar":education_calendar,"classMeetings":class_meetings,"attendance":attendance,"messages":messages,"preferences":preferences}),
+        json!({"records":published,"announcements":announcements,"educationCalendar":education_calendar,"classMeetings":class_meetings,"attendance":attendance,"messages":messages,"preferences":preferences}),
     )
 }
 pub async fn preferences(graph: &Graph, sub: &str, input: &Preferences) -> Result<bool, Error> {
@@ -48,20 +56,30 @@ pub async fn preferences(graph: &Graph, sub: &str, input: &Preferences) -> Resul
     Ok(saved)
 }
 pub async fn rsvp(graph: &Graph, sub: &str, id: &str, input: &Rsvp) -> Result<bool, Error> {
-    let q=query(&format!("{PARENT} WITH DISTINCT u,s WHERE s.studentId=$student {PARENT_SECTION} WITH u,s,sec MATCH(r:SchoolPublishedRecord {{kind:'event'}})-[:FOR_SECTION]->(sec) WHERE r.key=sec.section_id+'|event|'+$id RETURN u.id AS owner,r.key AS key,r.payload AS payload")).param("sub",sub).param("student",input.student_id.clone()).param("id",id);
+    // The same reply serves an event invitation and an announcement that asks for approval.
+    let kind = if input.approval() {
+        "announcement"
+    } else {
+        "event"
+    };
+    let q=query(&format!("{PARENT} WITH DISTINCT u,s WHERE s.studentId=$student {PARENT_SECTION} WITH u,s,sec MATCH(r:SchoolPublishedRecord {{kind:$kind}})-[:FOR_SECTION]->(sec) WHERE r.key=sec.section_id+'|'+$kind+'|'+$id RETURN u.id AS owner,r.key AS key,r.payload AS payload")).param("sub",sub).param("student",input.student_id.clone()).param("id",id).param("kind",kind);
     let mut rows = graph.execute(q).await?;
     let Some(r) = rows.next().await? else {
         return Ok(false);
     };
     let raw: String = r.get("payload")?;
-    let event: PublishedRecord = serde_json::from_str(&raw)?;
-    if !matches!(event, PublishedRecord::Event { rsvp: true, .. }) {
+    let record: PublishedRecord = serde_json::from_str(&raw)?;
+    if !matches!(
+        record,
+        PublishedRecord::Event { rsvp: true, .. }
+            | PublishedRecord::Announcement { approval: true, .. }
+    ) {
         return Ok(false);
     }
     let key: String = r.get("key")?;
     let owner: String = r.get("owner")?;
     // Recheck ownership and current enrollment within the write transaction.
-    let q=query(&format!("{} WITH DISTINCT u,s WHERE u.id=$owner AND s.studentId=$student {PARENT_SECTION} WITH DISTINCT u,s,sec MATCH(r:SchoolPublishedRecord {{key:$record,payload:$payload}})-[:FOR_SECTION]->(sec) MERGE(reply:SchoolRsvp {{key:u.id+'|'+s.studentId+'|'+r.key}}) SET reply.response=$response,reply.updated_at=datetime() CREATE(:SchoolPortalAudit {{id:$audit,actor_id:u.id,kind:'rsvp',school_id:sec.school_id,tenant_id:sec.tenant_id,section_id:sec.section_id,created_at:datetime()}}) RETURN true AS saved",parent_write_prefix())).param("sub",sub).param("owner",owner).param("student",input.student_id.clone()).param("record",key).param("payload",raw).param("response",if input.response=="clear"{""}else{&input.response}).param("audit",uuid::Uuid::new_v4().to_string());
+    let q=query(&format!("{} WITH DISTINCT u,s WHERE u.id=$owner AND s.studentId=$student {PARENT_SECTION} WITH DISTINCT u,s,sec MATCH(r:SchoolPublishedRecord {{key:$record,payload:$payload}})-[:FOR_SECTION]->(sec) MERGE(reply:SchoolRsvp {{key:u.id+'|'+s.studentId+'|'+r.key}}) SET reply.response=$response,reply.updated_at=datetime() FOREACH(ignore IN CASE WHEN $approval THEN [1] ELSE [] END | SET reply.read_at=coalesce(reply.read_at,datetime())) CREATE(:SchoolPortalAudit {{id:$audit,actor_id:u.id,kind:CASE WHEN $approval THEN 'announcement_response' ELSE 'rsvp' END,school_id:sec.school_id,tenant_id:sec.tenant_id,section_id:sec.section_id,created_at:datetime()}}) RETURN true AS saved",parent_write_prefix())).param("sub",sub).param("owner",owner).param("student",input.student_id.clone()).param("record",key).param("payload",raw).param("response",if input.response=="clear"{""}else{&input.response}).param("approval",input.approval()).param("audit",uuid::Uuid::new_v4().to_string());
     let mut rows = graph.execute(q).await?;
     let saved = rows.next().await?.is_some();
     while rows.next().await?.is_some() {}
@@ -69,6 +87,15 @@ pub async fn rsvp(graph: &Graph, sub: &str, id: &str, input: &Rsvp) -> Result<bo
 }
 pub async fn mark_read(graph: &Graph, sub: &str, id: &str) -> Result<bool, Error> {
     let q=query(&format!("{} WITH DISTINCT u MATCH(u)-[:HAS_SCHOOL_NOTICE]->(n:SchoolNotice {{id:$id}}) SET n.is_read=true RETURN true AS saved",parent_write_prefix())).param("sub",sub).param("id",id);
+    let mut rows = graph.execute(q).await?;
+    let saved = rows.next().await?.is_some();
+    while rows.next().await?.is_some() {}
+    if saved {
+        return Ok(true);
+    }
+    // Not a personal notice: mark the class announcement read for each of this Parent's children
+    // currently placed in a class that received it.
+    let q=query(&format!("{} WITH DISTINCT u,s {PARENT_SECTION} WITH DISTINCT u,s,sec MATCH(r:SchoolPublishedRecord {{kind:'announcement'}})-[:FOR_SECTION]->(sec) WHERE r.key=sec.section_id+'|announcement|'+$id MERGE(reply:SchoolRsvp {{key:u.id+'|'+s.studentId+'|'+r.key}}) ON CREATE SET reply.response='' SET reply.read_at=coalesce(reply.read_at,datetime()) RETURN true AS saved",parent_write_prefix())).param("sub",sub).param("id",id);
     let mut rows = graph.execute(q).await?;
     let saved = rows.next().await?.is_some();
     while rows.next().await?.is_some() {}

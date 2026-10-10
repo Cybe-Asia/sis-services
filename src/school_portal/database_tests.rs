@@ -228,6 +228,96 @@ async fn teacher_parent_school_journey_and_scope() {
     )
     .await
     .unwrap());
+    // Class announcements: the homeroom publishes, each Parent of the class reads and answers.
+    let trip = PublishedRecord::Announcement {
+        id: "trip".into(),
+        title: "Museum visit".into(),
+        body: "Year 7 visits the science museum.".into(),
+        note: "Bring a hat.".into(),
+        priority: "important".into(),
+        approval: true,
+        due_date: Some(school_today().to_string()),
+        due_time: Some("17:00".into()),
+    };
+    let uniform = PublishedRecord::Announcement {
+        id: "uniform".into(),
+        title: "Batik on Friday".into(),
+        body: "Students wear batik every Friday.".into(),
+        note: String::new(),
+        priority: "general".into(),
+        approval: false,
+        due_date: None,
+        due_time: None,
+    };
+    assert!(trip.valid() && uniform.valid());
+    assert!(!repo::publish(&g, &other, "class", &trip).await.unwrap());
+    for record in [&trip, &uniform] {
+        assert!(repo::publish(&g, &teacher, "class", record).await.unwrap());
+        assert!(repo::publish(&g, &teacher, "class", record).await.unwrap());
+    }
+    let reply = |student: &str, response: &str| Rsvp {
+        student_id: student.into(),
+        response: response.into(),
+    };
+    let posted = |snapshot: &serde_json::Value, id: &str| {
+        snapshot["announcements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["content"]["id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    snapshot = repo::parent_snapshot(&g, "parent").await.unwrap();
+    assert_eq!(snapshot["records"].as_array().unwrap().len(), 4);
+    assert_eq!(snapshot["announcements"].as_array().unwrap().len(), 2);
+    assert_eq!(posted(&snapshot, "trip")["studentId"], "child");
+    assert_eq!(posted(&snapshot, "trip")["content"]["due_time"], "17:00");
+    assert!(posted(&snapshot, "trip")["response"].is_null());
+    assert_eq!(posted(&snapshot, "trip")["read"], false);
+    // Approval answers only an announcement that asks for it, for the Parent's own child.
+    assert!(!repo::rsvp(&g, "parent", "uniform", &reply("child", "approved")).await.unwrap());
+    assert!(!repo::rsvp(&g, "parent", "trip", &reply("child", "attending")).await.unwrap());
+    assert!(!repo::rsvp(&g, "parent", "trip", &reply("foreign", "approved")).await.unwrap());
+    assert!(!repo::rsvp(&g, "parent-two", "trip", &reply("child-two", "approved")).await.unwrap());
+    assert!(!repo::rsvp(&g, "parent-two", "trip", &reply("child", "approved")).await.unwrap());
+    assert!(repo::rsvp(&g, "parent", "trip", &reply("child", "rejected")).await.unwrap());
+    assert!(repo::rsvp(&g, "parent", "trip", &reply("child", "approved")).await.unwrap());
+    assert!(repo::mark_read(&g, "parent", "uniform").await.unwrap());
+    assert!(repo::mark_read(&g, "parent", "uniform").await.unwrap());
+    assert!(!repo::mark_read(&g, "parent", "missing").await.unwrap());
+    assert!(!repo::mark_read(&g, "parent-two", "uniform").await.unwrap());
+    assert!(!repo::mark_read(&g, "foreign", "uniform").await.unwrap());
+    snapshot = repo::parent_snapshot(&g, "parent").await.unwrap();
+    assert_eq!(posted(&snapshot, "trip")["response"], "approved");
+    assert_eq!(posted(&snapshot, "trip")["read"], true);
+    assert!(posted(&snapshot, "uniform")["response"].is_null());
+    assert_eq!(posted(&snapshot, "uniform")["read"], true);
+    assert!(repo::parent_snapshot(&g, "parent-two").await.unwrap()["announcements"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let board = repo::classroom(&g, &teacher, "class", &school_today().to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(board["announcements"].as_array().unwrap().len(), 2);
+    assert!(board["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|record| record["kind"] != "announcement"));
+    assert_eq!(board["announcementReplies"].as_array().unwrap().len(), 1);
+    assert_eq!(board["announcementReplies"][0]["announcementId"], "trip");
+    assert_eq!(board["announcementReplies"][0]["approved"], 1);
+    assert_eq!(board["announcementReplies"][0]["rejected"], 0);
+    // A subject Teacher sees the board but not who answered.
+    let subject = repo::classroom(&g, &other, "class", &school_today().to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(subject["announcements"].as_array().unwrap().len(), 2);
+    assert!(subject["announcementReplies"].as_array().unwrap().is_empty());
     // A correction remains current after the immutable old command is retried.
     let correction = PublishedRecord::Grade {
         id: "grade-correction".into(),

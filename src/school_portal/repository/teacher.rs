@@ -50,9 +50,16 @@ pub async fn classroom(
     }
     // Full Growth reports include homeroom notes and large portfolios. They
     // belong to the selected-child report read, not a subject Teacher roster.
-    let mut records=values(graph,teacher_query(member,"MATCH(r:SchoolPublishedRecord)-[:FOR_SECTION]->(sec) WHERE coalesce(r.kind,'') <> 'growth' RETURN r.payload AS payload ORDER BY r.created_at DESC LIMIT 101",Some(section),false,false)).await?;
+    let mut records=values(graph,teacher_query(member,"MATCH(r:SchoolPublishedRecord)-[:FOR_SECTION]->(sec) WHERE NOT coalesce(r.kind,'') IN ['growth','announcement'] RETURN r.payload AS payload ORDER BY r.created_at DESC LIMIT 101",Some(section),false,false)).await?;
     let records_have_more = records.len() > 100;
     records.truncate(100);
+    // Announcements are served apart from `records`, so a client that predates them keeps reading
+    // the class. Each row carries the time it was published.
+    let mut published = graph.execute(teacher_query(member,"MATCH(r:SchoolPublishedRecord {kind:'announcement'})-[:FOR_SECTION]->(sec) RETURN r.payload AS payload,toString(r.created_at) AS created ORDER BY r.created_at DESC LIMIT 100",Some(section),false,false)).await?;
+    let mut announcements = vec![];
+    while let Some(r) = published.next().await? {
+        announcements.push(json!({"content":serde_json::from_str::<Value>(&r.get::<String>("payload")?)?,"createdAt":r.get::<String>("created")?}));
+    }
     let education_calendar = crate::education_calendar::repository::published(graph, teacher_query(member, &format!("{} RETURN DISTINCT r.payload AS payload,r.version AS version,r.start_date AS calendar_start,r.id AS calendar_id ORDER BY calendar_start,calendar_id LIMIT 101", crate::education_calendar::repository::PUBLISHED),Some(section),false,false)).await?;
     let class_meetings=crate::learning_access::timetable::reads::published(graph,teacher_query(member,&format!("{} RETURN DISTINCT m.payload AS payload,m.starts_at AS starts,m.id AS id ORDER BY starts,id LIMIT 201",crate::learning_access::timetable::reads::PUBLISHED),Some(section),false,false)).await?;
     let request_query=format!("{ENROLLED} MATCH(r:ParentSchoolRequest {{section_id:sec.section_id,school_id:sec.school_id,tenant_id:sec.tenant_id}})-[:FOR_STUDENT]->(s) RETURN DISTINCT r.public_id AS id,s.studentId AS student,s.fullName AS name,r.kind AS kind,r.date AS date,r.time AS time,r.reason AS reason,r.note AS note,r.status AS status,r.review_note AS reviewNote,r.createdAt AS createdAt ORDER BY createdAt DESC LIMIT 101");
@@ -89,8 +96,26 @@ pub async fn classroom(
         let event: Value = serde_json::from_str(&r.get::<String>("event")?)?;
         rsvps.push(json!({"eventId":event["id"],"eventTitle":event["title"],"studentId":r.get::<String>("student")?,"studentName":r.get::<String>("name")?,"attending":r.get::<i64>("attending")?,"declined":r.get::<i64>("declined")?}));
     }
+    // Who approved or rejected is the homeroom's business, like Parent requests.
+    let mut announcement_replies = vec![];
+    if homeroom || management {
+        let reply_query=format!("{ENROLLED} MATCH(r:SchoolPublishedRecord {{kind:'announcement'}})-[:FOR_SECTION]->(sec) MATCH(u:User)-[:HAS_APPLICATION]->(:Lead)-[:HAS_STUDENT]->(s) MATCH(reply:SchoolRsvp) WHERE reply.key=u.id+'|'+s.studentId+'|'+r.key AND reply.response IN ['approved','rejected'] RETURN r.payload AS announcement,s.studentId AS student,s.fullName AS name,sum(CASE WHEN reply.response='approved' THEN 1 ELSE 0 END) AS approved,sum(CASE WHEN reply.response='rejected' THEN 1 ELSE 0 END) AS rejected,max(reply.updated_at) AS updated ORDER BY updated DESC LIMIT 200");
+        let mut rows = graph
+            .execute(teacher_query(
+                member,
+                &reply_query,
+                Some(section),
+                false,
+                true,
+            ))
+            .await?;
+        while let Some(r) = rows.next().await? {
+            let announcement: Value = serde_json::from_str(&r.get::<String>("announcement")?)?;
+            announcement_replies.push(json!({"announcementId":announcement["id"],"announcementTitle":announcement["title"],"studentId":r.get::<String>("student")?,"studentName":r.get::<String>("name")?,"approved":r.get::<i64>("approved")?,"rejected":r.get::<i64>("rejected")?}));
+        }
+    }
     Ok(Some(
-        json!({"homeroom":homeroom,"canManageHomeroom":management,"students":students,"records":records,"educationCalendar":education_calendar,"classMeetings":class_meetings,"recordWindow":{"limit":100,"hasMore":records_have_more},"requests":requests,"rsvps":rsvps}),
+        json!({"homeroom":homeroom,"canManageHomeroom":management,"students":students,"records":records,"announcements":announcements,"announcementReplies":announcement_replies,"educationCalendar":education_calendar,"classMeetings":class_meetings,"recordWindow":{"limit":100,"hasMore":records_have_more},"requests":requests,"rsvps":rsvps}),
     ))
 }
 async fn attendance_write(
@@ -178,7 +203,9 @@ async fn publish_write(
         true,
         matches!(
             input,
-            PublishedRecord::Report { .. } | PublishedRecord::Growth { .. }
+            PublishedRecord::Report { .. }
+                | PublishedRecord::Growth { .. }
+                | PublishedRecord::Announcement { .. }
         ),
     )
     .param("student", input.student().unwrap_or(""))

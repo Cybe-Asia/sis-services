@@ -111,6 +111,19 @@ pub enum PublishedRecord {
         score: f64,
         maximum: f64,
     },
+    /// A class announcement on the Parent School Board. `note` is the "Note for Parents" (may be
+    /// empty). An important announcement stays on top until the Parent reads it or, with
+    /// `approval`, answers it for the child; the due date and time are on the school clock.
+    Announcement {
+        id: String,
+        title: String,
+        body: String,
+        note: String,
+        priority: String,
+        approval: bool,
+        due_date: Option<String>,
+        due_time: Option<String>,
+    },
 }
 impl PublishedRecord {
     pub fn id(&self) -> &str {
@@ -119,12 +132,13 @@ impl PublishedRecord {
             | Self::Event { id, .. }
             | Self::Project { id, .. }
             | Self::Report { id, .. }
-            | Self::Grade { id, .. } => id,
+            | Self::Grade { id, .. }
+            | Self::Announcement { id, .. } => id,
         }
     }
     pub fn student(&self) -> Option<&str> {
         match self {
-            Self::Event { .. } => None,
+            Self::Event { .. } | Self::Announcement { .. } => None,
             Self::Growth { student_id, .. }
             | Self::Project { student_id, .. }
             | Self::Report { student_id, .. }
@@ -138,6 +152,7 @@ impl PublishedRecord {
             Self::Project { .. } => "project",
             Self::Report { .. } => "report",
             Self::Grade { .. } => "grade",
+            Self::Announcement { .. } => "announcement",
         }
     }
     pub fn valid(&self) -> bool {
@@ -203,6 +218,25 @@ impl PublishedRecord {
                     && *score >= 0.0
                     && score <= maximum
             }
+            Self::Announcement {
+                title,
+                body,
+                note,
+                priority,
+                approval,
+                due_date,
+                due_time,
+                ..
+            } => {
+                text(title, 256)
+                    && text(body, 4000)
+                    && note.len() <= 2000
+                    && ["important", "general"].contains(&priority.as_str())
+                    && (!approval || priority == "important")
+                    && due_date.as_ref().is_none_or(|d| date(d))
+                    && time(due_time)
+                    && !(due_time.is_some() && due_date.is_none())
+            }
         }
     }
 }
@@ -244,7 +278,13 @@ pub struct Rsvp {
 impl Rsvp {
     pub fn valid(&self) -> bool {
         identifier(&self.student_id)
-            && ["attending", "declined", "clear"].contains(&self.response.as_str())
+            && ["attending", "declined", "clear", "approved", "rejected"]
+                .contains(&self.response.as_str())
+    }
+    /// "approved" and "rejected" answer an announcement that asks for approval; the other values
+    /// answer an event invitation.
+    pub fn approval(&self) -> bool {
+        matches!(self.response.as_str(), "approved" | "rejected")
     }
 }
 
@@ -282,5 +322,47 @@ mod tests {
         .valid());
         assert!(!date("2026-02-30"));
         assert!(!identifier("../other"));
+    }
+    #[test]
+    fn validates_announcements() {
+        let announcement =
+            |priority: &str, approval, due_date: Option<&str>, due_time: Option<&str>| {
+                PublishedRecord::Announcement {
+                    id: "notice".into(),
+                    title: "Museum visit".into(),
+                    body: "Year 7 visits the science museum.".into(),
+                    note: String::new(),
+                    priority: priority.into(),
+                    approval,
+                    due_date: due_date.map(Into::into),
+                    due_time: due_time.map(Into::into),
+                }
+            };
+        let today = school_today().to_string();
+        assert!(announcement("general", false, None, None).valid());
+        assert!(announcement("important", true, Some(&today), Some("17:00")).valid());
+        assert!(announcement("important", false, Some(&today), None).valid());
+        // Approval is an action on an important announcement; a time needs its date.
+        assert!(!announcement("general", true, None, None).valid());
+        assert!(!announcement("important", true, None, Some("17:00")).valid());
+        assert!(!announcement("urgent", false, None, None).valid());
+        assert!(!announcement("important", true, Some("2026-02-30"), None).valid());
+        let record: PublishedRecord = serde_json::from_str(
+            r#"{"kind":"announcement","id":"a","title":"T","body":"B","note":"","priority":"general","approval":false,"due_date":null,"due_time":null}"#,
+        )
+        .unwrap();
+        assert_eq!(record.kind(), "announcement");
+        assert!(record.student().is_none());
+        assert!(serde_json::from_str::<PublishedRecord>(
+            r#"{"kind":"announcement","id":"a","title":"T","body":"B","note":"","priority":"general","approval":false,"student_id":"child"}"#
+        )
+        .is_err());
+        let reply = |response: &str| Rsvp {
+            student_id: "child".into(),
+            response: response.into(),
+        };
+        assert!(reply("approved").valid() && reply("approved").approval());
+        assert!(reply("attending").valid() && !reply("attending").approval());
+        assert!(!reply("maybe").valid());
     }
 }
