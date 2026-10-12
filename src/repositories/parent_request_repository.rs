@@ -78,11 +78,16 @@ mod tests {
             sections[0].homeroomTeacherEmail,
             Some(format!("{mark}@teacher.test"))
         );
-        // The Parent sees the name the school entered for the class, else the staff member's own name.
+        // The Parent sees the name the school entered for this teacher, else the staff member's own name:
+        // a name entered beside another address belongs to someone else and is not shown.
         assert_eq!(sections[0].homeroomTeacherName.as_deref(), Some("Current homeroom"));
-        graph.run(query("MATCH(s:Section {workflow_test:$mark}) SET s.homeroom_teacher_name='  Ibu Wali Kelas '").param("mark", mark.clone())).await.unwrap();
-        let named = super::super::sis_repository::list_parent_sections(&graph, &[mark.clone()], &mark).await.unwrap();
-        assert_eq!(named[0].homeroomTeacherName.as_deref(), Some("Ibu Wali Kelas"));
+        let name_after = |cypher: &'static str| { let (graph, mark) = (graph.clone(), mark.clone()); async move {
+            graph.run(query(cypher).param("mark", mark.clone()).param("teacher", format!("{mark}@TEACHER.test"))).await.unwrap();
+            super::super::sis_repository::list_parent_sections(&graph, &[mark.clone()], &mark).await.unwrap()[0].homeroomTeacherName.clone()
+        } };
+        assert_eq!(name_after("MATCH(s:Section {workflow_test:$mark}) SET s.homeroom_teacher_name='  Ibu Wali Kelas '").await.as_deref(), Some("Current homeroom"));
+        assert_eq!(name_after("MATCH(s:Section {workflow_test:$mark}) SET s.homeroom_teacher_email=$teacher").await.as_deref(), Some("Ibu Wali Kelas"));
+        assert_eq!(name_after("MATCH(s:Section {workflow_test:$mark}) SET s.homeroom_teacher_email='legacy@example.test'").await.as_deref(), Some("Current homeroom"));
         let mut input = ParentRequestInput {
             idempotency_key: uuid::Uuid::new_v4().to_string(),
             student_id: mark.clone(),
