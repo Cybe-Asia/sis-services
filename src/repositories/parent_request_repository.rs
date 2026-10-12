@@ -78,6 +78,11 @@ mod tests {
             sections[0].homeroomTeacherEmail,
             Some(format!("{mark}@teacher.test"))
         );
+        // The Parent sees the name the school entered for the class, else the staff member's own name.
+        assert_eq!(sections[0].homeroomTeacherName.as_deref(), Some("Current homeroom"));
+        graph.run(query("MATCH(s:Section {workflow_test:$mark}) SET s.homeroom_teacher_name='  Ibu Wali Kelas '").param("mark", mark.clone())).await.unwrap();
+        let named = super::super::sis_repository::list_parent_sections(&graph, &[mark.clone()], &mark).await.unwrap();
+        assert_eq!(named[0].homeroomTeacherName.as_deref(), Some("Ibu Wali Kelas"));
         let mut input = ParentRequestInput {
             idempotency_key: uuid::Uuid::new_v4().to_string(),
             student_id: mark.clone(),
@@ -125,6 +130,8 @@ mod tests {
             assert!(create(&graph,&mark,&input).await.unwrap().is_none());
             let sections=super::super::sis_repository::list_parent_sections(&graph,&[mark.clone()], &mark).await.unwrap();
             assert!(sections[0].homeroomTeacherEmail.is_none());
+            // The entered name alone never reaches the Parent: without a linked teacher there is no contact.
+            assert!(sections[0].homeroomTeacherName.is_none());
         }
         graph.run(query("MATCH(r:ParentSchoolRequest)-[:FOR_STUDENT]->(:Student {workflow_test:$mark}) DETACH DELETE r").param("mark",mark.clone())).await.unwrap();
         graph

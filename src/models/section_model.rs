@@ -46,6 +46,12 @@ pub struct Section {
     /// Optional contact email. Surfaced on the parent card.
     #[serde(default)]
     pub homeroomTeacherEmail: Option<String>,
+    /// Whether the email was matched to exactly one active teacher of the
+    /// school, who then is the class's homeroom staff member. False means the
+    /// name and email are text only: Parents see no homeroom contact and no
+    /// teacher holds homeroom rights for the class.
+    #[serde(default)]
+    pub homeroomTeacherLinked: bool,
     pub createdAt: DateTime<Utc>,
     pub updatedAt: DateTime<Utc>,
 }

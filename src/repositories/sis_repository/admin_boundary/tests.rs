@@ -621,6 +621,57 @@ async fn run(g: Graph, f: Fixture) {
         "active"
     );
 }
+/// Saving the homeroom panel links exactly one active teacher of the school by email, and nobody otherwise.
+async fn homeroom_link(g: &Graph, f: &Fixture) {
+    let email = format!("{}@teacher.example.test", f.tag);
+    let typed = email.to_uppercase();
+    let staff = |q: neo4rs::Query| q.param("teacher", f.teacher.staff.clone()).param("email", email.clone());
+    g.run(staff(f.params(query("MATCH(t:StaffMember {id:$teacher}) SET t.email=$email,t.fullName='Synthetic homeroom teacher'")))).await.unwrap();
+    let link = |by: &AdminActor| {
+        staff(f.params(query("MATCH(s:Section {section_id:$next}) WHERE s.homeroom_staff_member_id=$teacher AND s.homeroom_staff_linked_by=$by AND s.homeroom_staff_linked_at IS NOT NULL RETURN count(s) AS n")))
+            .param("by", by.staff.clone())
+    };
+    let linked = |cy: neo4rs::Query| async { g.execute(cy).await.unwrap().next().await.unwrap().unwrap().get::<i64>("n").unwrap() };
+    let unlinked = "MATCH(s:Section {section_id:$next}) WHERE s.homeroom_staff_member_id IS NULL AND s.homeroom_staff_linked_by IS NULL AND s.homeroom_staff_linked_at IS NULL RETURN count(s) AS n";
+
+    // The address is matched whatever its case; the acting admin is recorded on the section.
+    let saved = r::set_homeroom_teacher(g, &f.scoped, &f.next, Some("Ibu Wali"), Some(&typed)).await.unwrap();
+    assert!(saved.homeroomTeacherLinked);
+    assert_eq!(saved.homeroomTeacherName.as_deref(), Some("Ibu Wali"));
+    assert_eq!(linked(link(&f.scoped)).await, 1);
+    assert!(r::find_section_by_id(g, &f.owner, &f.next).await.unwrap().unwrap().homeroomTeacherLinked);
+
+    // An address that belongs to no teacher keeps the text and links nobody.
+    let text = r::set_homeroom_teacher(g, &f.owner, &f.next, Some("Ibu Wali"), Some("nobody@teacher.example.test")).await.unwrap();
+    assert!(!text.homeroomTeacherLinked);
+    assert_eq!(text.homeroomTeacherEmail.as_deref(), Some("nobody@teacher.example.test"));
+    assert_eq!(count(g, f, unlinked).await, 1);
+
+    // Not a teacher of this school, not active, not a teacher, or not the only match: no link.
+    for (mutation, restore) in [
+        ("MATCH(t:StaffMember {id:$teacher}) SET t.schoolIds=[$other]", "MATCH(t:StaffMember {id:$teacher}) SET t.schoolIds=[$school]"),
+        ("MATCH(t:StaffMember {id:$teacher}) SET t.tenantIds=['foreign-tenant']", "MATCH(t:StaffMember {id:$teacher}) SET t.tenantIds=[$tenant]"),
+        ("MATCH(t:StaffMember {id:$teacher}) SET t.membershipStatus='INACTIVE'", "MATCH(t:StaffMember {id:$teacher}) SET t.membershipStatus='ACTIVE'"),
+        ("MATCH(t:StaffMember {id:$teacher}) SET t.roles=['finance_admin']", "MATCH(t:StaffMember {id:$teacher}) SET t.roles=['teacher']"),
+        ("CREATE(:StaffMember {id:$teacher+'-twin',email:$email,membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:[$school],tenantIds:[$tenant],teamIds:[],sis_academic_test:$tag})", "MATCH(t:StaffMember {id:$teacher+'-twin'}) DETACH DELETE t"),
+    ] {
+        assert!(r::set_homeroom_teacher(g, &f.owner, &f.next, None, Some(&email)).await.unwrap().homeroomTeacherLinked);
+        g.run(staff(f.params(query(mutation)))).await.unwrap();
+        assert!(!r::set_homeroom_teacher(g, &f.owner, &f.next, None, Some(&email)).await.unwrap().homeroomTeacherLinked, "{mutation}");
+        assert_eq!(count(g, f, unlinked).await, 1, "{mutation}");
+        g.run(staff(f.params(query(restore)))).await.unwrap();
+    }
+
+    // Clearing the address removes the link; only an admin of the section's school may set it.
+    assert!(r::set_homeroom_teacher(g, &f.owner, &f.next, None, Some(&email)).await.unwrap().homeroomTeacherLinked);
+    assert_eq!(linked(link(&f.owner)).await, 1);
+    assert!(!r::set_homeroom_teacher(g, &f.owner, &f.next, Some("Ibu Wali"), None).await.unwrap().homeroomTeacherLinked);
+    assert_eq!(count(g, f, unlinked).await, 1);
+    denied(r::set_homeroom_teacher(g, &f.teacher, &f.next, None, Some(&email)).await);
+    denied(r::set_homeroom_teacher(g, &f.finance, &f.next, None, Some(&email)).await);
+    denied(r::set_homeroom_teacher(g, &f.scoped, &f.foreign, None, Some(&email)).await);
+    assert_eq!(count(g, f, unlinked).await, 1);
+}
 #[tokio::test]
 #[ignore = "explicit dedicated isolated3385 required; synthetic protocol evidence only"]
 async fn typed_admin_scope_atomic_batches_and_queued_expiry() {
@@ -652,5 +703,36 @@ async fn typed_admin_scope_atomic_batches_and_queued_expiry() {
     let g2 = g.clone();
     let outcome = tokio::spawn(async move { run(g2, f).await }).await;
     g.run(cleanup.params(query("MATCH(n) WHERE n.sis_academic_test=$tag OR ((n:Section OR n:SISAcademicAudit) AND n.school_id IN [$school,$other]) OR ((n:AttendanceRecord OR n:GradeEntry) AND n.section_id IN [$section,$next,$foreign]) DETACH DELETE n"))).await.unwrap();
+    outcome.unwrap();
+}
+#[tokio::test]
+#[ignore = "explicit local SCHOOL_WORKFLOW_TEST_BOLT; cleans only its own fixture"]
+async fn homeroom_panel_links_exactly_one_active_teacher() {
+    let uri = std::env::var("SCHOOL_WORKFLOW_TEST_BOLT").unwrap();
+    assert_eq!(uri, "127.0.0.1:3213");
+    let g = Graph::new(
+        uri,
+        &std::env::var("NEO4J_USER").unwrap(),
+        &std::env::var("NEO4J_PASSWORD").unwrap(),
+    )
+    .await
+    .unwrap();
+    let f = Fixture::new();
+    let (tag, school, other) = (f.tag.clone(), f.school.clone(), f.other.clone());
+    let g2 = g.clone();
+    let outcome = tokio::spawn(async move {
+        for (a, role, global) in [
+            (&f.owner, "owner", true),
+            (&f.scoped, "school_admin", false),
+            (&f.teacher, "teacher", false),
+            (&f.finance, "finance_admin", false),
+        ] {
+            g2.run(f.params(query("CREATE(u:User {id:$subject,staffMemberId:$actor,sis_academic_test:$tag})-[:STAFF_MEMBER]->(:StaffMember {id:$actor,membershipStatus:'ACTIVE',roles:[$role],schoolIds:$schools,tenantIds:$tenants,teamIds:[],sis_academic_test:$tag})")).param("subject",a.subject.clone()).param("actor",a.staff.clone()).param("role",role).param("schools",if global {vec![]} else {vec![f.school.clone()]}).param("tenants",if global {vec![]} else {vec![f.tenant.clone()]})).await.unwrap();
+        }
+        g2.run(f.params(query("CREATE(:School {school_id:$school,tenant_id:$tenant,sis_academic_test:$tag}),(:School {school_id:$other,tenant_id:$tenant,sis_academic_test:$tag}) WITH 1 AS ready UNWIND [$next,$foreign] AS id CREATE(sec:Section {section_id:id,name:'Synthetic section',school_id:CASE WHEN id=$foreign THEN $other ELSE $school END,tenant_id:$tenant,status:'active',year_group:'Grade 7',academic_year:'2026/2027',sis_academic_test:$tag})"))).await.unwrap();
+        homeroom_link(&g2, &f).await;
+    })
+    .await;
+    g.run(query("MATCH(n) WHERE n.sis_academic_test=$tag OR ((n:Section OR n:SISAcademicAudit) AND n.school_id IN [$school,$other]) DETACH DELETE n").param("tag", tag).param("school", school).param("other", other)).await.unwrap();
     outcome.unwrap();
 }

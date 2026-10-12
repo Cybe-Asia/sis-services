@@ -206,8 +206,13 @@ pub async fn find_section_by_id(
     Ok(None)
 }
 
-/// Admin can update the free-text homeroom teacher fields. Either field
-/// can be None to clear it. Leaves other Section properties alone.
+/// Admin sets the homeroom teacher shown for the class. Either field can be
+/// None to clear it. The name and email stay free text; when the email belongs
+/// to exactly one active teacher of the section's school and tenant, that staff
+/// member becomes the class's homeroom (`homeroom_staff_member_id`, which the
+/// Parent contact, appointment routing and the teacher's homeroom rights read)
+/// and the acting admin is recorded on the section. No match, several matches
+/// or a cleared email remove the link, so the rights never outlive the panel.
 pub async fn set_homeroom_teacher(
     graph: &Graph,
     actor: &AdminActor,
@@ -221,9 +226,19 @@ pub async fn set_homeroom_teacher(
     let now = Utc::now();
     let q = query(
         "MATCH (s:Section {section_id: $id}) \
+         OPTIONAL MATCH (t:StaffMember {membershipStatus:'ACTIVE'}) \
+         WHERE $email <> '' AND coalesce(t.id,'') <> '' AND toLower(coalesce(t.email,'')) = toLower($email) \
+           AND 'teacher' IN coalesce(t.roles,[]) \
+           AND s.school_id IN coalesce(t.schoolIds,[]) AND s.tenant_id IN coalesce(t.tenantIds,[]) \
+         WITH s, collect(DISTINCT t) AS teachers \
          SET s.homeroom_teacher_name = $name, \
              s.homeroom_teacher_email = $email, \
-             s.updated_at = datetime($now) WITH s \
+             s.updated_at = datetime($now) \
+         FOREACH (t IN CASE WHEN size(teachers) = 1 THEN teachers ELSE [] END | \
+           SET s.homeroom_staff_member_id = t.id, s.homeroom_staff_linked_by = $actor, s.homeroom_staff_linked_at = datetime($now)) \
+         FOREACH (ignored IN CASE WHEN size(teachers) = 1 THEN [] ELSE [1] END | \
+           REMOVE s.homeroom_staff_member_id, s.homeroom_staff_linked_by, s.homeroom_staff_linked_at) \
+         WITH s \
          OPTIONAL MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(s) WHERE e.status='active' AND e.school_id=s.school_id AND e.tenant_id=s.tenant_id \
          RETURN s, count(DISTINCT e) AS enrolledCount"
     )
@@ -417,7 +432,9 @@ pub async fn list_parent_sections(
            sec.year_group AS yearGroup, \
            sec.academic_year AS academicYear, \
            sec.school_id AS schoolId, \
-           homeroom.fullName AS homeroomTeacherName, \
+           CASE WHEN homeroom IS NULL THEN null \
+                WHEN trim(coalesce(sec.homeroom_teacher_name,'')) <> '' THEN trim(sec.homeroom_teacher_name) \
+                ELSE homeroom.fullName END AS homeroomTeacherName, \
            homeroom.email AS homeroomTeacherEmail \
          ORDER BY s.fullName", crate::school_portal::repository::PARENT
     ))
@@ -886,6 +903,9 @@ fn map_node_to_section(node: Node, enrolled_count: i64) -> Section {
             .get::<String>("homeroom_teacher_email")
             .ok()
             .filter(|s| !s.is_empty()),
+        homeroomTeacherLinked: node
+            .get::<String>("homeroom_staff_member_id")
+            .map_or(false, |id| !id.is_empty()),
         createdAt: parse_dt(node.get::<String>("created_at").ok()),
         updatedAt: parse_dt(node.get::<String>("updated_at").ok()),
     }
