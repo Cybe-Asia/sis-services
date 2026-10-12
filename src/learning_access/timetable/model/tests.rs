@@ -70,6 +70,7 @@ fn new_drafts_and_immutable_operation_ids_are_bounded() {
         expected_published_version: 0,
         action: Action::SaveDraft,
         operation_id: uuid::Uuid::new_v4().to_string(),
+        ad_hoc: false,
     };
     assert!(c.valid());
     c.action = Action::Publish;
@@ -119,4 +120,46 @@ fn material_link_is_optional_and_lesson_needs_its_chapter() {
     )
     .unwrap();
     assert_eq!(linked.lesson_id.as_deref(), Some("lesson-1"));
+}
+#[test]
+fn a_class_started_now_may_fall_on_a_weekend_or_holiday_but_only_within_minutes() {
+    let mut m = meeting();
+    // Saturday 2030-01-12 09:00-09:45 WIB.
+    m.starts_at = chrono::DateTime::parse_from_rfc3339("2030-01-12T02:00:00Z")
+        .unwrap()
+        .timestamp_millis() as u64;
+    m.ends_at = m.starts_at + 45 * 60_000;
+    let now = m.starts_at - 60_000;
+    assert_eq!(m.time_issues(now), vec!["NON_SCHOOL_DAY"]);
+    assert!(m.ad_hoc_issues(m.time_issues(now), now).is_empty());
+    assert!(m
+        .ad_hoc_issues(vec!["NON_SCHOOL_DAY", "SCHOOL_HOLIDAY"], now)
+        .is_empty());
+    // Every other rule stays: conflicts, a past start, a class that crosses midnight.
+    assert_eq!(
+        m.ad_hoc_issues(
+            vec!["SCHOOL_HOLIDAY", "TEACHER_CONFLICT", "PAST_MEETING"],
+            now
+        ),
+        vec!["PAST_MEETING", "TEACHER_CONFLICT"]
+    );
+    // Not a way to plan ahead or to book a long slot.
+    assert_eq!(
+        m.ad_hoc_issues(vec![], m.starts_at - 16 * 60_000),
+        vec!["AD_HOC_WINDOW"]
+    );
+    m.ends_at = m.starts_at + 3 * 3_600_000 + 1;
+    assert_eq!(m.ad_hoc_issues(vec![], now), vec!["AD_HOC_WINDOW"]);
+}
+#[test]
+fn an_ordinary_change_keeps_its_stored_request_and_the_flag_defaults_to_false() {
+    let raw = serde_json::json!({"meeting":meeting(),"expectedVersion":0,"expectedPublishedVersion":0,"action":"save_draft","operationId":"8e44e7e1-ae65-4eee-8881-5d6110d2736a"});
+    let change: Change = serde_json::from_value(raw.clone()).unwrap();
+    assert!(!change.ad_hoc);
+    assert_eq!(serde_json::to_value(&change).unwrap(), raw);
+    let mut flagged = raw;
+    flagged["adHoc"] = serde_json::json!(true);
+    let change: Change = serde_json::from_value(flagged.clone()).unwrap();
+    assert!(change.ad_hoc);
+    assert_eq!(serde_json::to_value(&change).unwrap(), flagged);
 }

@@ -286,6 +286,9 @@ async fn change_locked(
         match input.action {
             Action::Validate if state == "draft" => {
                 issues = validation::issues(tx, m, now).await?;
+                if input.ad_hoc {
+                    issues = m.ad_hoc_issues(issues, now);
+                }
                 if issues.is_empty() {
                     status = "validated";
                 } else {
@@ -294,6 +297,9 @@ async fn change_locked(
             }
             Action::Publish if state == "validated" => {
                 issues = validation::issues(tx, m, now).await?;
+                if input.ad_hoc {
+                    issues = m.ad_hoc_issues(issues, now);
+                }
                 if !issues.is_empty() {
                     return Err(invalid(issues));
                 }

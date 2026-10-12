@@ -77,6 +77,23 @@ impl Meeting {
         }
         issues
     }
+    /// A class started on the spot (an open house, a replacement class) may fall on a weekend
+    /// or a school holiday. In exchange it has to start within minutes and stay short, so the
+    /// waiver cannot be used to plan lessons outside the school calendar.
+    pub fn ad_hoc_issues(&self, issues: Vec<&'static str>, now: u64) -> Vec<&'static str> {
+        let mut issues: Vec<_> = issues
+            .into_iter()
+            .filter(|code| !matches!(*code, "NON_SCHOOL_DAY" | "SCHOOL_HOLIDAY"))
+            .collect();
+        if self.starts_at > now.saturating_add(15 * 60_000)
+            || self.ends_at.saturating_sub(self.starts_at) > 3 * 3_600_000
+        {
+            issues.push("AD_HOC_WINDOW");
+        }
+        issues.sort_unstable();
+        issues.dedup();
+        issues
+    }
     pub fn key(&self) -> String {
         format!(
             "{}:{}{}:{}{}:{}{}:{}",
@@ -110,6 +127,10 @@ pub struct Change {
     pub expected_published_version: u32,
     pub action: Action,
     pub operation_id: String,
+    /// The meeting is a class started now; see `Meeting::ad_hoc_issues`. Omitted when false so
+    /// the stored request of an ordinary change, which operation replays compare, is unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ad_hoc: bool,
 }
 impl Change {
     pub fn valid(&self) -> bool {

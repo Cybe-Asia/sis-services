@@ -75,6 +75,7 @@ fn command(meeting: Meeting, action: Action, version: u32, pv: u32) -> Change {
         expected_published_version: pv,
         action,
         operation_id: uuid::Uuid::new_v4().to_string(),
+        ad_hoc: false,
     }
 }
 fn first_day() -> chrono::NaiveDate {

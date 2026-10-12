@@ -55,7 +55,8 @@ async fn change(
 ) -> Result<Json<Value>, Failure> {
     let Json(mut input) = input.map_err(|_| failure(StatusCode::BAD_REQUEST))?;
     input.meeting.room_id = input.meeting.room_id.to_ascii_lowercase();
-    if !input.valid() {
+    // A class started now belongs to the Teacher's Learning workspace, not to timetable planning.
+    if !input.valid() || input.ad_hoc {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let (actor, role) =
