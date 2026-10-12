@@ -626,7 +626,7 @@ async fn homeroom_link(g: &Graph, f: &Fixture) {
     let email = format!("{}@teacher.example.test", f.tag);
     let typed = email.to_uppercase();
     let staff = |q: neo4rs::Query| q.param("teacher", f.teacher.staff.clone()).param("email", email.clone());
-    g.run(staff(f.params(query("MATCH(t:StaffMember {id:$teacher}) SET t.email=$email,t.fullName='Synthetic homeroom teacher'")))).await.unwrap();
+    g.run(staff(f.params(query("MATCH(t:StaffMember {id:$teacher}) SET t.primaryEmail=$email,t.displayName='Synthetic homeroom teacher'")))).await.unwrap();
     let linked_by = |by: &AdminActor| {
         let q = staff(f.params(query("MATCH(s:Section {section_id:$next}) WHERE s.homeroom_staff_member_id=$teacher AND s.homeroom_staff_linked_by=$by AND s.homeroom_staff_linked_at IS NOT NULL RETURN count(s) AS n"))).param("by", by.staff.clone());
         async move { g.execute(q).await.unwrap().next().await.unwrap().unwrap().get::<i64>("n").unwrap() }
@@ -649,13 +649,32 @@ async fn homeroom_link(g: &Graph, f: &Fixture) {
     assert_eq!(count(g, f, audits).await, 1);
     assert!(r::find_section_by_id(g, &f.owner, &f.next).await.unwrap().unwrap().homeroomTeacherLinked);
     assert_eq!(contact().await, (Some("Ibu Wali".into()), Some(email.clone())));
+    // The Parent can now ask this teacher for an appointment, and nobody else.
+    let appointment = |teacher: &str| crate::models::parent_request::ParentRequestInput {
+        idempotency_key: uuid::Uuid::new_v4().to_string(),
+        student_id: f.child.clone(),
+        kind: crate::models::parent_request::RequestKind::Appointment,
+        date: crate::school_portal::model::school_today().to_string(),
+        time: Some("10:00".into()),
+        teacher_email: Some(teacher.into()),
+        reason: None,
+        note: "Synthetic appointment".into(),
+    };
+    let parent = format!("{}-parent", f.tag);
+    assert!(crate::repositories::parent_request_repository::create(g, &parent, &appointment("nobody@teacher.example.test")).await.unwrap().is_none());
+    assert!(crate::repositories::parent_request_repository::create(g, &parent, &appointment(&typed)).await.unwrap().is_some());
+    // Without an entered name the Parent sees the directory's display name.
+    assert!(r::set_homeroom_teacher(g, &f.scoped, &f.next, None, Some(&email)).await.unwrap().homeroomTeacherLinked);
+    assert_eq!(contact().await, (Some("Synthetic homeroom teacher".into()), Some(email.clone())));
+    r::set_homeroom_teacher(g, &f.scoped, &f.next, Some("Ibu Wali"), Some(&email)).await.unwrap();
+    assert_eq!(count(g, f, audits).await, 3);
 
     // Callers without admin authority over the section's school change nothing, linked or not.
     denied(r::set_homeroom_teacher(g, &f.teacher, &f.next, None, None).await);
     denied(r::set_homeroom_teacher(g, &f.finance, &f.next, None, Some("nobody@teacher.example.test")).await);
     denied(r::set_homeroom_teacher(g, &f.scoped, &f.foreign, None, Some(&email)).await);
     assert_eq!(linked_by(&f.scoped).await, 1);
-    assert_eq!(count(g, f, audits).await, 1);
+    assert_eq!(count(g, f, audits).await, 3);
 
     // A name correction leaves the address as it was and keeps the link, whoever made it.
     let renamed = r::set_homeroom_teacher(g, &f.owner, &f.next, Some("Ibu Wali Kelas"), Some(&email)).await.unwrap();
@@ -690,10 +709,10 @@ async fn homeroom_link(g: &Graph, f: &Fixture) {
         g.run(staff(f.params(query(restore)))).await.unwrap();
     }
     // An empty address never matches a teacher who has none.
-    g.run(staff(f.params(query("MATCH(t:StaffMember {id:$teacher}) SET t.email=''")))).await.unwrap();
+    g.run(staff(f.params(query("MATCH(t:StaffMember {id:$teacher}) SET t.primaryEmail=''")))).await.unwrap();
     assert!(!r::set_homeroom_teacher(g, &f.owner, &f.next, Some("Ibu Wali"), None).await.unwrap().homeroomTeacherLinked);
     assert_eq!(count(g, f, unlinked).await, 1);
-    g.run(staff(f.params(query("MATCH(t:StaffMember {id:$teacher}) SET t.email=$email")))).await.unwrap();
+    g.run(staff(f.params(query("MATCH(t:StaffMember {id:$teacher}) SET t.primaryEmail=$email")))).await.unwrap();
 
     // Clearing the address removes the link.
     assert!(r::set_homeroom_teacher(g, &f.owner, &f.next, None, Some(&email)).await.unwrap().homeroomTeacherLinked);
@@ -764,6 +783,6 @@ async fn homeroom_panel_links_exactly_one_active_teacher() {
         homeroom_link(&g2, &f).await;
     })
     .await;
-    g.run(query("MATCH(n) WHERE n.sis_academic_test=$tag OR ((n:Section OR n:SISAcademicAudit) AND n.school_id IN [$school,$other]) DETACH DELETE n").param("tag", tag).param("school", school).param("other", other)).await.unwrap();
+    g.run(query("MATCH(n) WHERE n.sis_academic_test=$tag OR ((n:Section OR n:SISAcademicAudit OR n:ParentSchoolRequest) AND n.school_id IN [$school,$other]) DETACH DELETE n").param("tag", tag).param("school", school).param("other", other)).await.unwrap();
     outcome.unwrap();
 }

@@ -214,7 +214,9 @@ pub async fn find_section_by_id(
 /// and the acting admin is recorded on the section. When the email was changed
 /// or cleared and names no such teacher, the link is removed, so the rights
 /// never outlive the panel; a save that leaves the email as it was (a name
-/// correction) keeps an existing link untouched.
+/// correction) keeps an existing link untouched. The staff directory keeps a
+/// member's address in `primaryEmail` and name in `displayName`; `email` and
+/// `fullName` are read as the older spelling of the same.
 pub async fn set_homeroom_teacher(
     graph: &Graph,
     actor: &AdminActor,
@@ -229,7 +231,7 @@ pub async fn set_homeroom_teacher(
     let q = query(
         "MATCH (s:Section {section_id: $id}) \
          OPTIONAL MATCH (t:StaffMember {membershipStatus:'ACTIVE'}) \
-         WHERE $email <> '' AND coalesce(t.id,'') <> '' AND toLower(coalesce(t.email,'')) = toLower($email) \
+         WHERE $email <> '' AND coalesce(t.id,'') <> '' AND toLower(coalesce(t.primaryEmail, t.email, '')) = toLower($email) \
            AND 'teacher' IN coalesce(t.roles,[]) \
            AND s.school_id IN coalesce(t.schoolIds,[]) AND s.tenant_id IN coalesce(t.tenantIds,[]) \
            AND NOT EXISTS { MATCH (other:StaffMember {id: t.id}) WHERE other <> t } \
@@ -438,10 +440,10 @@ pub async fn list_parent_sections(
            sec.school_id AS schoolId, \
            CASE WHEN homeroom IS NULL THEN null \
                 WHEN trim(coalesce(sec.homeroom_teacher_name,'')) <> '' \
-                  AND toLower(coalesce(sec.homeroom_teacher_email,'')) = toLower(coalesce(homeroom.email,'')) \
+                  AND toLower(coalesce(sec.homeroom_teacher_email,'')) = toLower(coalesce(homeroom.primaryEmail, homeroom.email, '')) \
                   THEN trim(sec.homeroom_teacher_name) \
-                ELSE homeroom.fullName END AS homeroomTeacherName, \
-           homeroom.email AS homeroomTeacherEmail \
+                ELSE coalesce(homeroom.displayName, homeroom.fullName) END AS homeroomTeacherName, \
+           coalesce(homeroom.primaryEmail, homeroom.email) AS homeroomTeacherEmail \
          ORDER BY s.fullName", crate::school_portal::repository::PARENT
     ))
     .param("lead_ids", lead_ids.to_vec()).param("sub",principal);
