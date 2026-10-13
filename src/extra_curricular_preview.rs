@@ -4,6 +4,7 @@ mod education_calendar;
 mod extra_curricular;
 mod learning_access;
 mod models;
+mod school_articles;
 mod school_portal;
 mod utils;
 #[derive(Clone)]

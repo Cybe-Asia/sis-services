@@ -75,8 +75,10 @@ pub async fn init(graph: &Graph) -> Result<(), Error> {
     Ok(())
 }
 
+mod articles;
 mod parent;
 mod teacher;
+pub use articles::{cover as article_cover, view as article_view};
 pub use parent::{mark_read, parent_calendar, parent_snapshot, preferences, rsvp};
 #[cfg(test)]
 pub use teacher::{attendance, publish, review};

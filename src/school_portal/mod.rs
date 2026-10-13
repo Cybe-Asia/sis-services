@@ -169,6 +169,8 @@ async fn rsvp(
     }
     saved(repository::rsvp(&s.graph, &sub, &id, &v).await)
 }
+/// Marks an identifier on the read route as a published article rather than a notice.
+const ARTICLE_PREFIX: &str = "article:";
 async fn read(
     State(s): State<AppState>,
     h: HeaderMap,
@@ -177,6 +179,13 @@ async fn read(
     let sub = auth::parent(&h)?;
     if !model::identifier(&id) {
         return Err(failure(StatusCode::BAD_REQUEST));
+    }
+    // An article shares the read route the Parent gateway already allows; its prefix names it.
+    if let Some(article) = id.strip_prefix(ARTICLE_PREFIX) {
+        if article.is_empty() {
+            return Err(failure(StatusCode::BAD_REQUEST));
+        }
+        return saved(repository::article_view(&s.graph, &sub, article).await);
     }
     saved(repository::mark_read(&s.graph, &sub, &id).await)
 }

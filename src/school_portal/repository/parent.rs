@@ -41,11 +41,13 @@ pub async fn parent_snapshot(graph: &Graph, sub: &str) -> Result<Value, Error> {
     while let Some(r) = notices.next().await? {
         messages.push(json!({"id":r.get::<String>("id")?,"title":r.get::<String>("title")?,"body":r.get::<String>("body")?,"read":r.get::<bool>("read")?,"createdAt":r.get::<String>("created")?}));
     }
+    // Articles and webinars travel apart as announcements do, so an earlier client keeps reading.
+    let articles = super::articles::published(graph, sub).await?;
     let mut prefs=graph.execute(query(&format!("{PARENT} WITH DISTINCT u RETURN coalesce(u.school_preferences_version,0) AS version,coalesce(u.school_locale,'en') AS locale,coalesce(u.school_theme,'system') AS theme,coalesce(u.school_notifications,true) AS notifications")).param("sub",sub)).await?;
     let r = prefs.next().await?.ok_or("Parent missing")?;
     let preferences = json!({"version":r.get::<i64>("version")?,"locale":r.get::<String>("locale")?,"theme":r.get::<String>("theme")?,"notifications":r.get::<bool>("notifications")?});
     Ok(
-        json!({"records":published,"announcements":announcements,"educationCalendar":education_calendar,"classMeetings":class_meetings,"attendance":attendance,"messages":messages,"preferences":preferences}),
+        json!({"records":published,"announcements":announcements,"educationCalendar":education_calendar,"classMeetings":class_meetings,"attendance":attendance,"messages":messages,"articles":articles,"preferences":preferences}),
     )
 }
 pub async fn preferences(graph: &Graph, sub: &str, input: &Preferences) -> Result<bool, Error> {

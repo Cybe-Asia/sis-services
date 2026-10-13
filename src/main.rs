@@ -43,6 +43,7 @@ mod handlers;
 mod learning_access;
 mod school_portal;
 mod education_calendar;
+mod school_articles;
 mod school_rooms;
 mod extra_curricular;
 mod models;
@@ -128,6 +129,7 @@ async fn main() {
 
     education_calendar::repository::init(&graph).await.expect("failed to initialize education calendar indexes");
     school_rooms::init(&graph).await.expect("failed to initialize school room indexes");
+    school_articles::repository::init(&graph).await.expect("failed to initialize school article indexes");
     extra_curricular::repository::init(&graph).await.expect("extracurricular schema initialization failed");
 
     let state = AppState {
@@ -143,6 +145,7 @@ async fn main() {
         .merge(learning_access::router())
         .merge(school_portal::router())
         .merge(education_calendar::router())
+        .merge(school_articles::router())
         .merge(school_rooms::router())
         .merge(extra_curricular::router())
         .merge(
