@@ -1,4 +1,4 @@
-use super::super::model::{Preferences, PublishedRecord, Rsvp};
+use super::super::model::{NotificationCategories, ParentPreferences, PublishedRecord, Rsvp};
 use super::{parent_write_prefix, Error, PARENT, PARENT_SECTION};
 use neo4rs::{query, Graph};
 use serde_json::{json, Value};
@@ -43,15 +43,28 @@ pub async fn parent_snapshot(graph: &Graph, sub: &str) -> Result<Value, Error> {
     }
     // Articles and webinars travel apart as announcements do, so an earlier client keeps reading.
     let articles = super::articles::published(graph, sub).await?;
-    let mut prefs=graph.execute(query(&format!("{PARENT} WITH DISTINCT u RETURN coalesce(u.school_preferences_version,0) AS version,coalesce(u.school_locale,'en') AS locale,coalesce(u.school_theme,'system') AS theme,coalesce(u.school_notifications,true) AS notifications")).param("sub",sub)).await?;
+    let mut prefs=graph.execute(query(&format!("{PARENT} WITH DISTINCT u RETURN coalesce(u.school_preferences_version,0) AS version,coalesce(u.school_locale,'en') AS locale,coalesce(u.school_theme,'system') AS theme,coalesce(u.school_notifications,true) AS notifications,u.school_notify_class_schedule AS class_schedule,u.school_notify_announcements AS announcements,u.school_notify_messages AS messages")).param("sub",sub)).await?;
     let r = prefs.next().await?.ok_or("Parent missing")?;
-    let preferences = json!({"version":r.get::<i64>("version")?,"locale":r.get::<String>("locale")?,"theme":r.get::<String>("theme")?,"notifications":r.get::<bool>("notifications")?});
+    let notifications = r.get::<bool>("notifications")?;
+    // The single switch stays in the response for clients that predate the categories.
+    let categories = NotificationCategories::stored(
+        notifications,
+        ["class_schedule", "announcements", "messages"].map(|name| r.get::<bool>(name).ok()),
+    );
+    let preferences = json!({"version":r.get::<i64>("version")?,"locale":r.get::<String>("locale")?,"theme":r.get::<String>("theme")?,"notifications":notifications,"notificationCategories":categories});
     Ok(
         json!({"records":published,"announcements":announcements,"educationCalendar":education_calendar,"classMeetings":class_meetings,"attendance":attendance,"messages":messages,"articles":articles,"preferences":preferences}),
     )
 }
-pub async fn preferences(graph: &Graph, sub: &str, input: &Preferences) -> Result<bool, Error> {
-    let q=query(&format!("{} WITH DISTINCT u WHERE coalesce(u.school_preferences_version,0)=$version SET u.school_preferences_version=$version+1,u.school_locale=$locale,u.school_theme=$theme,u.school_notifications=$notifications CREATE(:SchoolPortalAudit {{id:$audit,actor_id:u.id,kind:'preferences',created_at:datetime()}}) RETURN true AS saved",parent_write_prefix())).param("sub",sub).param("version",i64::from(input.version)).param("locale",input.locale.clone()).param("theme",input.theme.clone()).param("notifications",input.notifications).param("audit",uuid::Uuid::new_v4().to_string());
+pub async fn preferences(
+    graph: &Graph,
+    sub: &str,
+    input: &ParentPreferences,
+) -> Result<bool, Error> {
+    // Every save writes the single switch and the three categories together, so they never
+    // disagree after a save by this release.
+    let (notifications, categories) = input.notification_switches();
+    let q=query(&format!("{} WITH DISTINCT u WHERE coalesce(u.school_preferences_version,0)=$version SET u.school_preferences_version=$version+1,u.school_locale=$locale,u.school_theme=$theme,u.school_notifications=$notifications,u.school_notify_class_schedule=$class_schedule,u.school_notify_announcements=$announcements,u.school_notify_messages=$messages CREATE(:SchoolPortalAudit {{id:$audit,actor_id:u.id,kind:'preferences',created_at:datetime()}}) RETURN true AS saved",parent_write_prefix())).param("sub",sub).param("version",i64::from(input.version)).param("locale",input.locale.clone()).param("theme",input.theme.clone()).param("notifications",notifications).param("class_schedule",categories.class_schedule).param("announcements",categories.announcements).param("messages",categories.messages).param("audit",uuid::Uuid::new_v4().to_string());
     let mut rows = graph.execute(q).await?;
     let saved = rows.next().await?.is_some();
     while rows.next().await?.is_some() {}
@@ -135,3 +148,5 @@ pub async fn parent_calendar(
         crate::learning_access::timetable::reads::published_in_window(graph, q, start, end).await?;
     Ok(Some(page))
 }
+#[cfg(test)]
+mod tests;

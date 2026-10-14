@@ -45,6 +45,34 @@ sis-services reads `(Lead)`, `(User)`, `(:Student)`, `(EnrolledStudent)` but nev
 - `GET    /api/leads/v1/me/attendance` — 14-day window attendance
 - `GET    /api/leads/v1/me/sections` — sections each kid is assigned to
 
+#### Parent school preferences
+
+- `GET /api/leads/v1/me/school`: the snapshot's `preferences` is
+  `{ version, locale, theme, notifications, notificationCategories }`, where
+  `notificationCategories` is `{ classSchedule, announcements, messages }`
+  (booleans) and is always present. A Parent who never saved categories gets
+  three copies of `notifications`. `notifications` stays in the response for
+  clients that predate the categories.
+- `POST /api/leads/v1/me/school/preferences`: body
+  `{ version, locale, theme, notifications, notificationCategories? }`.
+  Unknown fields are rejected (`400 INVALID_INPUT`), also inside the object.
+  - Without `notificationCategories` (or with `null`) the save behaves as
+    before and sets all three categories to the value of `notifications`.
+  - With it, all three booleans are required; they are stored as sent and
+    `notifications` is stored as their OR, whatever the body said.
+  - Unchanged: compare-and-set on `version` (`409 REVISION_CONFLICT` when
+    stale), response `{ "responseCode": 200, "data": { "saved": true } }`,
+    and one `SchoolPortalAudit` of kind `preferences` (ids only) per save.
+- Storage: `school_notify_class_schedule`, `school_notify_announcements` and
+  `school_notify_messages` on the Parent's `User`, next to the existing
+  `school_notifications`. No constraint, index or migration. A release without
+  the categories ignores the three properties; if it then changes
+  `notifications`, the snapshot reports three copies of that newer value until
+  the next save.
+- The Student preferences endpoint
+  (`/api/v1/sis-service/learning/owner/student/preferences`) is unchanged and
+  does not accept `notificationCategories`.
+
 URL prefix `/api/leads/v1/*` is inherited from the admissions convention; Traefik routes `…/sis/…` and the three `me/{grades,attendance,sections}` paths to this service. See `digital-school-gitops/lab/*/ingress.yaml`.
 
 ## Architecture

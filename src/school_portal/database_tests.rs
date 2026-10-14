@@ -138,11 +138,12 @@ async fn teacher_parent_school_journey_and_scope() {
     )
     .await
     .unwrap());
-    let prefs = Preferences {
+    let prefs = ParentPreferences {
         version: 0,
         locale: "id".into(),
         theme: "dark".into(),
         notifications: true,
+        notification_categories: None,
     };
     assert!(repo::preferences(&g, "parent", &prefs).await.unwrap());
     assert!(!repo::preferences(&g, "parent", &prefs).await.unwrap());
@@ -375,11 +376,12 @@ async fn teacher_parent_school_journey_and_scope() {
         repo::preferences(
             &copy,
             "parent",
-            &Preferences {
+            &ParentPreferences {
                 version: 1,
                 locale: "en".into(),
                 theme: "system".into(),
                 notifications: true,
+                notification_categories: None,
             },
         )
         .await

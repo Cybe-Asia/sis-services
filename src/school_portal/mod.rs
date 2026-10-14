@@ -147,7 +147,7 @@ async fn parent_growth(
 async fn preferences(
     State(s): State<AppState>,
     h: HeaderMap,
-    input: Result<Json<model::Preferences>, JsonRejection>,
+    input: Result<Json<model::ParentPreferences>, JsonRejection>,
 ) -> Result<Json<Value>, Failure> {
     let sub = auth::parent(&h)?;
     let Json(v) = input.map_err(|_| failure(StatusCode::BAD_REQUEST))?;

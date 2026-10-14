@@ -254,6 +254,53 @@ impl Review {
             && self.note.len() <= 2000
     }
 }
+/// The three notification switches of a Parent. When sent, all three are required.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NotificationCategories {
+    pub class_schedule: bool,
+    pub announcements: bool,
+    pub messages: bool,
+}
+impl NotificationCategories {
+    pub fn all(value: bool) -> Self {
+        Self {
+            class_schedule: value,
+            announcements: value,
+            messages: value,
+        }
+    }
+    pub fn any(&self) -> bool {
+        self.class_schedule || self.announcements || self.messages
+    }
+    /// The categories to report for what is stored on the User. They count only when all three
+    /// were saved and still agree with the single switch; otherwise the single switch is the
+    /// newer truth (never saved, or last saved by a release that predates the categories) and
+    /// each category equals it.
+    pub fn stored(notifications: bool, saved: [Option<bool>; 3]) -> Self {
+        match saved {
+            [Some(class_schedule), Some(announcements), Some(messages)] => {
+                let categories = Self {
+                    class_schedule,
+                    announcements,
+                    messages,
+                };
+                if categories.any() == notifications {
+                    categories
+                } else {
+                    Self::all(notifications)
+                }
+            }
+            _ => Self::all(notifications),
+        }
+    }
+}
+fn preference_fields(version: u32, locale: &str, theme: &str) -> bool {
+    version < i32::MAX as u32
+        && ["en", "id"].contains(&locale)
+        && ["light", "dark", "system"].contains(&theme)
+}
+/// Student preferences. The Parent body is `ParentPreferences`; this one has no categories.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Preferences {
@@ -264,9 +311,35 @@ pub struct Preferences {
 }
 impl Preferences {
     pub fn valid(&self) -> bool {
-        self.version < i32::MAX as u32
-            && ["en", "id"].contains(&self.locale.as_str())
-            && ["light", "dark", "system"].contains(&self.theme.as_str())
+        preference_fields(self.version, &self.locale, &self.theme)
+    }
+}
+/// Parent preferences: the same four fields plus the optional notification categories.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ParentPreferences {
+    pub version: u32,
+    pub locale: String,
+    pub theme: String,
+    pub notifications: bool,
+    /// Optional: a client that predates the categories sends only the single switch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_categories: Option<NotificationCategories>,
+}
+impl ParentPreferences {
+    pub fn valid(&self) -> bool {
+        preference_fields(self.version, &self.locale, &self.theme)
+    }
+    /// What a save stores: with categories, the single switch becomes their OR; without them,
+    /// each category takes the value of the single switch.
+    pub fn notification_switches(&self) -> (bool, NotificationCategories) {
+        match self.notification_categories {
+            Some(categories) => (categories.any(), categories),
+            None => (
+                self.notifications,
+                NotificationCategories::all(self.notifications),
+            ),
+        }
     }
 }
 #[derive(Deserialize)]
@@ -364,5 +437,164 @@ mod tests {
         assert!(reply("approved").valid() && reply("approved").approval());
         assert!(reply("attending").valid() && !reply("attending").approval());
         assert!(!reply("maybe").valid());
+    }
+    fn preferences(body: &str) -> Result<ParentPreferences, serde_json::Error> {
+        serde_json::from_str(body)
+    }
+    const LIVE_CLIENT: &str = r#"{"version":3,"locale":"id","theme":"dark","notifications":false}"#;
+    #[test]
+    fn preferences_without_categories_behave_as_before() {
+        // The body the live client sends: four fields, no categories.
+        let off = preferences(LIVE_CLIENT).unwrap();
+        assert!(off.valid() && off.notification_categories.is_none());
+        assert_eq!(
+            off.notification_switches(),
+            (false, NotificationCategories::all(false))
+        );
+        let on = preferences(&LIVE_CLIENT.replace("false", "true")).unwrap();
+        assert_eq!(
+            on.notification_switches(),
+            (true, NotificationCategories::all(true))
+        );
+        // An explicit null is the same as leaving the object out.
+        let null = preferences(
+            r#"{"version":0,"locale":"en","theme":"system","notifications":true,"notificationCategories":null}"#,
+        )
+        .unwrap();
+        assert!(null.notification_categories.is_none());
+        // A value that came from such a client serialises exactly as it arrived.
+        assert_eq!(
+            serde_json::to_value(&off).unwrap(),
+            serde_json::from_str::<serde_json::Value>(LIVE_CLIENT).unwrap()
+        );
+        // The single switch stays required.
+        assert!(preferences(r#"{"version":0,"locale":"en","theme":"system"}"#).is_err());
+    }
+    #[test]
+    fn preferences_with_categories_store_them_and_their_or() {
+        let with = |notifications: bool, categories: &str| {
+            preferences(&format!(
+                r#"{{"version":0,"locale":"en","theme":"system","notifications":{notifications},"notificationCategories":{categories}}}"#
+            ))
+        };
+        let one = with(
+            false,
+            r#"{"classSchedule":false,"announcements":true,"messages":false}"#,
+        )
+        .unwrap();
+        assert!(one.valid());
+        // The single switch is derived from the categories, whatever the client sent for it.
+        assert_eq!(
+            one.notification_switches(),
+            (
+                true,
+                NotificationCategories {
+                    class_schedule: false,
+                    announcements: true,
+                    messages: false
+                }
+            )
+        );
+        let none = with(
+            true,
+            r#"{"classSchedule":false,"announcements":false,"messages":false}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            none.notification_switches(),
+            (false, NotificationCategories::all(false))
+        );
+        let all = with(
+            false,
+            r#"{"classSchedule":true,"announcements":true,"messages":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            all.notification_switches(),
+            (true, NotificationCategories::all(true))
+        );
+        // All three are required, typed, and nothing else is accepted.
+        for rejected in [
+            r#"{}"#,
+            r#"{"classSchedule":true,"announcements":true}"#,
+            r#"{"classSchedule":true,"announcements":true,"messages":"yes"}"#,
+            r#"{"classSchedule":true,"announcements":true,"messages":1}"#,
+            r#"{"classSchedule":true,"announcements":true,"messages":true,"marketing":true}"#,
+            r#"{"class_schedule":true,"announcements":true,"messages":true}"#,
+            r#"true"#,
+            r#"[true,true]"#,
+            r#""all""#,
+        ] {
+            assert!(with(true, rejected).is_err(), "{rejected}");
+        }
+        // Unknown top-level fields are still rejected.
+        assert!(preferences(
+            r#"{"version":0,"locale":"en","theme":"system","notifications":true,"userId":"other"}"#
+        )
+        .is_err());
+        // Locale, theme and version limits are the ones the four-field body always had.
+        let mut limits = all.clone();
+        limits.locale = "fr".into();
+        assert!(!limits.valid());
+        limits.locale = "en".into();
+        limits.theme = "sepia".into();
+        assert!(!limits.valid());
+        limits.theme = "light".into();
+        limits.version = i32::MAX as u32;
+        assert!(!limits.valid());
+    }
+    #[test]
+    fn student_preferences_do_not_accept_parent_categories() {
+        assert!(serde_json::from_str::<Preferences>(LIVE_CLIENT).is_ok_and(|v| v.valid()));
+        assert!(serde_json::from_str::<Preferences>(
+            r#"{"version":0,"locale":"en","theme":"system","notifications":true,"notificationCategories":{"classSchedule":true,"announcements":true,"messages":true}}"#
+        )
+        .is_err());
+    }
+    #[test]
+    fn snapshot_categories_default_to_the_single_switch() {
+        let never = [None, None, None];
+        // Never saved: each category equals the single switch (which itself defaults to on).
+        assert_eq!(
+            NotificationCategories::stored(true, never),
+            NotificationCategories::all(true)
+        );
+        assert_eq!(
+            NotificationCategories::stored(false, never),
+            NotificationCategories::all(false)
+        );
+        // Saved categories are reported as saved.
+        let saved = [Some(true), Some(false), Some(false)];
+        assert_eq!(
+            NotificationCategories::stored(true, saved),
+            NotificationCategories {
+                class_schedule: true,
+                announcements: false,
+                messages: false
+            }
+        );
+        assert_eq!(
+            NotificationCategories::stored(false, [Some(false); 3]),
+            NotificationCategories::all(false)
+        );
+        // A release without categories changed the single switch afterwards: it wins.
+        assert_eq!(
+            NotificationCategories::stored(false, saved),
+            NotificationCategories::all(false)
+        );
+        assert_eq!(
+            NotificationCategories::stored(true, [Some(false); 3]),
+            NotificationCategories::all(true)
+        );
+        // A partial set is not a saved choice.
+        assert_eq!(
+            NotificationCategories::stored(true, [Some(false), None, Some(false)]),
+            NotificationCategories::all(true)
+        );
+        // The snapshot shape the client reads.
+        assert_eq!(
+            serde_json::to_value(NotificationCategories::stored(true, saved)).unwrap(),
+            serde_json::json!({"classSchedule":true,"announcements":false,"messages":false})
+        );
     }
 }
