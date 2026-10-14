@@ -67,6 +67,16 @@ async fn paid_offer_handover_replay_scope_cas_and_no_legacy_repair() {
         let retry=repository::execute(&g,&a,&c).await.unwrap();assert_eq!(retry.enrolled_student_id,first.enrolled_student_id);assert_eq!(retry.student_number,first.student_number);
         assert_eq!(count(&g,"MATCH(e:EnrolledStudent {applicant_student_id:$student}) RETURN count(e) AS n",&c.student_id).await,1);
         assert_eq!(count(&g,"MATCH(a:SISEnrollmentAudit {student_id:$student}) RETURN count(a) AS n",&c.student_id).await,1);
+        // Grade 7 in 2026/2027 at a school that is neither IISS nor IIHS: the junior stage ends with grade 9.
+        assert_eq!(count(&g,"MATCH(e:EnrolledStudent {applicant_student_id:$student}) RETURN e.entry_year*10000+e.graduation_year AS n",&c.student_id).await,20262029);
+        // A child placed before the years were stored gets them from its section, and stored years are left alone.
+        g.run(query("MATCH(e:EnrolledStudent {applicant_student_id:$student}) REMOVE e.entry_year,e.graduation_year").param("student",c.student_id.clone())).await.unwrap();
+        assert!(super::school_years::backfill(&g).await.unwrap()>=1);
+        assert_eq!(count(&g,"MATCH(e:EnrolledStudent {applicant_student_id:$student}) RETURN e.entry_year*10000+e.graduation_year AS n",&c.student_id).await,20262029);
+        g.run(query("MATCH(e:EnrolledStudent {applicant_student_id:$student}) SET e.graduation_year=2030").param("student",c.student_id.clone())).await.unwrap();
+        super::school_years::backfill(&g).await.unwrap();
+        assert_eq!(count(&g,"MATCH(e:EnrolledStudent {applicant_student_id:$student}) RETURN e.graduation_year AS n",&c.student_id).await,2030);
+        g.run(query("MATCH(e:EnrolledStudent {applicant_student_id:$student}) SET e.graduation_year=2029").param("student",c.student_id.clone())).await.unwrap();
         let mut conflict=c.clone();conflict.idempotency_key.push_str("-other");assert!(matches!(repository::execute(&g,&a,&conflict).await,Err(repository::Error::Conflict)));
         let mut wrong=c.clone();wrong.tenant_id.push_str("-foreign");assert!(matches!(repository::execute(&g,&a,&wrong).await,Err(repository::Error::Denied)));
         let mut expired=a.clone();expired.expires=chrono::Utc::now().timestamp()-1;assert!(matches!(repository::execute(&g,&expired,&c).await,Err(repository::Error::Denied)));

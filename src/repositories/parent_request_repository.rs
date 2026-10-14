@@ -69,7 +69,7 @@ mod tests {
         .await
         .unwrap();
         let mark = format!("school-request-check-{}", uuid::Uuid::new_v4());
-        graph.run(query("CREATE(u:User {id:$mark,email:$parent,role:'parent',workflow_test:$mark})-[:HAS_APPLICATION]->(l:Lead {lead_id:$mark,email:$parent,status:'verified',workflow_test:$mark})-[:HAS_STUDENT]->(:Student {studentId:$mark,fullName:'Isolated request check',workflow_test:$mark})-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:$mark,tenant_id:$mark,workflow_test:$mark})-[:ENROLLED_IN]->(:Section {section_id:$mark,name:'Isolated class',status:'active',school_id:$mark,tenant_id:$mark,homeroom_staff_member_id:$mark,homeroom_teacher_email:'legacy@example.test',workflow_test:$mark}) CREATE(:StaffMember {id:$mark,email:$teacher,fullName:'Current homeroom',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:[$mark],tenantIds:[$mark],workflow_test:$mark})").param("mark",mark.clone()).param("parent",format!("{mark}@parent.test")).param("teacher",format!("{mark}@teacher.test"))).await.unwrap();
+        graph.run(query("CREATE(u:User {id:$mark,email:$parent,role:'parent',workflow_test:$mark})-[:HAS_APPLICATION]->(l:Lead {lead_id:$mark,email:$parent,status:'verified',workflow_test:$mark})-[:HAS_STUDENT]->(:Student {studentId:$mark,fullName:'Isolated request check',workflow_test:$mark})-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:$mark,tenant_id:$mark,entry_year:2026,graduation_year:2029,workflow_test:$mark})-[:ENROLLED_IN]->(:Section {section_id:$mark,name:'Isolated class',status:'active',school_id:$mark,tenant_id:$mark,homeroom_staff_member_id:$mark,homeroom_teacher_email:'legacy@example.test',workflow_test:$mark}) CREATE(:StaffMember {id:$mark,email:$teacher,fullName:'Current homeroom',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:[$mark],tenantIds:[$mark],workflow_test:$mark})").param("mark",mark.clone()).param("parent",format!("{mark}@parent.test")).param("teacher",format!("{mark}@teacher.test"))).await.unwrap();
         let sections =
             super::super::sis_repository::list_parent_sections(&graph, &[mark.clone()], &mark)
                 .await
@@ -78,6 +78,8 @@ mod tests {
             sections[0].homeroomTeacherEmail,
             Some(format!("{mark}@teacher.test"))
         );
+        // The years stored with the enrolment reach the family.
+        assert_eq!((sections[0].entryYear, sections[0].graduationYear), (Some(2026), Some(2029)));
         // The Parent sees the name the school entered for this teacher, else the staff member's own name:
         // a name entered beside another address belongs to someone else and is not shown.
         assert_eq!(sections[0].homeroomTeacherName.as_deref(), Some("Current homeroom"));

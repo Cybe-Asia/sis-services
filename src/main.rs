@@ -131,6 +131,12 @@ async fn main() {
     school_rooms::init(&graph).await.expect("failed to initialize school room indexes");
     school_articles::repository::init(&graph).await.expect("failed to initialize school article indexes");
     extra_curricular::repository::init(&graph).await.expect("extracurricular schema initialization failed");
+    // Children placed before entry and graduation years were stored get them from their section; a failure only
+    // leaves those years empty for now.
+    match enrollment_handover::school_years::backfill(&graph).await {
+        Ok(count) => tracing::info!(count, "enrolled students given entry and graduation years"),
+        Err(error) => tracing::warn!(%error, "entry and graduation years were not filled"),
+    }
 
     let state = AppState {
         graph,

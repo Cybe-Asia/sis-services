@@ -87,7 +87,9 @@ pub async fn execute(graph: &Graph, actor: &Actor, c: &Command) -> Result<Receip
         let request=serde_json::to_string(c).map_err(|_|Error::Unavailable)?;
         let permanent=format!("STU-{}",uuid::Uuid::new_v4());
         let number=format!("{}{}-{}",c.school_id.trim_start_matches("SCH-"),chrono::Utc::now().format("%Y"),&uuid::Uuid::new_v4().simple().to_string()[..12]);
-        let q=parameters(&format!("{FAMILY}{CURRENT}{CREATE}"),actor,c).param("request",request).param("permanent",permanent).param("number",number).param("handover",format!("SISHAND-{}",uuid::Uuid::new_v4())).param("audit",format!("SISAUD-{}",uuid::Uuid::new_v4()));
+        // Stored with the placement; a year group or academic year it cannot read leaves both empty (null).
+        let years=super::school_years::school_years(&c.school_id,&c.year_group,&c.academic_year);
+        let q=parameters(&format!("{FAMILY}{CURRENT}{CREATE}"),actor,c).param("entry",years.map(|y|y.0)).param("graduation",years.map(|y|y.1)).param("request",request).param("permanent",permanent).param("number",number).param("handover",format!("SISHAND-{}",uuid::Uuid::new_v4())).param("audit",format!("SISAUD-{}",uuid::Uuid::new_v4()));
         let mut rows=tx.execute(q).await.map_err(|_|Error::Conflict)?;
         let row=rows.next(&mut tx).await.map_err(|_|Error::Unavailable)?.ok_or(Error::Conflict)?;
         let receipt=Receipt {contract_version:1,version:1,student_id:c.student_id.clone(),enrolled_student_id:row.get("permanent").map_err(|_|Error::Unavailable)?,student_number:row.get("number").map_err(|_|Error::Unavailable)?,school_id:c.school_id.clone(),tenant_id:c.tenant_id.clone(),section_id:c.section_id.clone(),year_group:c.year_group.clone(),academic_year:c.academic_year.clone(),enrolment_date:row.get("date").map_err(|_|Error::Unavailable)?};

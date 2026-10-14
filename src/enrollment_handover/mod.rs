@@ -12,6 +12,7 @@ mod billing;
 mod context;
 mod model;
 mod repository;
+pub(crate) mod school_years;
 #[cfg(test)]
 mod tests;
 type Failure = (StatusCode, Json<Value>);

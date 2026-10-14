@@ -10,7 +10,7 @@ WHERE (h.version=0 AND size(enrollments)=0 AND s.applicantStatus='enrolment_paid
        AND NOT EXISTS {MATCH(head_enrollment:EnrolledStudent)-[:ENROLLED_IN]->(other:Section) WHERE head_enrollment=head(enrollments) AND other<>sec})
 FOREACH(ignore IN CASE WHEN h.version=0 THEN [1] ELSE [] END |
   CREATE(e:EnrolledStudent {student_id:$permanent,student_number:$number,applicant_student_id:$student,
-      school_id:$school,tenant_id:$tenant,year_group:$year,status:'active',enrolment_date:toString(date()),
+      school_id:$school,tenant_id:$tenant,year_group:$year,status:'active',enrolment_date:toString(date()),entry_year:$entry,graduation_year:$graduation,
       created_at:datetime(),updated_at:datetime(),handover_id:$handover,version:1})
   CREATE(s)-[:ENROLLED_AS]->(e)
   CREATE(e)-[:ENROLLED_IN {assigned_at:datetime()}]->(sec)

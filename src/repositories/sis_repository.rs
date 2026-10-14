@@ -415,6 +415,9 @@ pub struct ParentSectionRow {
     pub schoolId: String,
     pub homeroomTeacherName: Option<String>,
     pub homeroomTeacherEmail: Option<String>,
+    /// The year the child joined the school and the year it finishes it, stored when it was placed.
+    pub entryYear: Option<i64>,
+    pub graduationYear: Option<i64>,
 }
 
 pub async fn list_parent_sections(
@@ -443,7 +446,8 @@ pub async fn list_parent_sections(
                   AND toLower(coalesce(sec.homeroom_teacher_email,'')) = toLower(coalesce(homeroom.primaryEmail, homeroom.email, '')) \
                   THEN trim(sec.homeroom_teacher_name) \
                 ELSE coalesce(homeroom.displayName, homeroom.fullName) END AS homeroomTeacherName, \
-           coalesce(homeroom.primaryEmail, homeroom.email) AS homeroomTeacherEmail \
+           coalesce(homeroom.primaryEmail, homeroom.email) AS homeroomTeacherEmail, \
+           e.entry_year AS entryYear, e.graduation_year AS graduationYear \
          ORDER BY s.fullName", crate::school_portal::repository::PARENT
     ))
     .param("lead_ids", lead_ids.to_vec()).param("sub",principal);
@@ -461,6 +465,8 @@ pub async fn list_parent_sections(
             schoolId: row.get::<String>("schoolId").unwrap_or_default(),
             homeroomTeacherName: row.get::<String>("homeroomTeacherName").ok().filter(|s| !s.is_empty()),
             homeroomTeacherEmail: row.get::<String>("homeroomTeacherEmail").ok().filter(|s| !s.is_empty()),
+            entryYear: row.get::<i64>("entryYear").ok(),
+            graduationYear: row.get::<i64>("graduationYear").ok(),
         });
     }
     Ok(out)
