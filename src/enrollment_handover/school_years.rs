@@ -24,11 +24,19 @@ fn grade(year_group: &str) -> Option<i64> {
     digits.parse().ok().filter(|g| (1..=12).contains(g))
 }
 
-/// The first calendar year of an academic year ("2026/2027" → 2026).
+/// The first calendar year of an academic year: "2026/2027" → 2026, and a section that names only its first year
+/// ("2026", as on staging) → 2026.
 fn entry_year(academic_year: &str) -> Option<i64> {
-    let (start, end) = academic_year.trim().split_once('/')?;
-    let (start, end): (i64, i64) = (start.parse().ok()?, end.parse().ok()?);
-    (start.to_string().len() == 4 && end == start + 1).then_some(start)
+    let academic_year = academic_year.trim();
+    let (start, end) = match academic_year.split_once('/') {
+        Some((start, end)) => (start, Some(end)),
+        None => (academic_year, None),
+    };
+    let start: i64 = start.parse().ok().filter(|_| start.len() == 4)?;
+    match end {
+        Some(end) => (end.parse::<i64>().ok()? == start + 1).then_some(start),
+        None => Some(start),
+    }
 }
 
 /// Entry and graduation year of a child placed in `year_group` for `academic_year`: one grade a year, finishing in
@@ -91,6 +99,7 @@ mod tests {
     fn counts_the_years_from_the_grade_and_academic_year_of_the_placement() {
         assert_eq!(school_years("SCH-IISS", "Grade 7", "2026/2027"), Some((2026, 2029)));
         assert_eq!(school_years("SCH-IISS", "year9", "2026/2027"), Some((2026, 2027)));
+        assert_eq!(school_years("SCH-IISS", "year7", "2026"), Some((2026, 2029)));
         assert_eq!(school_years("SCH-IIHS", "Grade 10", "2025/2026"), Some((2025, 2028)));
         assert_eq!(school_years("SCH-IIBS", "Kelas 8", "2026/2027"), Some((2026, 2028)));
         assert_eq!(school_years("SCH-IIBS", "Year 11", "2026/2027"), Some((2026, 2028)));
@@ -98,7 +107,8 @@ mod tests {
 
     #[test]
     fn stores_nothing_it_cannot_read() {
-        assert_eq!(school_years("SCH-IISS", "Grade 7", "2026"), None);
+        assert_eq!(school_years("SCH-IISS", "Grade 7", "26"), None);
+        assert_eq!(school_years("SCH-IISS", "Grade 7", "2026/"), None);
         assert_eq!(school_years("SCH-IISS", "Grade 7", "2026/2028"), None);
         assert_eq!(school_years("SCH-IISS", "Playgroup", "2026/2027"), None);
         assert_eq!(school_years("SCH-IISS", "Grade 10", "2026/2027"), None);

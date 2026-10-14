@@ -113,7 +113,7 @@
     "src/school_portal/repository/articles.rs": "cb3e9ed56055342df9f5428031558c19754d5ecb6068a6fffc7ee779bf90f785",
     "src/school_articles/cover.rs": "add35826dbe3c41a03cb5395e87f9afa6aa79ab939346a144bc55e0b90c4d0bd",
     "src/school_portal/repository/parent/tests.rs": "92c1a7182ca734286abceb03754ba963b17e7b1b06634f63ab9751cea6b8fc21",
-    "src/enrollment_handover/school_years.rs": "b0620435bd65ea703d99f14d60c8bb4e6d74ba9204fde9cb38f8047c01e7ef8a"
+    "src/enrollment_handover/school_years.rs": "3fc67d5807fa88f5bdd6bbc767aa8cf80fabbdab5d62b6356912096209847072"
   },
   "testedRuntimeFreeze": {
     "Cargo.lock": "0e912aecca4edad25752a70f20b022e9774b8fb5d66f776eabba3617e40be888",
