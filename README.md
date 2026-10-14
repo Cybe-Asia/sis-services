@@ -73,6 +73,21 @@ sis-services reads `(Lead)`, `(User)`, `(:Student)`, `(EnrolledStudent)` but nev
   (`/api/v1/sis-service/learning/owner/student/preferences`) is unchanged and
   does not accept `notificationCategories`.
 
+#### Published grade detail
+
+- `POST /api/leads/v1/teacher/school/classes/{section}/records` with
+  `kind: "grade"` accepts an optional `detail` object:
+  `{ assignment?, midterm?, final_exam?, subject_group?, subject_group_summary?,
+  learning_outcome?, top_performer? }` (Tugas, PTS, PAS, rumpun and its
+  description, Capaian Pembelajaran, the teacher's top-performer mark).
+  Components are on the grade's own `maximum`; `subject_group` ≤ 128,
+  `subject_group_summary` ≤ 256 and only with a group, `learning_outcome` ≤ 2000
+  characters; `top_performer` defaults to `false`. Unknown fields are rejected.
+- The detail is stored in the record payload only. `GradeEntry` (and
+  `GET /me/grades`) keeps subject, term and score; the Parent reads the detail
+  from the `grade` records in `GET /me/school`. A grade without `detail` is
+  stored exactly as before, so earlier clients are unaffected.
+
 URL prefix `/api/leads/v1/*` is inherited from the admissions convention; Traefik routes `…/sis/…` and the three `me/{grades,attendance,sections}` paths to this service. See `digital-school-gitops/lab/*/ingress.yaml`.
 
 ## Architecture

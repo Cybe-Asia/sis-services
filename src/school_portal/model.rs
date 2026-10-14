@@ -110,6 +110,10 @@ pub enum PublishedRecord {
         term: String,
         score: f64,
         maximum: f64,
+        /// Optional term breakdown the Parent sees under Capaian Akademik. Left out, the
+        /// payload is byte-for-byte the one earlier releases stored.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<GradeDetail>,
     },
     /// A class announcement on the Parent School Board. `note` is the "Note for Parents" (may be
     /// empty). An important announcement stays on top until the Parent reads it or, with
@@ -207,6 +211,7 @@ impl PublishedRecord {
                 term,
                 score,
                 maximum,
+                detail,
                 ..
             } => {
                 text(subject, 128)
@@ -217,6 +222,7 @@ impl PublishedRecord {
                     && *maximum <= 10000.0
                     && *score >= 0.0
                     && score <= maximum
+                    && detail.as_ref().is_none_or(|d| d.valid(*maximum))
             }
             Self::Announcement {
                 title,
@@ -238,6 +244,42 @@ impl PublishedRecord {
                     && !(due_time.is_some() && due_date.is_none())
             }
         }
+    }
+}
+/// The parts of a term grade a school publishes beside the final score: the assessment
+/// components (Tugas, PTS, PAS), the subject group (rumpun) the subject belongs to, the
+/// learning outcome (Capaian Pembelajaran) and the teacher's top-performer mark.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GradeDetail {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub midterm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_exam: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_group_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learning_outcome: Option<String>,
+    #[serde(default)]
+    pub top_performer: bool,
+}
+impl GradeDetail {
+    /// Components use the grade's own scale; a group summary needs its group.
+    pub fn valid(&self, maximum: f64) -> bool {
+        [self.assignment, self.midterm, self.final_exam]
+            .into_iter()
+            .flatten()
+            .all(|v| v.is_finite() && v >= 0.0 && v <= maximum)
+            && self.subject_group.as_ref().is_none_or(|v| text(v, 128))
+            && self
+                .subject_group_summary
+                .as_ref()
+                .is_none_or(|v| text(v, 256) && self.subject_group.is_some())
+            && self.learning_outcome.as_ref().is_none_or(|v| text(v, 2000))
     }
 }
 #[derive(Deserialize)]
@@ -395,6 +437,57 @@ mod tests {
         .valid());
         assert!(!date("2026-02-30"));
         assert!(!identifier("../other"));
+    }
+    #[test]
+    fn grade_detail_is_optional_and_bounded() {
+        let plain = r#"{"kind":"grade","id":"g","student_id":"child","subject":"Matematika","term":"Semester Ganjil 2026/2027","score":94.0,"maximum":100.0}"#;
+        let record: PublishedRecord = serde_json::from_str(plain).unwrap();
+        assert!(record.valid());
+        // A grade without detail is stored exactly as before.
+        assert_eq!(
+            serde_json::to_value(&record).unwrap(),
+            serde_json::from_str::<serde_json::Value>(plain).unwrap()
+        );
+        let with = |detail: &str| {
+            serde_json::from_str::<PublishedRecord>(&plain.replace(
+                r#""maximum":100.0}"#,
+                &format!(r#""maximum":100.0,"detail":{detail}}}"#),
+            ))
+        };
+        let full = with(
+            r#"{"assignment":94,"midterm":90,"final_exam":92,"subject_group":"Rumpun STEM & Inovasi Digital","subject_group_summary":"Fondasi logika kuantitatif","learning_outcome":"Sangat mandiri.","top_performer":true}"#,
+        )
+        .unwrap();
+        assert!(full.valid());
+        let PublishedRecord::Grade {
+            detail: Some(detail),
+            ..
+        } = &full
+        else {
+            panic!("detail")
+        };
+        assert!(detail.top_performer && detail.final_exam == Some(92.0));
+        // Each part is optional; top_performer defaults to false.
+        let partial = with(r#"{"midterm":80}"#).unwrap();
+        assert!(partial.valid());
+        assert_eq!(
+            serde_json::to_value(&partial).unwrap()["detail"],
+            serde_json::json!({"midterm":80.0,"top_performer":false})
+        );
+        // Components stay on the grade's scale, texts are bounded, a summary needs its group.
+        assert!(!with(r#"{"assignment":101}"#).unwrap().valid());
+        assert!(!with(r#"{"midterm":-1}"#).unwrap().valid());
+        assert!(!with(r#"{"subject_group":" "}"#).unwrap().valid());
+        assert!(!with(r#"{"subject_group_summary":"Fondasi"}"#)
+            .unwrap()
+            .valid());
+        assert!(
+            !with(&format!(r#"{{"learning_outcome":"{}"}}"#, "a".repeat(2001)))
+                .unwrap()
+                .valid()
+        );
+        assert!(with(r#"{"rank":1}"#).is_err());
+        assert!(with(r#"{"top_performer":"yes"}"#).is_err());
     }
     #[test]
     fn validates_announcements() {

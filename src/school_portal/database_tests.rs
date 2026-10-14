@@ -105,6 +105,7 @@ async fn teacher_parent_school_journey_and_scope() {
             term: "Term1".into(),
             score: 85.0,
             maximum: 100.0,
+            detail: None,
         },
     ];
     for r in &records {
@@ -327,6 +328,7 @@ async fn teacher_parent_school_journey_and_scope() {
         term: "Term1".into(),
         score: 90.0,
         maximum: 100.0,
+        detail: None,
     };
     assert!(repo::publish(&g, &teacher, "class", &correction)
         .await
@@ -350,6 +352,53 @@ async fn teacher_parent_school_journey_and_scope() {
             .unwrap(),
         90.0
     );
+    // A grade's term detail travels in its record payload to the Parent snapshot, while the
+    // GradeEntry keeps only the score.
+    let detailed = PublishedRecord::Grade {
+        id: "grade-detail".into(),
+        student_id: "child".into(),
+        subject: "Science".into(),
+        term: "Term1".into(),
+        score: 92.0,
+        maximum: 100.0,
+        detail: Some(GradeDetail {
+            assignment: Some(94.0),
+            midterm: Some(90.0),
+            final_exam: Some(92.0),
+            subject_group: Some("Rumpun STEM".into()),
+            subject_group_summary: None,
+            learning_outcome: Some("Designs a fair test.".into()),
+            top_performer: true,
+        }),
+    };
+    assert!(detailed.valid());
+    assert!(repo::publish(&g, &teacher, "class", &detailed)
+        .await
+        .unwrap());
+    let snapshot = repo::parent_snapshot(&g, "parent").await.unwrap();
+    let science = snapshot["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["content"]["id"] == "grade-detail")
+        .unwrap();
+    assert_eq!(
+        science["content"]["detail"],
+        serde_json::json!({"assignment":94.0,"midterm":90.0,"final_exam":92.0,"subject_group":"Rumpun STEM","learning_outcome":"Designs a fair test.","top_performer":true})
+    );
+    let mut entry = g
+        .execute(query(
+            "MATCH(g:GradeEntry {applicant_student_id:'child',subject:'Science'}) RETURN g.score AS score,keys(g) AS keys",
+        ))
+        .await
+        .unwrap();
+    let entry = entry.next().await.unwrap().unwrap();
+    assert_eq!(entry.get::<f64>("score").unwrap(), 92.0);
+    assert!(!entry
+        .get::<Vec<String>>("keys")
+        .unwrap()
+        .iter()
+        .any(|k| k.contains("detail")));
     // An email alone cannot grant homeroom authority.
     g.run(query(
         "MATCH(sec:Section {section_id:'class'}) REMOVE sec.homeroom_staff_member_id",
@@ -400,7 +449,8 @@ async fn teacher_parent_school_journey_and_scope() {
     // A long-lived class still serves a bounded recent window to every consumer.
     g.run(query("MATCH(sec:Section {section_id:'class'}) UNWIND range(1,1001) AS i CREATE(:SchoolPublishedRecord {key:'bulk'+toString(i),kind:'project',student_id:'child',payload:replace($payload,'bulk-project','bulk-project-'+toString(i)),created_at:datetime()})-[:FOR_SECTION]->(sec)").param("payload",serde_json::to_string(&PublishedRecord::Project{id:"bulk-project".into(),student_id:"child".into(),title:"Progress".into(),subject:"Science".into(),summary:"\u{0001}".repeat(4000),state:"in_progress".into()}).unwrap())).await.unwrap();
     let recent = repo::parent_snapshot(&g, "parent").await.unwrap();
-    assert_eq!(recent["records"].as_array().unwrap().len(), 104);
+    // 100 recent projects plus the event, the report and the three grades.
+    assert_eq!(recent["records"].as_array().unwrap().len(), 105);
     assert!(serde_json::to_vec(&recent).unwrap().len() < 8_000_000);
     assert_eq!(recent["messages"].as_array().unwrap().len(), 1);
     g.run(query(
