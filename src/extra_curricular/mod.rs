@@ -5,6 +5,7 @@ mod context;
 pub mod model;
 mod policy;
 mod ports;
+pub mod recitation;
 pub mod repository;
 use crate::AppState;
 use axum::{
@@ -81,6 +82,8 @@ pub fn router() -> Router<AppState> {
                 r
             },
         ))
+        // Recitation submissions carry a clip, so they have a body limit of their own.
+        .merge(recitation::router())
 }
 #[cfg(test)]
 mod tests;

@@ -138,6 +138,9 @@ async fn main() {
         Err(error) => tracing::warn!(%error, "entry and graduation years were not filled"),
     }
 
+    // Recordings past their retention date are removed on a timer; nothing else in this process schedules work.
+    extra_curricular::recitation::start_retention(graph.clone());
+
     let state = AppState {
         graph,
         config: cfg.clone(),

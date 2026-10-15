@@ -27,6 +27,7 @@ pub async fn init(g: &Graph) -> Result<(), Error> {
         ("extra_outcome", "ExtraCurricularOutcome"),
         ("extra_audit", "ExtraCurricularAudit"),
         ("extra_meeting", "ExtraCurricularMeetingRecord"),
+        ("extra_recitation", "ExtraCurricularRecitation"),
     ] {
         g.run(query(&format!(
             "CREATE CONSTRAINT {name} IF NOT EXISTS FOR(n:{label}) REQUIRE n.key IS UNIQUE"

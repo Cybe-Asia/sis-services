@@ -102,6 +102,10 @@ impl Store {
         })
     }
     pub async fn put(&self, key: &str, body: Vec<u8>) -> Result<(), Error> {
+        self.put_as(key, body, "image/jpeg").await
+    }
+    /// Writes one object of the given media type; other owners of this bucket (recitations) use it too.
+    pub async fn put_as(&self, key: &str, body: Vec<u8>, content_type: &str) -> Result<(), Error> {
         match self {
             Store::S3 {
                 bucket,
@@ -113,7 +117,7 @@ impl Store {
                     .sign(Duration::from_secs(60));
                 let response = http
                     .put(url)
-                    .header(reqwest::header::CONTENT_TYPE, "image/jpeg")
+                    .header(reqwest::header::CONTENT_TYPE, content_type)
                     .body(body)
                     .send()
                     .await?;
@@ -130,6 +134,10 @@ impl Store {
         }
     }
     pub async fn get(&self, key: &str) -> Result<Vec<u8>, Error> {
+        self.get_bounded(key, STORED_MAX_BYTES).await
+    }
+    /// Reads one object, refusing anything past `max` bytes.
+    pub async fn get_bounded(&self, key: &str, max: usize) -> Result<Vec<u8>, Error> {
         match self {
             Store::S3 {
                 bucket,
@@ -145,8 +153,8 @@ impl Store {
                 }
                 let mut bytes = Vec::new();
                 while let Some(chunk) = response.chunk().await? {
-                    if bytes.len() + chunk.len() > STORED_MAX_BYTES {
-                        return Err("stored cover exceeds its limit".into());
+                    if bytes.len() + chunk.len() > max {
+                        return Err("stored object exceeds its limit".into());
                     }
                     bytes.extend_from_slice(&chunk);
                 }
@@ -160,6 +168,34 @@ impl Store {
                 .cloned()
                 .ok_or_else(|| "cover missing".into()),
         }
+    }
+    /// Removes one object; a key that is already gone is not an error.
+    pub async fn delete(&self, key: &str) -> Result<(), Error> {
+        match self {
+            Store::S3 {
+                bucket,
+                credentials,
+                http,
+            } => {
+                let url = bucket
+                    .delete_object(Some(credentials), key)
+                    .sign(Duration::from_secs(60));
+                let response = http.delete(url).send().await?;
+                if !response.status().is_success() && response.status() != reqwest::StatusCode::NOT_FOUND {
+                    return Err("object storage delete failed".into());
+                }
+                Ok(())
+            }
+            #[cfg(test)]
+            Store::Memory(objects) => {
+                objects.lock().unwrap().remove(key);
+                Ok(())
+            }
+        }
+    }
+    #[cfg(test)]
+    pub fn memory() -> Store {
+        Store::Memory(Default::default())
     }
 }
 /// This process's store, read from the environment once.
@@ -238,6 +274,9 @@ mod tests {
         store.put(&key, photograph.clone()).await.unwrap();
         assert_eq!(store.get(&key).await.unwrap(), photograph);
         assert!(store.get(&format!("{key}.missing")).await.is_err());
+        store.delete(&key).await.unwrap();
+        assert!(store.get(&key).await.is_err());
+        store.delete(&key).await.unwrap();
     }
     #[test]
     fn a_cover_has_its_own_place_in_the_shared_bucket() {

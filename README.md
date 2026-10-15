@@ -130,3 +130,7 @@ Branch → overlay mapping:
 - `release-*` → `lab/staging` → auto-promote to prod
 
 See `.github/workflows/deploy.yml` for the CI pipeline.
+
+## Recitation submissions
+
+Tahfiz recordings a Student submits after the AI pre-check are kept in the shared object store (`MINIO_*`, prefix `sis/recitations/`) and removed after their retention period by an in-process sweep; see `docs/RECITATION_SUBMISSIONS.md`.
