@@ -78,12 +78,20 @@ impl Meeting {
         issues
     }
     /// A class started on the spot (an open house, a replacement class) may fall on a weekend
-    /// or a school holiday. In exchange it has to start within minutes and stay short, so the
-    /// waiver cannot be used to plan lessons outside the school calendar.
+    /// or a school holiday, and the Teacher who starts it has decided to be in this class now:
+    /// their own other meeting and the room inherited from the timetable do not block it (a live
+    /// class is online). The class itself still cannot have two meetings at once. In exchange the
+    /// meeting has to start within minutes and stay short, so the waiver cannot be used to plan
+    /// lessons outside the school calendar.
     pub fn ad_hoc_issues(&self, issues: Vec<&'static str>, now: u64) -> Vec<&'static str> {
         let mut issues: Vec<_> = issues
             .into_iter()
-            .filter(|code| !matches!(*code, "NON_SCHOOL_DAY" | "SCHOOL_HOLIDAY"))
+            .filter(|code| {
+                !matches!(
+                    *code,
+                    "NON_SCHOOL_DAY" | "SCHOOL_HOLIDAY" | "TEACHER_CONFLICT" | "ROOM_CONFLICT"
+                )
+            })
             .collect();
         if self.starts_at > now.saturating_add(15 * 60_000)
             || self.ends_at.saturating_sub(self.starts_at) > 3 * 3_600_000

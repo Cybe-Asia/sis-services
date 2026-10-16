@@ -135,13 +135,24 @@ fn a_class_started_now_may_fall_on_a_weekend_or_holiday_but_only_within_minutes(
     assert!(m
         .ad_hoc_issues(vec!["NON_SCHOOL_DAY", "SCHOOL_HOLIDAY"], now)
         .is_empty());
-    // Every other rule stays: conflicts, a past start, a class that crosses midnight.
+    // The Teacher's own other meeting and the inherited room do not block a class started now;
+    // every other rule stays: a second meeting of the class, a past start, crossing midnight.
     assert_eq!(
         m.ad_hoc_issues(
-            vec!["SCHOOL_HOLIDAY", "TEACHER_CONFLICT", "PAST_MEETING"],
+            vec![
+                "SCHOOL_HOLIDAY",
+                "TEACHER_CONFLICT",
+                "ROOM_CONFLICT",
+                "CLASS_CONFLICT",
+                "PAST_MEETING"
+            ],
             now
         ),
-        vec!["PAST_MEETING", "TEACHER_CONFLICT"]
+        vec!["CLASS_CONFLICT", "PAST_MEETING"]
+    );
+    assert_eq!(
+        m.ad_hoc_issues(vec!["CROSSES_SCHOOL_DAY", "OUTSIDE_ACADEMIC_YEAR"], now),
+        vec!["CROSSES_SCHOOL_DAY", "OUTSIDE_ACADEMIC_YEAR"]
     );
     // Not a way to plan ahead or to book a long slot.
     assert_eq!(
