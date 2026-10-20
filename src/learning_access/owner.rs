@@ -3,6 +3,7 @@ use super::*;
 use axum::routing::get;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use std::collections::{BTreeMap, BTreeSet};
+mod student_profile;
 mod student_school;
 
 const TEACHER: &str = "MATCH (p:StaffMember {id:$principal,membershipStatus:'ACTIVE'}) WHERE NOT 'owner' IN coalesce(p.roles,[]) AND 'teacher' IN coalesce(p.roles,[]) AND $school IN coalesce(p.schoolIds,[]) AND $tenant IN coalesce(p.tenantIds,[]) MATCH (c:Section {school_id:$school,tenant_id:$tenant,status:'active'}) WHERE c.homeroom_staff_member_id=p.id OR EXISTS { MATCH (:LearningTeachingGrant {staff_member_id:p.id,section_id:c.section_id,status:'ACTIVE',school_id:$school,tenant_id:$tenant}) } OPTIONAL MATCH (s:Student)-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:$school,tenant_id:$tenant})-[:ENROLLED_IN]->(c)";
@@ -264,6 +265,10 @@ pub(super) fn router() -> Router<AppState> {
         .route(
             "/api/v1/sis-service/learning/owner/student/school",
             get(student_school::handler),
+        )
+        .route(
+            "/api/v1/sis-service/learning/owner/student/profile",
+            get(student_profile::handler),
         )
 }
 #[cfg(test)]

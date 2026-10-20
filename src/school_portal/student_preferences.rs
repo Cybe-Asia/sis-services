@@ -1,7 +1,7 @@
 //! Student account settings belong to the current Auth User, not a caller-selected child.
 use super::{
     failure,
-    model::{identifier, Preferences},
+    model::{identifier, Preferences, StudentNotificationCategories},
     Failure,
 };
 use crate::AppState;
@@ -22,7 +22,17 @@ pub(super) struct Scope {
 }
 const OWNED:&str="MATCH(u:User {id:$actor,role:'student'}) MATCH(b:LearningStudentBinding {user_id:u.id,school_id:$school,tenant_id:$tenant,status:'ACTIVE'}) MATCH(s:Student {studentId:b.student_id})-[:ENROLLED_AS]->(en:EnrolledStudent {status:'active',school_id:$school,tenant_id:$tenant})-[:ENROLLED_IN]->(sec:Section {status:'active',school_id:$school,tenant_id:$tenant}) WHERE coalesce(u.staffMemberId,'')='' AND all(role IN coalesce(u.roles,[]) WHERE role='student') AND all(role IN coalesce(u.marketingRoles,[]) WHERE role='student') AND NOT (u)-[:STAFF_PROFILE]->() AND NOT EXISTS {MATCH(staff:StaffMember) WHERE toLower(staff.email)=toLower(u.email)}";
 const CURRENT:&str="u.role='student' AND coalesce(u.staffMemberId,'')='' AND all(role IN coalesce(u.roles,[]) WHERE role='student') AND all(role IN coalesce(u.marketingRoles,[]) WHERE role='student') AND NOT (u)-[:STAFF_PROFILE]->() AND NOT EXISTS {MATCH(staff:StaffMember) WHERE toLower(staff.email)=toLower(u.email)} AND b.status='ACTIVE' AND b.user_id=u.id AND b.school_id=$school AND b.tenant_id=$tenant AND b.student_id=s.studentId AND en.status='active' AND en.school_id=$school AND en.tenant_id=$tenant AND sec.status='active' AND sec.school_id=$school AND sec.tenant_id=$tenant AND EXISTS { MATCH(s)-[:ENROLLED_AS]->(en)-[:ENROLLED_IN]->(sec) }";
-const FIELDS:&str="coalesce(u.student_preferences_version,0) AS version,coalesce(u.student_locale,'en') AS locale,coalesce(u.student_theme,'system') AS theme,coalesce(u.student_notifications,true) AS notifications";
+const FIELDS:&str="coalesce(u.student_preferences_version,0) AS version,coalesce(u.student_locale,'en') AS locale,coalesce(u.student_theme,'system') AS theme,coalesce(u.student_notifications,true) AS notifications,u.student_notify_assignments AS assignments,u.student_notify_grades AS grades,u.student_notify_class_schedule AS class_schedule,u.student_notify_announcements AS announcements,u.student_notify_messages AS messages,u.student_notify_learning_reminders AS learning_reminders";
+const SAVE_CATEGORIES:&str="u.student_notify_assignments=$assignments,u.student_notify_grades=$grades,u.student_notify_class_schedule=$class_schedule,u.student_notify_announcements=$announcements,u.student_notify_messages=$messages,u.student_notify_learning_reminders=$learning_reminders";
+const SAME_CATEGORIES:&str="u.student_notify_assignments=$assignments AND u.student_notify_grades=$grades AND u.student_notify_class_schedule=$class_schedule AND u.student_notify_announcements=$announcements AND u.student_notify_messages=$messages AND u.student_notify_learning_reminders=$learning_reminders";
+fn response(principal: &str, scope: &Scope, r: &neo4rs::Row) -> Result<Value, Error> {
+    let notifications = r.get::<bool>("notifications")?;
+    let saved = StudentNotificationCategories::STORED
+        .map(|name| r.get::<Option<bool>>(name).ok().flatten());
+    Ok(
+        json!({"contractVersion":1,"actor":{"id":principal,"role":"student"},"schoolId":scope.school_id,"tenantId":scope.tenant_id,"studentId":r.get::<String>("student")?,"preferences":{"version":r.get::<i64>("version")?,"locale":r.get::<String>("locale")?,"theme":r.get::<String>("theme")?,"notifications":notifications,"notificationCategories":StudentNotificationCategories::stored(notifications,saved)}}),
+    )
+}
 fn scoped(body: &str, principal: &str, scope: &Scope) -> GraphQuery {
     query(body)
         .param("actor", principal)
@@ -35,9 +45,7 @@ async fn load(graph: &Graph, principal: &str, scope: &Scope) -> Result<Option<Va
     let Some(r) = rows.next().await? else {
         return Ok(None);
     };
-    Ok(Some(
-        json!({"contractVersion":1,"actor":{"id":principal,"role":"student"},"schoolId":scope.school_id,"tenantId":scope.tenant_id,"studentId":r.get::<String>("student")?,"preferences":{"version":r.get::<i64>("version")?,"locale":r.get::<String>("locale")?,"theme":r.get::<String>("theme")?,"notifications":r.get::<bool>("notifications")?}}),
-    ))
+    Ok(Some(response(principal, scope, &r)?))
 }
 #[cfg(test)]
 async fn save(
@@ -69,20 +77,22 @@ async fn save_inner(
             })?;
             if current != principal { return Err(Box::new(super::staff_capability::SessionFailure(failure(StatusCode::FORBIDDEN))) as Error); }
         }
-        let body=format!("{OWNED} WITH DISTINCT u,b,s,en,sec WHERE {CURRENT} WITH u,collect(DISTINCT s.studentId) AS students WHERE size(students)=1 WITH u,students,coalesce(u.student_preferences_version,0) AS previous WHERE previous=$version OR (previous=$version+1 AND u.student_locale=$locale AND u.student_theme=$theme AND u.student_notifications=$notifications) FOREACH(ignore IN CASE WHEN previous=$version THEN [1] ELSE [] END | SET u.student_preferences_version=$version+1,u.student_locale=$locale,u.student_theme=$theme,u.student_notifications=$notifications CREATE(:SchoolPortalAudit {{id:$audit,actor_id:u.id,student_id:students[0],school_id:$school,tenant_id:$tenant,kind:'student_preferences',version:$version+1,created_at:datetime()}})) RETURN students[0] AS student,{FIELDS}");
-        let mut rows = tx.execute(
-            scoped(&body, principal, scope)
-                .param("version", i64::from(input.version))
-                .param("locale", input.locale.clone())
-                .param("theme", input.theme.clone())
-                .param("notifications", input.notifications)
-                .param("audit", uuid::Uuid::new_v4().to_string()),
-        )
-        .await?;
+        let body=format!("{OWNED} WITH DISTINCT u,b,s,en,sec WHERE {CURRENT} WITH u,collect(DISTINCT s.studentId) AS students WHERE size(students)=1 WITH u,students,coalesce(u.student_preferences_version,0) AS previous WHERE previous=$version OR (previous=$version+1 AND u.student_locale=$locale AND u.student_theme=$theme AND u.student_notifications=$notifications AND {SAME_CATEGORIES}) FOREACH(ignore IN CASE WHEN previous=$version THEN [1] ELSE [] END | SET u.student_preferences_version=$version+1,u.student_locale=$locale,u.student_theme=$theme,u.student_notifications=$notifications,{SAVE_CATEGORIES} CREATE(:SchoolPortalAudit {{id:$audit,actor_id:u.id,student_id:students[0],school_id:$school,tenant_id:$tenant,kind:'student_preferences',version:$version+1,created_at:datetime()}})) RETURN students[0] AS student,{FIELDS}");
+        let (notifications, categories) = input.notification_switches();
+        let mut statement = scoped(&body, principal, scope)
+            .param("version", i64::from(input.version))
+            .param("locale", input.locale.clone())
+            .param("theme", input.theme.clone())
+            .param("notifications", notifications)
+            .param("audit", uuid::Uuid::new_v4().to_string());
+        for (name, value) in StudentNotificationCategories::STORED.into_iter().zip(categories.values()) {
+            statement = statement.param(name, value);
+        }
+        let mut rows = tx.execute(statement).await?;
     let Some(r) = rows.next(&mut tx).await? else {
         return Ok(None);
     };
-    let value = json!({"contractVersion":1,"actor":{"id":principal,"role":"student"},"schoolId":scope.school_id,"tenantId":scope.tenant_id,"studentId":r.get::<String>("student")?,"preferences":{"version":r.get::<i64>("version")?,"locale":r.get::<String>("locale")?,"theme":r.get::<String>("theme")?,"notifications":r.get::<bool>("notifications")?}});
+    let value = response(principal, scope, &r)?;
     if rows.next(&mut tx).await?.is_some() { return Err("Ambiguous Student preferences".into()); }
     Ok(Some(value))
     }.await;
@@ -172,6 +182,7 @@ mod tests {
             locale: "id".into(),
             theme: "system".into(),
             notifications: true,
+            notification_categories: None,
         };
         assert_eq!(
             load(&g, &mark, &scope).await.unwrap().unwrap()["preferences"]["version"],
@@ -205,12 +216,14 @@ mod tests {
             locale: "en".into(),
             theme: "dark".into(),
             notifications: true,
+            notification_categories: None,
         };
         let b = Preferences {
             version: 1,
             locale: "id".into(),
             theme: "light".into(),
             notifications: false,
+            notification_categories: None,
         };
         let (a, b) = tokio::join!(save(&g, &mark, &scope, &a), save(&g, &mark, &scope, &b));
         assert_eq!(

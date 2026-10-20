@@ -342,7 +342,71 @@ fn preference_fields(version: u32, locale: &str, theme: &str) -> bool {
         && ["en", "id"].contains(&locale)
         && ["light", "dark", "system"].contains(&theme)
 }
-/// Student preferences. The Parent body is `ParentPreferences`; this one has no categories.
+/// The six notification switches of a Student (Profile, Account & Preferences). When sent, all
+/// six are required.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudentNotificationCategories {
+    pub assignments: bool,
+    pub grades: bool,
+    pub class_schedule: bool,
+    pub announcements: bool,
+    pub messages: bool,
+    pub learning_reminders: bool,
+}
+impl StudentNotificationCategories {
+    pub const STORED: [&'static str; 6] = [
+        "assignments",
+        "grades",
+        "class_schedule",
+        "announcements",
+        "messages",
+        "learning_reminders",
+    ];
+    pub fn all(value: bool) -> Self {
+        Self::from([value; 6])
+    }
+    pub fn values(&self) -> [bool; 6] {
+        [
+            self.assignments,
+            self.grades,
+            self.class_schedule,
+            self.announcements,
+            self.messages,
+            self.learning_reminders,
+        ]
+    }
+    pub fn any(&self) -> bool {
+        self.values().contains(&true)
+    }
+    /// Same rule as the Parent categories: the saved six count only when all were saved and still
+    /// agree with the single switch; otherwise each category equals the single switch.
+    pub fn stored(notifications: bool, saved: [Option<bool>; 6]) -> Self {
+        if saved.iter().all(Option::is_some) {
+            let categories = Self::from(saved.map(|v| v.unwrap_or(notifications)));
+            if categories.any() == notifications {
+                return categories;
+            }
+        }
+        Self::all(notifications)
+    }
+}
+impl From<[bool; 6]> for StudentNotificationCategories {
+    fn from(
+        [assignments, grades, class_schedule, announcements, messages, learning_reminders]: [bool;
+            6],
+    ) -> Self {
+        Self {
+            assignments,
+            grades,
+            class_schedule,
+            announcements,
+            messages,
+            learning_reminders,
+        }
+    }
+}
+/// Student preferences. The Parent body is `ParentPreferences`.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Preferences {
@@ -350,10 +414,24 @@ pub struct Preferences {
     pub locale: String,
     pub theme: String,
     pub notifications: bool,
+    /// Optional: a client that predates the categories sends only the single switch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_categories: Option<StudentNotificationCategories>,
 }
 impl Preferences {
     pub fn valid(&self) -> bool {
         preference_fields(self.version, &self.locale, &self.theme)
+    }
+    /// What a save stores: with categories, the single switch becomes their OR; without them,
+    /// each category takes the value of the single switch.
+    pub fn notification_switches(&self) -> (bool, StudentNotificationCategories) {
+        match self.notification_categories {
+            Some(categories) => (categories.any(), categories),
+            None => (
+                self.notifications,
+                StudentNotificationCategories::all(self.notifications),
+            ),
+        }
     }
 }
 /// Parent preferences: the same four fields plus the optional notification categories.
@@ -406,6 +484,43 @@ impl Rsvp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn student_notification_categories_are_optional_and_agree_with_the_switch() {
+        let old: Preferences = serde_json::from_str(
+            r#"{"version":1,"locale":"id","theme":"system","notifications":false}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            old.notification_switches(),
+            (false, StudentNotificationCategories::all(false))
+        );
+        let new: Preferences = serde_json::from_str(r#"{"version":1,"locale":"en","theme":"system","notifications":false,"notificationCategories":{"assignments":true,"grades":false,"classSchedule":false,"announcements":false,"messages":false,"learningReminders":false}}"#).unwrap();
+        let (single, categories) = new.notification_switches();
+        assert!(single && categories.assignments && !categories.grades);
+        assert!(serde_json::from_str::<Preferences>(r#"{"version":1,"locale":"en","theme":"system","notifications":true,"notificationCategories":{"assignments":true}}"#).is_err());
+        let saved = [
+            Some(true),
+            Some(false),
+            Some(false),
+            Some(false),
+            Some(false),
+            Some(false),
+        ];
+        assert!(StudentNotificationCategories::stored(true, saved).assignments);
+        // A release without categories switched everything off after the six were saved.
+        assert_eq!(
+            StudentNotificationCategories::stored(false, saved),
+            StudentNotificationCategories::all(false)
+        );
+        assert_eq!(
+            StudentNotificationCategories::stored(true, [None; 6]),
+            StudentNotificationCategories::all(true)
+        );
+        assert_eq!(
+            serde_json::to_value(StudentNotificationCategories::all(true)).unwrap(),
+            serde_json::json!({"assignments":true,"grades":true,"classSchedule":true,"announcements":true,"messages":true,"learningReminders":true})
+        );
+    }
     #[test]
     fn rejects_invalid_school_records() {
         let mut call = RollCall {

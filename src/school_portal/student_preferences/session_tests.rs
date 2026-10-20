@@ -142,7 +142,7 @@ async fn student_routes_and_queued_writes_require_current_auth() -> Result<(), E
             if client.get(format!("{origin}{path}")).bearer_auth(&token).send().await?.status().as_u16()!=503 {return Err("Missing Student Auth configuration must deny".into());}
         }
         std::env::set_var("AUTH_STUDENT_SESSION_URL",&auth_url); mode.store(1,Ordering::SeqCst);
-        let input=Preferences {version:0,locale:"id".into(),theme:"dark".into(),notifications:false};
+        let input=Preferences {version:0,locale:"id".into(),theme:"dark".into(),notifications:false,notification_categories:None};
         let mut headers=HeaderMap::new(); headers.insert("authorization",format!("Bearer {token}").parse()?);
         // A request passed its first current-session check before waiting for a resource.
         super::super::student_identity::actor(&headers).await.map_err(|_|"Initial current session rejected")?;
