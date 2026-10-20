@@ -45,6 +45,7 @@ mod school_portal;
 mod education_calendar;
 mod school_articles;
 mod school_rooms;
+mod student_biodata;
 mod extra_curricular;
 mod models;
 mod repositories;
@@ -129,6 +130,7 @@ async fn main() {
 
     education_calendar::repository::init(&graph).await.expect("failed to initialize education calendar indexes");
     school_rooms::init(&graph).await.expect("failed to initialize school room indexes");
+    student_biodata::init(&graph).await.expect("failed to initialize student biodata constraints");
     school_articles::repository::init(&graph).await.expect("failed to initialize school article indexes");
     extra_curricular::repository::init(&graph).await.expect("extracurricular schema initialization failed");
     // Children placed before entry and graduation years were stored get them from their section; a failure only
@@ -156,6 +158,7 @@ async fn main() {
         .merge(education_calendar::router())
         .merge(school_articles::router())
         .merge(school_rooms::router())
+        .merge(student_biodata::router())
         .merge(extra_curricular::router())
         .merge(
             SwaggerUi::new("/api/v1/sis-service/swagger-ui")

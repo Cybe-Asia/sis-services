@@ -178,26 +178,41 @@ pub(crate) async fn administrator_actor(
     tenant_id: &String,
     school_id: &String,
 ) -> Result<(String, String), Failure> {
-    let member = membership(headers).await?;
-    let owner = member
-        .roles
-        .as_ref()
-        .is_some_and(|rs| rs.iter().any(|r| r == "owner"));
-    if !crate::school_portal::staff_capability::live_scope(
-        owner,
-        member.school_ids.as_ref().unwrap(),
-        member.tenant_ids.as_ref().unwrap(),
-        school_id,
-        tenant_id,
-    ) {
-        return Err(failure(StatusCode::FORBIDDEN));
+    staff_session(headers).await?.administrator(tenant_id, school_id)
+}
+/// A verified staff session whose school scope is decided later, for routes that first look up
+/// which school a record belongs to.
+pub(crate) struct StaffSession(Membership);
+pub(crate) async fn staff_session(headers: &HeaderMap) -> Result<StaffSession, Failure> {
+    Ok(StaffSession(membership(headers).await?))
+}
+impl StaffSession {
+    pub(crate) fn administrator(
+        self,
+        tenant_id: &String,
+        school_id: &String,
+    ) -> Result<(String, String), Failure> {
+        let member = self.0;
+        let owner = member
+            .roles
+            .as_ref()
+            .is_some_and(|rs| rs.iter().any(|r| r == "owner"));
+        if !crate::school_portal::staff_capability::live_scope(
+            owner,
+            member.school_ids.as_ref().unwrap(),
+            member.tenant_ids.as_ref().unwrap(),
+            school_id,
+            tenant_id,
+        ) {
+            return Err(failure(StatusCode::FORBIDDEN));
+        }
+        Ok((
+            member
+                .staff_member_id
+                .ok_or_else(|| failure(StatusCode::FORBIDDEN))?,
+            if owner { "owner" } else { "school_admin" }.into(),
+        ))
     }
-    Ok((
-        member
-            .staff_member_id
-            .ok_or_else(|| failure(StatusCode::FORBIDDEN))?,
-        if owner { "owner" } else { "school_admin" }.into(),
-    ))
 }
 pub(crate) mod class_meetings;
 mod context;
