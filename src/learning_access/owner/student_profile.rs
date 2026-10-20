@@ -68,9 +68,9 @@ async fn read(s: &AppState, h: &HeaderMap, q: &Scope) -> Result<Value, Failure> 
     }
 
     // The admissions account holder is the first guardian; guardians the school records later
-    // (`HAS_GUARDIAN`) follow. A row without a name is not shown.
+    // (`HAS_GUARDIAN`) follow in the order Admin saved them (`position`). A row without a name is not shown.
     let mut guardians = vec![];
-    let mut rows = s.graph.execute(query_for("WITH DISTINCT s CALL { WITH s OPTIONAL MATCH (l:Lead)-[:HAS_STUDENT]->(s) RETURN 0 AS source,l.lead_id AS key,l.parent_name AS name,l.relationship AS relationship,l.mobile AS phone1,l.whatsapp AS phone2,l.email AS email UNION ALL WITH s OPTIONAL MATCH (s)-[:HAS_GUARDIAN]->(g:Guardian) RETURN 1 AS source,g.guardian_id AS key,g.full_name AS name,g.relationship AS relationship,g.phone_primary AS phone1,g.phone_secondary AS phone2,g.email AS email } RETURN source,key,name,relationship,phone1,phone2,email ORDER BY source,key LIMIT 6")).await.map_err(unavailable)?;
+    let mut rows = s.graph.execute(query_for("WITH DISTINCT s CALL { WITH s OPTIONAL MATCH (l:Lead)-[:HAS_STUDENT]->(s) RETURN 0 AS source,0 AS position,l.lead_id AS key,l.parent_name AS name,l.relationship AS relationship,l.mobile AS phone1,l.whatsapp AS phone2,l.email AS email UNION ALL WITH s OPTIONAL MATCH (s)-[:HAS_GUARDIAN]->(g:Guardian) RETURN 1 AS source,coalesce(g.position,0) AS position,g.guardian_id AS key,g.full_name AS name,g.relationship AS relationship,g.phone_primary AS phone1,g.phone_secondary AS phone2,g.email AS email } RETURN source,position,key,name,relationship,phone1,phone2,email ORDER BY source,position,key LIMIT 6")).await.map_err(unavailable)?;
     while let Some(row) = rows.next().await.map_err(unavailable)? {
         let get = |name: &str| row.get::<Option<String>>(name).ok().flatten();
         if let Some(guardian) = guardian(
