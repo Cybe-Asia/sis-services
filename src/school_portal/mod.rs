@@ -59,6 +59,41 @@ async fn context(
         .map(envelope)
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HomeroomRange {
+    from: String,
+    to: String,
+    term: Option<String>,
+    #[serde(alias = "schoolId")]
+    school_id: Option<String>,
+    #[serde(alias = "tenantId")]
+    tenant_id: Option<String>,
+}
+/// ADR 0015 layer B: a class's attendance in a range and one term's grades, for its homeroom
+/// teacher or an Owner. A subject-only grant is refused like any other foreign class.
+async fn homeroom_summary(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    Path(section): Path<String>,
+    Query(q): Query<HomeroomRange>,
+) -> Result<Json<Value>, Failure> {
+    let scope = staff_capability::Selection {
+        school_id: q.school_id,
+        tenant_id: q.tenant_id,
+    };
+    let m = auth::teacher(&h).await?.select(&scope)?;
+    let range = model::homeroom::range(&q.from, &q.to);
+    let term_ok = q.term.as_deref().is_none_or(model::homeroom::term);
+    let (Some(range), true, true) = (range, term_ok, model::identifier(&section)) else {
+        return Err(failure(StatusCode::BAD_REQUEST));
+    };
+    match repository::homeroom_summary(&s.graph, &m, &section, range, q.term.as_deref()).await {
+        Ok(Some(v)) => Ok(envelope(v)),
+        Ok(None) => Err(failure(StatusCode::FORBIDDEN)),
+        Err(_) => Err(failure(StatusCode::SERVICE_UNAVAILABLE)),
+    }
+}
 async fn classroom(
     State(s): State<AppState>,
     h: HeaderMap,
@@ -261,6 +296,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/leads/v1/teacher/school/classes/:section/attendance",
             post(attendance),
+        )
+        .route(
+            "/api/leads/v1/teacher/school/classes/:section/homeroom-summary",
+            get(homeroom_summary),
         )
         .route(
             "/api/leads/v1/teacher/school/classes/:section/records",

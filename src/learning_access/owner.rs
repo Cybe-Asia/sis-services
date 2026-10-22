@@ -211,6 +211,48 @@ async fn context(
         json!({"data":{"contractVersion":1,"databaseId":identity(&s.graph).await?,"actor":{"id":a.id,"role":a.role},"schoolId":q.school_id,"tenantId":q.tenant_id,"classes":classes}}),
     ))
 }
+/// The current answer for one access kind. `homeroom` (ADR 0015) is narrower than `teach`: a
+/// Teacher qualifies only as the class's homeroom Staff Member, never through a teaching grant;
+/// an Owner qualifies by the same live scope as for `teach`.
+async fn permitted(s: &AppState, a: &Actor, q: &Scope) -> Result<(), Failure> {
+    let compatible = matches!(
+        (a.role.as_str(), q.access.as_deref()),
+        ("teacher", Some("teach" | "homeroom"))
+            | ("owner", Some("teach" | "homeroom"))
+            | ("student", Some("learn"))
+            | ("parent", Some("parent"))
+    );
+    if !compatible || matches!(a.role.as_str(), "teacher" | "owner") != q.student_id.is_none() {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    let classes = projection(s, a, q).await?;
+    let allowed = classes.iter().any(|c| {
+        c["id"].as_str() == q.class_id.as_deref()
+            && (matches!(a.role.as_str(), "teacher" | "owner")
+                || c["students"].as_array().is_some_and(|ss| {
+                    ss.iter()
+                        .any(|s| s["id"].as_str() == q.student_id.as_deref())
+                }))
+    });
+    if !allowed {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    if a.role == "teacher" && q.access.as_deref() == Some("homeroom") {
+        let mut rows = s.graph.execute(query("MATCH (c:Section {section_id:$class,school_id:$school,tenant_id:$tenant,status:'active'}) WHERE c.homeroom_staff_member_id=$principal RETURN count(c) AS n")
+            .param("class", q.class_id.clone().unwrap_or_default()).param("school", q.school_id.clone()).param("tenant", q.tenant_id.clone()).param("principal", a.id.clone()))
+            .await.map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+        let n: i64 = rows
+            .next()
+            .await
+            .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
+            .and_then(|r| r.get("n").ok())
+            .ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+        if n != 1 {
+            return Err(failure(StatusCode::FORBIDDEN));
+        }
+    }
+    Ok(())
+}
 async fn authorize(
     State(s): State<AppState>,
     h: HeaderMap,
@@ -224,28 +266,7 @@ async fn authorize(
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let a = actor(&h, &q).await?;
-    let compatible = matches!(
-        (a.role.as_str(), q.access.as_deref()),
-        ("teacher", Some("teach"))
-            | ("owner", Some("teach"))
-            | ("student", Some("learn"))
-            | ("parent", Some("parent"))
-    );
-    if !compatible || matches!(a.role.as_str(), "teacher" | "owner") != q.student_id.is_none() {
-        return Err(failure(StatusCode::FORBIDDEN));
-    }
-    let classes = projection(&s, &a, &q).await?;
-    let allowed = classes.iter().any(|c| {
-        c["id"].as_str() == q.class_id.as_deref()
-            && (matches!(a.role.as_str(), "teacher" | "owner")
-                || c["students"].as_array().is_some_and(|ss| {
-                    ss.iter()
-                        .any(|s| s["id"].as_str() == q.student_id.as_deref())
-                }))
-    });
-    if !allowed {
-        return Err(failure(StatusCode::FORBIDDEN));
-    }
+    permitted(&s, &a, &q).await?;
     Ok(Json(
         json!({"data":{"contractVersion":1,"databaseId":identity(&s.graph).await?,"actor":{"id":a.id,"role":a.role},"schoolId":q.school_id,"tenantId":q.tenant_id,"allowed":true}}),
     ))

@@ -1,6 +1,7 @@
 use chrono::{Days, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 pub mod growth;
+pub mod homeroom;
 
 pub fn identifier(value: &str) -> bool {
     !value.is_empty()

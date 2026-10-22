@@ -173,3 +173,157 @@ async fn current_owner_projection_denies_foreign_family_and_revoked_class_access
         .await
         .unwrap();
 }
+#[tokio::test]
+#[ignore = "requires dedicated disposable SCHOOL_PORTAL_TEST_BOLT=127.0.0.1:3223"]
+async fn homeroom_access_and_summary_belong_to_the_homeroom_teacher_or_an_owner() {
+    use crate::school_portal::{auth::Teacher, model::homeroom::range, repository};
+    assert_eq!(
+        std::env::var("SCHOOL_PORTAL_TEST_BOLT").unwrap(),
+        "127.0.0.1:3223"
+    );
+    let graph = neo4rs::Graph::new("127.0.0.1:3223", "neo4j", "parent-otp-fixture-password")
+        .await
+        .unwrap();
+    for statement in include_str!("../../../migrations/0001_learning_access.cypher")
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        graph.run(query(statement)).await.unwrap();
+    }
+    let key = uuid::Uuid::new_v4().to_string();
+    let (school, tenant, class) = (
+        format!("sch-{key}"),
+        format!("ten-{key}"),
+        format!("sec-{key}"),
+    );
+    let (home, subject, owner) = (
+        format!("home-{key}"),
+        format!("subj-{key}"),
+        format!("own-{key}"),
+    );
+    graph.run(query("CREATE(:School {school_id:$school,tenant_id:$tenant,test_key:$key}) CREATE(:StaffMember {id:$home,membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:[$school],tenantIds:[$tenant],test_key:$key}) CREATE(:StaffMember {id:$subject,membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:[$school],tenantIds:[$tenant],test_key:$key}) CREATE(:StaffMember {id:$owner,membershipStatus:'ACTIVE',roles:['owner'],schoolIds:[],tenantIds:[],teamIds:[],test_key:$key}) CREATE(sec:Section {section_id:$class,name:'7A',year_group:'Year 7',school_id:$school,tenant_id:$tenant,status:'active',homeroom_staff_member_id:$home,test_key:$key}) CREATE(other:Section {section_id:$class+'-b',name:'7B',year_group:'Year 7',school_id:$school,tenant_id:$tenant,status:'active',test_key:$key}) CREATE(:LearningTeachingGrant {staff_member_id:$subject,section_id:$class,school_id:$school,tenant_id:$tenant,status:'ACTIVE',test_key:$key}) CREATE(a:Student {studentId:'aisha-'+$key,fullName:'Aisha',test_key:$key})-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:$school,tenant_id:$tenant,test_key:$key})-[:ENROLLED_IN]->(sec) CREATE(b:Student {studentId:'bima-'+$key,fullName:'Bima',test_key:$key})-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:$school,tenant_id:$tenant,test_key:$key})-[:ENROLLED_IN]->(sec) CREATE(c:Student {studentId:'citra-'+$key,fullName:'Citra',test_key:$key})-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:$school,tenant_id:$tenant,test_key:$key})-[:ENROLLED_IN]->(other) WITH a,b,c FOREACH(r IN [['aisha','2026-09-01','present'],['aisha','2026-09-02','late'],['aisha','2026-10-30','absent'],['bima','2026-09-01','excused'],['citra','2026-09-01','absent']] | CREATE(:AttendanceRecord {section_id:CASE r[0] WHEN 'citra' THEN $class+'-b' ELSE $class END,applicant_student_id:r[0]+'-'+$key,date:r[1],status:r[2],test_key:$key})) FOREACH(g IN [['aisha','Math','Semester 1',80],['aisha','Science','Semester 2',70],['bima','Math','Semester 1',60]] | CREATE(:GradeEntry {section_id:$class,applicant_student_id:g[0]+'-'+$key,subject:g[1],term:g[2],score:g[3],max_score:100.0,test_key:$key}))")
+        .param("key",key.clone()).param("school",school.clone()).param("tenant",tenant.clone()).param("class",class.clone()).param("home",home.clone()).param("subject",subject.clone()).param("owner",owner.clone())).await.unwrap();
+    let s = AppState {
+        graph: graph.clone(),
+        config: crate::config::config::AppConfig {
+            server_port: 0,
+            neo4j_uri: "127.0.0.1:3223".into(),
+            neo4j_user: "neo4j".into(),
+            neo4j_password: "parent-otp-fixture-password".into(),
+            jwt_secret: "owner-contract-test-key-at-least-32-bytes".into(),
+        },
+        http_client: reqwest::Client::new(),
+    };
+    let scope = |access: &str| Scope {
+        school_id: school.clone(),
+        tenant_id: tenant.clone(),
+        class_id: Some(class.clone()),
+        student_id: None,
+        access: Some(access.into()),
+    };
+    let actor = |id: &str, role: &str| Actor {
+        id: id.into(),
+        role: role.into(),
+    };
+    let status = |r: Result<(), Failure>| r.map_or_else(|(s, _)| s.as_u16(), |_| 200);
+    assert_eq!(
+        status(permitted(&s, &actor(&home, "teacher"), &scope("homeroom")).await),
+        200
+    );
+    assert_eq!(
+        status(permitted(&s, &actor(&home, "teacher"), &scope("teach")).await),
+        200
+    );
+    assert_eq!(
+        status(permitted(&s, &actor(&subject, "teacher"), &scope("teach")).await),
+        200
+    );
+    assert_eq!(
+        status(permitted(&s, &actor(&subject, "teacher"), &scope("homeroom")).await),
+        403,
+        "a teaching grant is not a homeroom"
+    );
+    assert_eq!(
+        status(permitted(&s, &actor(&owner, "owner"), &scope("homeroom")).await),
+        200
+    );
+    let mut foreign = scope("homeroom");
+    foreign.class_id = Some(format!("{class}-b"));
+    assert_eq!(
+        status(permitted(&s, &actor(&home, "teacher"), &foreign).await),
+        403
+    );
+    let mut with_student = scope("homeroom");
+    with_student.student_id = Some(format!("aisha-{key}"));
+    assert_eq!(
+        status(permitted(&s, &actor(&home, "teacher"), &with_student).await),
+        403
+    );
+
+    let member = |id: &str, roles: &[&str]| Teacher {
+        active: true,
+        staff_member_id: id.into(),
+        roles: roles.iter().map(|r| r.to_string()).collect(),
+        school_ids: vec![school.clone()],
+        tenant_ids: vec![tenant.clone()],
+    };
+    let semester = range("2026-08-01", "2026-09-30").unwrap();
+    let summary = repository::homeroom_summary(
+        &graph,
+        &member(&home, &["teacher"]),
+        &class,
+        semester,
+        Some("Semester 1"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let students = summary["students"].as_array().unwrap();
+    assert_eq!(students.len(), 2, "another class's student is not listed");
+    assert_eq!(students[0]["name"], "Aisha");
+    assert_eq!(
+        students[0]["attendance"],
+        json!({"present":1,"late":1,"absent":0,"excused":0,"recordedDays":2}),
+        "a record after the range is left out"
+    );
+    assert_eq!(
+        students[0]["grades"],
+        json!([{"subject":"Math","score":80.0,"maxScore":100.0}])
+    );
+    assert_eq!(students[1]["attendance"]["excused"], 1);
+    assert_eq!(students[1]["grades"][0]["score"], 60.0);
+    let no_term =
+        repository::homeroom_summary(&graph, &member(&home, &["teacher"]), &class, semester, None)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(no_term["students"][0]["grades"], json!([]));
+    assert!(
+        repository::homeroom_summary(
+            &graph,
+            &member(&subject, &["teacher"]),
+            &class,
+            semester,
+            None
+        )
+        .await
+        .unwrap()
+        .is_none(),
+        "a subject-only grant gets nothing"
+    );
+    assert!(repository::homeroom_summary(
+        &graph,
+        &member(&owner, &["owner"]),
+        &class,
+        semester,
+        None
+    )
+    .await
+    .unwrap()
+    .is_some());
+    graph
+        .run(query("MATCH(n {test_key:$key}) DETACH DELETE n").param("key", key))
+        .await
+        .unwrap();
+}
