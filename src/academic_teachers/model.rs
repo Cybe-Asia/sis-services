@@ -1,5 +1,6 @@
-//! Teacher load and warnings computed from what SIS already stores (slice 1 of
-//! `docs/TEACHER_LIST.md`). Pure: the repository hands over one school year and one school week.
+//! Teacher load and warnings computed from what SIS stores (`docs/TEACHER_LIST.md`, and the
+//! planned hours of `docs/TEACHING_ASSIGNMENTS.md`). Pure: the repository hands over one school
+//! year and one school week.
 use chrono::{Datelike, Duration, NaiveDate, Timelike};
 use serde::Serialize;
 use serde_json::Value;
@@ -12,6 +13,9 @@ pub const UPPER_PERIODS: f64 = 24.0;
 pub const JUNIOR_PERIOD_MINUTES: u64 = 40;
 pub const SENIOR_PERIOD_MINUTES: u64 = 45;
 pub const MAX_TEACHERS: usize = 300;
+/// Scheduled and planned periods closer than this are the same load (lessons rarely fill a
+/// whole number of periods exactly).
+pub const PERIOD_TOLERANCE: f64 = 0.25;
 const WIB_MS: i64 = 25_200_000;
 
 pub struct Section {
@@ -45,6 +49,20 @@ pub struct Grant {
     pub teacher_id: String,
     pub section_id: String,
 }
+/// One active row of a grade's subject plan for the year.
+pub struct PlannedSubject {
+    pub grade: String,
+    pub subject: String,
+    pub periods: u32,
+    pub required: bool,
+}
+/// One active teaching assignment of the year.
+pub struct Assignment {
+    pub section_id: String,
+    pub subject: String,
+    pub teacher_id: String,
+    pub periods: u32,
+}
 #[derive(Default)]
 pub struct Snapshot {
     pub sections: Vec<Section>,
@@ -52,6 +70,8 @@ pub struct Snapshot {
     pub lessons: Vec<Lesson>,
     pub activities: Vec<Activity>,
     pub grants: Vec<Grant>,
+    pub plans: Vec<PlannedSubject>,
+    pub assignments: Vec<Assignment>,
 }
 
 /// The school week (Monday to Friday) that contains `anchor`; a Saturday or Sunday looks ahead.
@@ -114,6 +134,16 @@ pub struct TaughtClass {
 }
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct AssignedClass {
+    #[serde(flatten)]
+    pub class: ClassRef,
+    pub subject: String,
+    pub periods: u32,
+    /// This week's lessons of this teacher in this class and subject, in periods.
+    pub scheduled_periods: f64,
+}
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Coached {
     pub activity_id: String,
     pub title: Value,
@@ -152,12 +182,49 @@ pub struct Teacher {
     pub homeroom_of: Vec<ClassRef>,
     pub coach_of: Vec<Coached>,
     pub learning_access: Vec<ClassRef>,
+    pub assignments: Vec<AssignedClass>,
     pub lessons: usize,
     pub scheduled_minutes: u64,
     pub scheduled_periods: f64,
+    pub planned_periods: u32,
     pub warnings: Vec<Warning>,
     #[serde(skip)]
     pub schedule: Vec<ScheduledLesson>,
+    /// The warnings above, one per class and subject they concern.
+    #[serde(skip)]
+    pub issues: Vec<Issue>,
+}
+/// One warning of spec §5 with what it is about, for the staffing summary.
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Issue {
+    pub code: &'static str,
+    pub level: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub staff_member_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub teacher_name: Option<String>,
+    #[serde(flatten)]
+    pub class: Option<ClassRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planned_periods: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assigned_periods: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_periods: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+}
+impl Issue {
+    fn new(code: &'static str) -> Self {
+        Issue {
+            code,
+            level: level(code),
+            ..Default::default()
+        }
+    }
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -165,6 +232,17 @@ pub struct ClassWarning {
     pub code: &'static str,
     #[serde(flatten)]
     pub class: ClassRef,
+}
+/// A class and subject of the plan: no teacher yet, or the teachers' periods do not add up.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubjectWarning {
+    pub code: &'static str,
+    #[serde(flatten)]
+    pub class: ClassRef,
+    pub subject: String,
+    pub planned_periods: u32,
+    pub assigned_periods: u32,
 }
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -176,10 +254,24 @@ pub struct Summary {
     pub overloaded: usize,
     pub underloaded: usize,
     pub inactive: usize,
+    pub subject_unassigned: usize,
+    pub plan_hours_mismatch: usize,
+    pub hours_mismatch: usize,
+    pub schedule_without_assignment: usize,
+    pub grant_without_assignment: usize,
+}
+/// How much a warning matters, spec §5: `critical` (Penting), `attention` (Perhatian), `info`.
+pub fn level(code: &str) -> &'static str {
+    match code {
+        "NO_HOMEROOM" | "SUBJECT_UNASSIGNED" | "TEACHER_CLASH" | "INACTIVE_TEACHER" => "critical",
+        "GRANT_WITHOUT_ASSIGNMENT" => "info",
+        _ => "attention",
+    }
 }
 pub struct Report {
     pub teachers: Vec<Teacher>,
     pub class_warnings: Vec<ClassWarning>,
+    pub subject_warnings: Vec<SubjectWarning>,
     pub summary: Summary,
     /// Lessons of the week in this school's active classes, for any teacher.
     pub lessons: usize,
@@ -232,6 +324,20 @@ pub fn report(s: &Snapshot) -> Option<Report> {
             .filter(|g| sections.contains_key(g.section_id.as_str()))
             .map(|g| g.teacher_id.as_str()),
     );
+    let assignments: Vec<&Assignment> = s
+        .assignments
+        .iter()
+        .filter(|a| sections.contains_key(a.section_id.as_str()))
+        .collect();
+    ids.extend(assignments.iter().map(|a| a.teacher_id.as_str()));
+    // Classes whose grade has a subject plan this year have started on assignments; only there
+    // do lessons and grants without an assignment mean something.
+    let planned_grades: BTreeSet<&str> = s.plans.iter().map(|p| p.grade.as_str()).collect();
+    let planned = |section: &str| {
+        sections
+            .get(section)
+            .is_some_and(|x| planned_grades.contains(x.year_group.as_str()))
+    };
     if ids.len() > MAX_TEACHERS {
         return None;
     }
@@ -242,6 +348,7 @@ pub fn report(s: &Snapshot) -> Option<Report> {
             let mut by_class: BTreeMap<&str, (BTreeSet<String>, usize, u64, f64)> = BTreeMap::new();
             let mut subjects = BTreeSet::new();
             let mut total_periods = 0.0;
+            let mut by_subject: BTreeMap<(&str, &str), f64> = BTreeMap::new();
             for l in &mine {
                 let minutes = (l.ends_at - l.starts_at) / 60_000;
                 let length = period_minutes(&sections[l.section_id.as_str()].year_group) as f64;
@@ -251,6 +358,9 @@ pub fn report(s: &Snapshot) -> Option<Report> {
                 entry.2 += minutes;
                 entry.3 += minutes as f64 / length;
                 total_periods += minutes as f64 / length;
+                *by_subject
+                    .entry((l.section_id.as_str(), l.subject.as_str()))
+                    .or_default() += minutes as f64 / length;
                 subjects.insert(l.subject.clone());
             }
             // Two lessons of this teacher in different classes that overlap in time.
@@ -293,6 +403,26 @@ pub fn report(s: &Snapshot) -> Option<Report> {
             let active = person.is_some_and(|p| p.active);
             let scheduled_minutes = by_class.values().map(|c| c.2).sum();
             let scheduled_periods = periods(total_periods);
+            let held: Vec<&&Assignment> =
+                assignments.iter().filter(|a| a.teacher_id == id).collect();
+            let mut assigned: Vec<AssignedClass> = held
+                .iter()
+                .filter_map(|a| {
+                    Some(AssignedClass {
+                        class: class_ref(&a.section_id)?,
+                        subject: a.subject.clone(),
+                        periods: a.periods,
+                        scheduled_periods: periods(
+                            by_subject
+                                .get(&(a.section_id.as_str(), a.subject.as_str()))
+                                .copied()
+                                .unwrap_or_default(),
+                        ),
+                    })
+                })
+                .collect();
+            assigned.sort_by(|a, b| (&a.class.name, &a.subject).cmp(&(&b.class.name, &b.subject)));
+            subjects.extend(held.iter().map(|a| a.subject.clone()));
             let mut warnings = vec![];
             if !active {
                 warnings.push(Warning {
@@ -319,6 +449,96 @@ pub fn report(s: &Snapshot) -> Option<Report> {
                         count: None,
                     });
                 }
+            }
+            // A week without lessons says nothing about whether the timetable matches the plan.
+            let name = person
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| id.to_string());
+            let about = |code| Issue {
+                staff_member_id: Some(id.to_string()),
+                teacher_name: Some(name.clone()),
+                ..Issue::new(code)
+            };
+            let mut issues = vec![];
+            for w in &warnings {
+                issues.push(Issue {
+                    count: w.count,
+                    scheduled_periods: matches!(w.code, "OVERLOAD" | "UNDERLOAD")
+                        .then_some(scheduled_periods),
+                    ..about(w.code)
+                });
+            }
+            let mismatched: Vec<&AssignedClass> = if lessons.is_empty() {
+                vec![]
+            } else {
+                assigned
+                    .iter()
+                    .filter(|a| {
+                        (a.scheduled_periods - f64::from(a.periods)).abs() > PERIOD_TOLERANCE
+                    })
+                    .collect()
+            };
+            for a in &mismatched {
+                issues.push(Issue {
+                    class: Some(a.class.clone()),
+                    subject: Some(a.subject.clone()),
+                    planned_periods: Some(a.periods),
+                    scheduled_periods: Some(a.scheduled_periods),
+                    ..about("HOURS_MISMATCH")
+                });
+            }
+            let mismatched = mismatched.len();
+            if mismatched > 0 {
+                warnings.push(Warning {
+                    code: "HOURS_MISMATCH",
+                    count: Some(mismatched),
+                });
+            }
+            let unassigned: Vec<(&(&str, &str), &f64)> = by_subject
+                .iter()
+                .filter(|((section, subject), _)| {
+                    planned(section)
+                        && !held
+                            .iter()
+                            .any(|a| a.section_id == *section && a.subject == *subject)
+                })
+                .collect();
+            for ((section, subject), p) in &unassigned {
+                issues.push(Issue {
+                    class: class_ref(section),
+                    subject: Some(subject.to_string()),
+                    scheduled_periods: Some(periods(**p)),
+                    ..about("SCHEDULE_WITHOUT_ASSIGNMENT")
+                });
+            }
+            let unassigned_lessons = unassigned.len();
+            if unassigned_lessons > 0 {
+                warnings.push(Warning {
+                    code: "SCHEDULE_WITHOUT_ASSIGNMENT",
+                    count: Some(unassigned_lessons),
+                });
+            }
+            let ungoverned: Vec<&str> = s
+                .grants
+                .iter()
+                .filter(|g| g.teacher_id == id && planned(&g.section_id))
+                .map(|g| g.section_id.as_str())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .filter(|section| !held.iter().any(|a| a.section_id == *section))
+                .collect();
+            for section in &ungoverned {
+                issues.push(Issue {
+                    class: class_ref(section),
+                    ..about("GRANT_WITHOUT_ASSIGNMENT")
+                });
+            }
+            let ungoverned_grants = ungoverned.len();
+            if ungoverned_grants > 0 {
+                warnings.push(Warning {
+                    code: "GRANT_WITHOUT_ASSIGNMENT",
+                    count: Some(ungoverned_grants),
+                });
             }
             let mut classes: Vec<TaughtClass> = by_class
                 .into_iter()
@@ -352,9 +572,7 @@ pub fn report(s: &Snapshot) -> Option<Report> {
             learning_access.sort_by(|a, b| a.name.cmp(&b.name));
             Teacher {
                 staff_member_id: id.to_string(),
-                name: person
-                    .map(|p| p.name.clone())
-                    .unwrap_or_else(|| id.to_string()),
+                name,
                 active,
                 subjects: subjects.into_iter().collect(),
                 classes,
@@ -369,11 +587,14 @@ pub fn report(s: &Snapshot) -> Option<Report> {
                     })
                     .collect(),
                 learning_access,
+                planned_periods: assigned.iter().map(|a| a.periods).sum(),
+                assignments: assigned,
                 lessons: mine.len(),
                 scheduled_minutes,
                 scheduled_periods,
                 warnings,
                 schedule,
+                issues,
             }
         })
         .collect();
@@ -397,6 +618,38 @@ pub fn report(s: &Snapshot) -> Option<Report> {
         })
         .collect();
     class_warnings.sort_by(|a, b| a.class.name.cmp(&b.class.name));
+    let mut subject_warnings = vec![];
+    for x in &s.sections {
+        for p in s.plans.iter().filter(|p| p.grade == x.year_group) {
+            let held: Vec<&&Assignment> = assignments
+                .iter()
+                .filter(|a| a.section_id == x.id && a.subject == p.subject)
+                .collect();
+            let assigned_periods = held.iter().map(|a| a.periods).sum();
+            let code = if held.is_empty() {
+                if !p.required {
+                    continue;
+                }
+                "SUBJECT_UNASSIGNED"
+            } else if assigned_periods != p.periods {
+                "PLAN_HOURS_MISMATCH"
+            } else {
+                continue;
+            };
+            if let Some(class) = class_ref(&x.id) {
+                subject_warnings.push(SubjectWarning {
+                    code,
+                    class,
+                    subject: p.subject.clone(),
+                    planned_periods: p.periods,
+                    assigned_periods,
+                });
+            }
+        }
+    }
+    subject_warnings.sort_by(|a, b| {
+        (&a.class.name, &a.subject, a.code).cmp(&(&b.class.name, &b.subject, b.code))
+    });
     let has = |t: &Teacher, code: &str| t.warnings.iter().any(|w| w.code == code);
     let summary = Summary {
         teachers: teachers.len(),
@@ -409,11 +662,50 @@ pub fn report(s: &Snapshot) -> Option<Report> {
             .iter()
             .filter(|t| has(t, "INACTIVE_TEACHER"))
             .count(),
+        subject_unassigned: subject_warnings
+            .iter()
+            .filter(|w| w.code == "SUBJECT_UNASSIGNED")
+            .count(),
+        plan_hours_mismatch: subject_warnings
+            .iter()
+            .filter(|w| w.code == "PLAN_HOURS_MISMATCH")
+            .count(),
+        hours_mismatch: teachers.iter().filter(|t| has(t, "HOURS_MISMATCH")).count(),
+        schedule_without_assignment: teachers
+            .iter()
+            .filter(|t| has(t, "SCHEDULE_WITHOUT_ASSIGNMENT"))
+            .count(),
+        grant_without_assignment: teachers
+            .iter()
+            .filter(|t| has(t, "GRANT_WITHOUT_ASSIGNMENT"))
+            .count(),
     };
     Some(Report {
         teachers,
         class_warnings,
+        subject_warnings,
         summary,
         lessons: lessons.len(),
     })
+}
+
+/// Every warning of the year and week, classes first and then teachers by name.
+pub fn issues(r: &Report) -> Vec<Issue> {
+    let mut out: Vec<Issue> = r
+        .class_warnings
+        .iter()
+        .map(|w| Issue {
+            class: Some(w.class.clone()),
+            ..Issue::new(w.code)
+        })
+        .collect();
+    out.extend(r.subject_warnings.iter().map(|w| Issue {
+        class: Some(w.class.clone()),
+        subject: Some(w.subject.clone()),
+        planned_periods: Some(w.planned_periods),
+        assigned_periods: Some(w.assigned_periods),
+        ..Issue::new(w.code)
+    }));
+    out.extend(r.teachers.iter().flat_map(|t| t.issues.iter().cloned()));
+    out
 }

@@ -1,6 +1,6 @@
 //! Reads only. Every query is scoped by school and tenant; the authority check runs in the graph
 //! as well as on the introspected session.
-use super::model::{Activity, Grant, Lesson, Section, Snapshot, Staff};
+use super::model::{Activity, Assignment, Grant, Lesson, PlannedSubject, Section, Snapshot, Staff};
 use crate::school_portal::{model::identifier, staff_capability};
 use neo4rs::{query, Graph, Query, Row};
 use serde_json::{json, Value};
@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// Active school administrators of the school and Owners whose scope covers it.
-fn authorized(school: &str, tenant: &str) -> String {
+pub(crate) fn authorized(school: &str, tenant: &str) -> String {
     format!(
         "MATCH(a:StaffMember {{id:$actor}}) WHERE {} AND NOT EXISTS {{MATCH(other:StaffMember {{id:a.id}}) WHERE other<>a}} AND EXISTS {{MATCH(:School {{school_id:{school},tenant_id:{tenant}}})}} AND NOT EXISTS {{MATCH(one:School {{school_id:{school},tenant_id:{tenant}}}),(two:School {{school_id:{school},tenant_id:{tenant}}}) WHERE one<>two}}",
         staff_capability::authority("a", "'school_admin'", school, tenant)
@@ -116,7 +116,13 @@ pub async fn snapshot(
             room_id: get::<String>(&r, "room")?.chars().take(128).collect(),
         });
     }
-    for r in rows(graph, scoped(GRANTS).param("sections", sections), 4000).await? {
+    for r in rows(
+        graph,
+        scoped(GRANTS).param("sections", sections.clone()),
+        4000,
+    )
+    .await?
+    {
         s.grants.push(Grant {
             teacher_id: id(get(&r, "teacher")?)?,
             section_id: id(get(&r, "section")?)?,
@@ -134,6 +140,28 @@ pub async fn snapshot(
             }),
         });
     }
+    let (plans, assignments) =
+        crate::academic_staffing::repository::planned(graph, school, tenant, year, &sections)
+            .await
+            .map_err(|_| "Assignments unavailable")?;
+    s.plans = plans
+        .into_iter()
+        .map(|(grade, row)| PlannedSubject {
+            grade,
+            subject: row.subject,
+            periods: row.periods_per_week,
+            required: row.required,
+        })
+        .collect();
+    s.assignments = assignments
+        .into_iter()
+        .map(|(section_id, subject, teacher_id, periods)| Assignment {
+            section_id,
+            subject,
+            teacher_id,
+            periods,
+        })
+        .collect();
     let referenced: BTreeSet<String> = s
         .lessons
         .iter()
@@ -141,6 +169,7 @@ pub async fn snapshot(
         .chain(s.sections.iter().filter_map(|x| x.homeroom.clone()))
         .chain(s.activities.iter().map(|a| a.coach_id.clone()))
         .chain(s.grants.iter().map(|g| g.teacher_id.clone()))
+        .chain(s.assignments.iter().map(|a| a.teacher_id.clone()))
         .collect();
     let mut seen = BTreeSet::new();
     for r in rows(

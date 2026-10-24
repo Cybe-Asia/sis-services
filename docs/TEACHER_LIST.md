@@ -4,8 +4,10 @@ Added 2026-10-24. This is slice 1 of `digital-school/docs/admin/teacher-assignme
 read-only list of who teaches what, built from data SIS already stores. There is no new label, property,
 constraint or migration, and nothing is written. Responses are `Cache-Control: no-store`.
 
-Teaching assignments and subject masters (slice 2) do not exist yet. Until they do, "who teaches what"
-comes from **published lessons** (`LearningClassMeeting`), and the only hours are **scheduled hours**.
+Slice 1 read "who teaches what" from **published lessons** (`LearningClassMeeting`) only, and the only
+hours were **scheduled hours**. Since slice 2 (`docs/TEACHING_ASSIGNMENTS.md`) each teacher also carries
+their teaching assignments and planned periods, and the remaining warnings of spec §5. The additions are
+listed under "Teacher list additions" there. Everything below still holds.
 
 ## Access
 

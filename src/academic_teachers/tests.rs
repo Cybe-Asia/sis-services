@@ -450,12 +450,14 @@ fn the_wire_shape_matches_the_documented_contract() {
         keys,
         vec![
             "active",
+            "assignments",
             "classes",
             "coachOf",
             "homeroomOf",
             "learningAccess",
             "lessons",
             "name",
+            "plannedPeriods",
             "scheduledMinutes",
             "scheduledPeriods",
             "staffMemberId",
@@ -476,4 +478,204 @@ fn the_wire_shape_matches_the_documented_contract() {
         serde_json::to_value(&r.teachers[0].schedule[0]).unwrap(),
         json!({"id":"a","sectionId":"7A","className":"Class 7A","subject":"mathematics","title":"mathematics","weekday":1,"start":"07:30","end":"08:10","roomId":"r-1","clash":false})
     );
+}
+
+fn plan(grade: &str, subject: &str, periods: u32, required: bool) -> PlannedSubject {
+    PlannedSubject {
+        grade: grade.into(),
+        subject: subject.into(),
+        periods,
+        required,
+    }
+}
+fn assignment(class: &str, subject: &str, teacher: &str, periods: u32) -> Assignment {
+    Assignment {
+        section_id: class.into(),
+        subject: subject.into(),
+        teacher_id: teacher.into(),
+        periods,
+    }
+}
+
+#[test]
+fn planned_hours_and_the_plan_warnings_come_from_assignments() {
+    let s = Snapshot {
+        sections: vec![
+            section("7A", "Year 7", Some("T1")),
+            section("7B", "Year 7", Some("T2")),
+            section("8A", "Year 8", Some("T2")),
+        ],
+        staff: vec![staff("T1", true), staff("T2", true), staff("GONE", false)],
+        lessons: vec![
+            // Two 80-minute mathematics lessons in 7A = 4 periods, as assigned.
+            lesson(
+                "a",
+                "7A",
+                "T1",
+                "mathematics",
+                "2026-10-26",
+                "07:30",
+                "08:50",
+            ),
+            lesson(
+                "b",
+                "7A",
+                "T1",
+                "mathematics",
+                "2026-10-28",
+                "07:30",
+                "08:50",
+            ),
+            // Science is assigned 3 periods in 7A but only 1 is scheduled.
+            lesson("c", "7A", "T2", "science", "2026-10-27", "07:30", "08:10"),
+            // Art in 7B has no assignment, in a grade that has a plan.
+            lesson("d", "7B", "T2", "art", "2026-10-27", "09:00", "09:40"),
+            // Year 8 has no plan yet, so lessons there are not checked against assignments.
+            lesson("e", "8A", "T2", "art", "2026-10-29", "09:00", "09:40"),
+        ],
+        grants: vec![
+            Grant {
+                teacher_id: "T2".into(),
+                section_id: "7B".into(),
+            },
+            Grant {
+                teacher_id: "T2".into(),
+                section_id: "8A".into(),
+            },
+            Grant {
+                teacher_id: "T1".into(),
+                section_id: "7A".into(),
+            },
+        ],
+        plans: vec![
+            plan("Year 7", "mathematics", 4, true),
+            plan("Year 7", "science", 4, true),
+            plan("Year 7", "art", 2, false),
+        ],
+        assignments: vec![
+            assignment("7A", "mathematics", "T1", 4),
+            // Team teaching: 3 + 1 = 4 periods of science in 7A.
+            assignment("7A", "science", "T2", 3),
+            assignment("7A", "science", "GONE", 1),
+            // 7B science: one teacher, 2 of 4 planned periods.
+            assignment("7B", "science", "T1", 2),
+            assignment("OTHER-YEAR", "science", "T1", 9),
+        ],
+        ..Default::default()
+    };
+    let r = report(&s).unwrap();
+    let t1 = find(&r, "T1");
+    assert_eq!(t1.planned_periods, 6);
+    assert_eq!(t1.subjects, vec!["mathematics", "science"]);
+    let held: Vec<_> = t1
+        .assignments
+        .iter()
+        .map(|a| {
+            (
+                a.class.section_id.as_str(),
+                a.subject.as_str(),
+                a.periods,
+                a.scheduled_periods,
+            )
+        })
+        .collect();
+    assert_eq!(
+        held,
+        vec![("7A", "mathematics", 4, 4.0), ("7B", "science", 2, 0.0)]
+    );
+    assert_eq!(codes(t1), vec!["UNDERLOAD", "HOURS_MISMATCH"]);
+    let t2 = find(&r, "T2");
+    assert_eq!(
+        codes(t2),
+        vec![
+            "UNDERLOAD",
+            "HOURS_MISMATCH",
+            "SCHEDULE_WITHOUT_ASSIGNMENT",
+            "GRANT_WITHOUT_ASSIGNMENT"
+        ]
+    );
+    // The holder of an assignment is listed even when the account is no longer active.
+    assert_eq!(
+        codes(find(&r, "GONE")),
+        vec!["INACTIVE_TEACHER", "HOURS_MISMATCH"]
+    );
+    let subjects: Vec<_> = r
+        .subject_warnings
+        .iter()
+        .map(|w| {
+            (
+                w.code,
+                w.class.section_id.as_str(),
+                w.subject.as_str(),
+                w.planned_periods,
+                w.assigned_periods,
+            )
+        })
+        .collect();
+    assert_eq!(
+        subjects,
+        vec![
+            ("SUBJECT_UNASSIGNED", "7B", "mathematics", 4, 0),
+            ("PLAN_HOURS_MISMATCH", "7B", "science", 4, 2),
+        ]
+    );
+    assert_eq!(r.summary.subject_unassigned, 1);
+    assert_eq!(r.summary.plan_hours_mismatch, 1);
+    assert_eq!(r.summary.hours_mismatch, 3);
+    assert_eq!(r.summary.schedule_without_assignment, 1);
+    assert_eq!(r.summary.grant_without_assignment, 1);
+
+    let all = issues(&r);
+    let found = |code: &str| all.iter().filter(|i| i.code == code).collect::<Vec<_>>();
+    let mismatch = found("HOURS_MISMATCH");
+    assert_eq!(mismatch.len(), 3);
+    let science = mismatch
+        .iter()
+        .find(|i| i.staff_member_id.as_deref() == Some("T2"))
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(science).unwrap(),
+        json!({"code":"HOURS_MISMATCH","level":"attention","staffMemberId":"T2","teacherName":"Teacher T2","sectionId":"7A","name":"Class 7A","yearGroup":"Year 7","subject":"science","plannedPeriods":3,"scheduledPeriods":1.0})
+    );
+    let unscheduled = found("SCHEDULE_WITHOUT_ASSIGNMENT");
+    assert_eq!(unscheduled[0].subject.as_deref(), Some("art"));
+    assert_eq!(unscheduled[0].class.as_ref().unwrap().section_id, "7B");
+    assert_eq!(found("GRANT_WITHOUT_ASSIGNMENT")[0].level, "info");
+    assert_eq!(found("SUBJECT_UNASSIGNED")[0].level, "critical");
+    assert_eq!(
+        serde_json::to_value(found("UNDERLOAD")[0]).unwrap()["scheduledPeriods"],
+        json!(4.0)
+    );
+}
+
+#[test]
+fn without_lessons_in_the_week_the_timetable_is_not_compared_with_the_plan() {
+    let s = Snapshot {
+        sections: vec![section("7A", "Year 7", Some("T1"))],
+        staff: vec![staff("T1", true)],
+        plans: vec![plan("Year 7", "mathematics", 4, true)],
+        assignments: vec![assignment("7A", "mathematics", "T1", 4)],
+        ..Default::default()
+    };
+    let r = report(&s).unwrap();
+    assert!(find(&r, "T1").warnings.is_empty());
+    assert!(r.subject_warnings.is_empty());
+}
+
+#[test]
+fn every_warning_code_has_the_level_of_the_spec() {
+    for (code, expected) in [
+        ("NO_HOMEROOM", "critical"),
+        ("SUBJECT_UNASSIGNED", "critical"),
+        ("TEACHER_CLASH", "critical"),
+        ("INACTIVE_TEACHER", "critical"),
+        ("HOURS_MISMATCH", "attention"),
+        ("PLAN_HOURS_MISMATCH", "attention"),
+        ("OVERLOAD", "attention"),
+        ("UNDERLOAD", "attention"),
+        ("SCHEDULE_WITHOUT_ASSIGNMENT", "attention"),
+        ("GRANT_WITHOUT_ASSIGNMENT", "info"),
+    ] {
+        assert_eq!(level(code), expected, "{code}");
+    }
 }

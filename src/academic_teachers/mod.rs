@@ -131,7 +131,28 @@ async fn list(
     let (report, mut data) = read(&state, &headers, &q).await?;
     data["teachers"] = json!(report.teachers);
     data["classWarnings"] = json!(report.class_warnings);
+    data["subjectWarnings"] = json!(report.subject_warnings);
     data["summary"] = json!(report.summary);
+    Ok(Json(json!({"data": data})))
+}
+
+/// Every warning of spec §5 for the year and week, for the assignment matrix summary.
+async fn warnings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    q: Result<Query<Lookup>, QueryRejection>,
+) -> Result<Json<Value>, Failure> {
+    let Query(q) = q.map_err(|_| failure(StatusCode::BAD_REQUEST))?;
+    let (report, mut data) = read(&state, &headers, &q).await?;
+    let issues = model::issues(&report);
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut levels: BTreeMap<&str, usize> = [("critical", 0), ("attention", 0), ("info", 0)].into();
+    for i in &issues {
+        *counts.entry(i.code).or_default() += 1;
+        *levels.entry(i.level).or_default() += 1;
+    }
+    data["warnings"] = json!(issues);
+    data["summary"] = json!({"levels": levels, "codes": counts});
     Ok(Json(json!({"data": data})))
 }
 
@@ -193,6 +214,10 @@ pub fn router() -> Router<AppState> {
             get(context),
         )
         .route("/api/v1/sis-service/academic/teachers", get(list))
+        .route(
+            "/api/v1/sis-service/academic/staffing-warnings",
+            get(warnings),
+        )
         .route(
             "/api/v1/sis-service/academic/teachers/:staff_member_id",
             get(detail),
