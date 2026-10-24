@@ -2,6 +2,11 @@ use super::{model::identifier, Failure};
 use axum::http::{HeaderMap, StatusCode};
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use serde::Deserialize;
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    time::Duration,
+};
 
 pub fn bearer(headers: &HeaderMap) -> Result<&str, Failure> {
     headers
@@ -104,6 +109,43 @@ pub async fn teacher_in(
             tenant_id: Some(tenant.into()),
         })
 }
+/// One pooled client per trust anchor for calls to Auth. A client built per request loaded the
+/// TLS roots and opened a new TLS connection each time: about 100 ms of SIS CPU and a full
+/// handshake on Auth's 250m TLS proxy for every Learning read, so concurrent reads queued into
+/// 503s (QA B5, 2026-10-23). Keyed by the PEM bytes, so a rotated anchor applies without a restart.
+pub(crate) fn auth_client(pem: Option<&[u8]>, no_proxy: bool) -> Result<reqwest::Client, Failure> {
+    type Key = (Option<Vec<u8>>, bool);
+    static CLIENTS: OnceLock<Mutex<HashMap<Key, reqwest::Client>>> = OnceLock::new();
+    let unavailable = || super::failure(StatusCode::SERVICE_UNAVAILABLE);
+    let key = (pem.map(<[u8]>::to_vec), no_proxy);
+    let mut clients = CLIENTS
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| unavailable())?;
+    if let Some(client) = clients.get(&key) {
+        return Ok(client.clone());
+    }
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(5))
+        // Shorter than nginx's 75 s keepalive_timeout on Auth's TLS proxy, so a pooled
+        // connection is never one the proxy has already closed.
+        .pool_idle_timeout(Duration::from_secs(30));
+    if no_proxy {
+        builder = builder.no_proxy();
+    }
+    if let Some(pem) = pem {
+        builder = builder
+            .add_root_certificate(reqwest::Certificate::from_pem(pem).map_err(|_| unavailable())?);
+    }
+    let client = builder.build().map_err(|_| unavailable())?;
+    // Old anchors after rotations never accumulate.
+    if clients.len() >= 8 {
+        clients.clear();
+    }
+    clients.insert(key, client.clone());
+    Ok(client)
+}
 pub async fn teacher(headers: &HeaderMap) -> Result<Teacher, Failure> {
     let token = bearer(headers)?;
     // Audience prefilter grants no authority: Auth checks signature, exact registration and live session.
@@ -137,24 +179,18 @@ pub async fn teacher(headers: &HeaderMap) -> Result<Teacher, Failure> {
     {
         return Err(super::failure(StatusCode::SERVICE_UNAVAILABLE));
     }
-    let mut builder = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(5));
-    if let Ok(path) = std::env::var("AUTH_PORTAL_CA_FILE") {
-        let metadata = std::fs::metadata(&path)
-            .map_err(|_| super::failure(StatusCode::SERVICE_UNAVAILABLE))?;
-        if !metadata.is_file() || metadata.len() > 65_536 {
-            return Err(super::failure(StatusCode::SERVICE_UNAVAILABLE));
+    let pem = match std::env::var("AUTH_PORTAL_CA_FILE") {
+        Ok(path) => {
+            let metadata = std::fs::metadata(&path)
+                .map_err(|_| super::failure(StatusCode::SERVICE_UNAVAILABLE))?;
+            if !metadata.is_file() || metadata.len() > 65_536 {
+                return Err(super::failure(StatusCode::SERVICE_UNAVAILABLE));
+            }
+            Some(std::fs::read(path).map_err(|_| super::failure(StatusCode::SERVICE_UNAVAILABLE))?)
         }
-        let pem =
-            std::fs::read(path).map_err(|_| super::failure(StatusCode::SERVICE_UNAVAILABLE))?;
-        let certificate = reqwest::Certificate::from_pem(&pem)
-            .map_err(|_| super::failure(StatusCode::SERVICE_UNAVAILABLE))?;
-        builder = builder.add_root_certificate(certificate);
-    }
-    let client = builder
-        .build()
-        .map_err(|_| super::failure(StatusCode::SERVICE_UNAVAILABLE))?;
+        Err(_) => None,
+    };
+    let client = auth_client(pem.as_deref(), false)?;
     let mut response = client
         .post(url)
         .bearer_auth(token)
@@ -187,4 +223,61 @@ pub async fn teacher(headers: &HeaderMap) -> Result<Teacher, Failure> {
         return Err(super::failure(StatusCode::FORBIDDEN));
     }
     Ok(member)
+}
+#[cfg(test)]
+mod client_tests {
+    use super::auth_client;
+    use std::{
+        io::{BufRead, BufReader, Write},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
+
+    /// Answers every request with 200 on a kept-alive connection and counts connections.
+    fn server() -> (String, Arc<AtomicUsize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let connections = Arc::new(AtomicUsize::new(0));
+        let count = connections.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                count.fetch_add(1, Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        if line == "\r\n" {
+                            let reply = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
+                            if stream.write_all(reply.as_bytes()).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        (origin, connections)
+    }
+
+    #[tokio::test]
+    async fn auth_calls_share_one_pooled_connection() {
+        let (origin, connections) = server();
+        for _ in 0..3 {
+            let client = auth_client(None, true).unwrap();
+            let response = client
+                .post(format!("{origin}/session"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.text().await.unwrap(), "ok");
+        }
+        assert_eq!(connections.load(Ordering::SeqCst), 1);
+    }
 }

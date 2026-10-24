@@ -139,25 +139,22 @@ pub(crate) async fn actor(headers: &HeaderMap) -> Result<String, Failure> {
     let claims = signed(token, &secret)?;
     // Separate from Staff membership/portal URLs. Missing configuration never falls back.
     let url = endpoint(&std::env::var("AUTH_STUDENT_SESSION_URL").map_err(|_| unavailable())?)?;
-    let mut builder = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(5));
-    if matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) {
-        builder = builder.no_proxy();
-    }
-    if let Ok(path) = std::env::var("AUTH_PORTAL_CA_FILE") {
-        let pem = std::fs::read(path).map_err(|_| unavailable())?;
-        if pem.len() > 65_536 {
-            return Err(unavailable());
+    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    let pem = match std::env::var("AUTH_PORTAL_CA_FILE") {
+        Ok(path) => {
+            let pem = std::fs::read(path).map_err(|_| unavailable())?;
+            if pem.len() > 65_536 {
+                return Err(unavailable());
+            }
+            Some(pem)
         }
-        let ca = reqwest::Certificate::from_pem(&pem).map_err(|_| unavailable())?;
-        builder = builder.add_root_certificate(ca);
-    }
+        Err(_) => None,
+    };
     verify(
         token,
         claims,
         url,
-        builder.build().map_err(|_| unavailable())?,
+        super::auth::auth_client(pem.as_deref(), loopback)?,
     )
     .await
 }

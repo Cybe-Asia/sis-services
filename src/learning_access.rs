@@ -67,18 +67,13 @@ async fn membership(headers: &HeaderMap) -> Result<Membership, Failure> {
     {
         return Err(failure(StatusCode::SERVICE_UNAVAILABLE));
     }
-    let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none());
-    if let Ok(path) = std::env::var("AUTH_PORTAL_CA_FILE") {
-        let pem = std::fs::read(path).map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
-        let certificate = reqwest::Certificate::from_pem(&pem)
-            .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
-        builder = builder.add_root_certificate(certificate);
-    }
-    let client = builder
-        .build()
-        .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    let pem = match std::env::var("AUTH_PORTAL_CA_FILE") {
+        Ok(path) => {
+            Some(std::fs::read(path).map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?)
+        }
+        Err(_) => None,
+    };
+    let client = crate::school_portal::auth::auth_client(pem.as_deref(), false)?;
     let response = client
         .post(url)
         .bearer_auth(token)
