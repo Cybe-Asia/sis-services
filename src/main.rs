@@ -35,6 +35,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+mod academic_teachers;
 mod config;
 mod billing_owner;
 mod enrollment_handover;
@@ -159,6 +160,7 @@ async fn main() {
         .merge(school_articles::router())
         .merge(school_rooms::router())
         .merge(student_biodata::router())
+        .merge(academic_teachers::router())
         .merge(extra_curricular::router())
         .merge(
             SwaggerUi::new("/api/v1/sis-service/swagger-ui")

@@ -39,6 +39,14 @@ sis-services reads `(Lead)`, `(User)`, `(:Student)`, `(EnrolledStudent)` but nev
 - `GET    /api/leads/v1/admin/sis/sections/{id}/grades` — per-subject/term roster
 - `POST   /api/leads/v1/admin/sis/sections/{id}/grades` — bulk upsert
 
+### Admin teacher list (staff portal session, school admin or Owner)
+
+- `GET    /api/v1/sis-service/academic/teachers/context` — schools and academic years the caller administers
+- `GET    /api/v1/sis-service/academic/teachers` — teachers, scheduled load and warnings for one school year and week
+- `GET    /api/v1/sis-service/academic/teachers/{staffMemberId}` — one teacher with the week's schedule
+
+Read-only, from published lessons, homerooms, grants and activity coaches; see `docs/TEACHER_LIST.md`.
+
 ### Parent (requires valid session)
 
 - `GET    /api/leads/v1/me/grades` — all grades across all kids

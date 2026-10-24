@@ -187,6 +187,22 @@ pub(crate) async fn staff_session(headers: &HeaderMap) -> Result<StaffSession, F
     Ok(StaffSession(membership(headers).await?))
 }
 impl StaffSession {
+    /// Actor, role (`owner` or `school_admin`) and the session's own school and tenant lists,
+    /// for reads that list what the caller may administer. Both lists are empty only for an
+    /// Owner without a school scope.
+    pub(crate) fn scope(self) -> (String, String, Vec<String>, Vec<String>) {
+        let member = self.0;
+        let owner = member
+            .roles
+            .as_ref()
+            .is_some_and(|rs| rs.iter().any(|r| r == "owner"));
+        (
+            member.staff_member_id.unwrap_or_default(),
+            if owner { "owner" } else { "school_admin" }.into(),
+            member.school_ids.unwrap_or_default(),
+            member.tenant_ids.unwrap_or_default(),
+        )
+    }
     pub(crate) fn administrator(
         self,
         tenant_id: &String,
