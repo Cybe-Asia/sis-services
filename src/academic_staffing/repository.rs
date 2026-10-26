@@ -40,6 +40,7 @@ fn get<T: serde::de::DeserializeOwned>(row: &Row, name: &str) -> Result<T, Failu
 pub async fn init(graph: &Graph) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for statement in include_str!("../../migrations/0005_academic_staffing.cypher")
         .split(';')
+        .chain(include_str!("../../migrations/0006_grade_weights.cypher").split(';'))
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
@@ -608,3 +609,5 @@ pub async fn planned(
     }
     Ok((plans, assignments))
 }
+
+pub mod weights;

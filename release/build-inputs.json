@@ -7,10 +7,10 @@
     "migrations/0001_learning_access.cypher": "92d884c9aadeb0ae460810bf5e3b63e22a9659d6293f5f6a08fa3eccdfd03d06",
     "migrations/0004_timetable.cypher": "2c1d44ff7d65c4eecf301f54f2bcc758fa3034264d62543c864d9a2f41d5ad93",
     "migrations/0005_academic_staffing.cypher": "2e769d7342aa3c085816e3bc20272f4ae84ddbe763918015ebd0925499fcff80",
-    "src/academic_staffing/database_tests.rs": "af8a1fc514e40d3accc1af8769577a5195d0ff4b854b24ab4a8016df6ef12669",
-    "src/academic_staffing/mod.rs": "894eec87363ffdfaa05400f0dae0791311e332dba4688ac0b1521e4dbd778b98",
+    "src/academic_staffing/database_tests.rs": "8e41f5d71cbeacd43b968c7f0e2d8c5ddbf03c0ed4942e5c40fdfd5158249c30",
+    "src/academic_staffing/mod.rs": "c3c2f50b5653358934bf8523c4fb716a7c3298fd5ec840664f78898a55d68c38",
     "src/academic_staffing/model.rs": "d61edc115186a755ab22dc1c5f371eb349bbe219d07ab76a780a6d1b4dc9af91",
-    "src/academic_staffing/repository.rs": "f8467f085ec89051d65ca1ff8808b29eedb42f347ba63d85557d35303bf08f29",
+    "src/academic_staffing/repository.rs": "8d0320f2ccedf40ffbcdb628ea7dbc6b86d52491115f401c18b5d092ff5963c7",
     "src/academic_staffing/tests.rs": "6144b0e1771e51b03a5ee741bfb77cb8982552569d62755212477fe31893f0e7",
     "src/academic_teachers/database_tests.rs": "5f9545ca2b742c3ef51268e26bd278b4164f3e2bb16daf57c66b436b35da370b",
     "src/academic_teachers/mod.rs": "60f48b5ce51779fd5a91480ac8088bc4a2edae47bcac5bd0c7d15be45ff996ad",
@@ -135,7 +135,10 @@
     "src/student_biodata/tests.rs": "2e52114d0457f07c85202b3f2510dad82bc4e31d95a8117739770f4364ea8bfa",
     "src/utils/jwt.rs": "34a816ea4efb8778a479a571f9f6bdff9fcb1bc73c40689d30e19a1cd117ecf7",
     "src/utils/mod.rs": "63d7d1b476d50a5a95b26c61a69de6af35b3ef4adb3fee359ebf61d62afc3adc",
-    "src/utils/response.rs": "fc7482bd9cdb4baeebc7414e4c0f9eab9399f0d998a6f70f0b0e2280b4ba6af2"
+    "src/utils/response.rs": "fc7482bd9cdb4baeebc7414e4c0f9eab9399f0d998a6f70f0b0e2280b4ba6af2",
+    "migrations/0006_grade_weights.cypher": "dba388ee2c2d34ca5cd9ba33dcdb9383d6cdb1768b9d029ce7b89230c6577d1f",
+    "src/academic_staffing/repository/weights.rs": "cfa05e475e4139e992cbcac0945ace7941fc5dee2b534fbbb320beb899d53ff2",
+    "src/academic_staffing/weights.rs": "fd64b91a4fe526fc0a3788942c343fc71fe19a89bee76d4fac629dfad1fba9aa"
   },
   "testedRuntimeFreeze": {
     "Cargo.lock": "0e912aecca4edad25752a70f20b022e9774b8fb5d66f776eabba3617e40be888",
@@ -242,7 +245,8 @@
     "src/student_biodata/tests.rs": "2e52114d0457f07c85202b3f2510dad82bc4e31d95a8117739770f4364ea8bfa",
     "src/utils/jwt.rs": "34a816ea4efb8778a479a571f9f6bdff9fcb1bc73c40689d30e19a1cd117ecf7",
     "src/utils/mod.rs": "63d7d1b476d50a5a95b26c61a69de6af35b3ef4adb3fee359ebf61d62afc3adc",
-    "src/utils/response.rs": "fc7482bd9cdb4baeebc7414e4c0f9eab9399f0d998a6f70f0b0e2280b4ba6af2"
+    "src/utils/response.rs": "fc7482bd9cdb4baeebc7414e4c0f9eab9399f0d998a6f70f0b0e2280b4ba6af2",
+    "migrations/0006_grade_weights.cypher": "dba388ee2c2d34ca5cd9ba33dcdb9383d6cdb1768b9d029ce7b89230c6577d1f"
   },
   "scope": "school-staging; no automatic GitOps or production promotion"
 }

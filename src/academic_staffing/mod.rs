@@ -14,6 +14,7 @@ use std::time::Duration;
 
 pub mod model;
 pub mod repository;
+pub mod weights;
 
 use crate::school_portal::model::identifier;
 use repository::{refuse, unavailable, Failure, Session, Writer};
@@ -270,6 +271,111 @@ async fn commands(
     .await
 }
 
+async fn grade_weights(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    q: Result<Query<Lookup>, QueryRejection>,
+) -> Result<Json<Value>, Failure> {
+    let Query(q) = q.map_err(|_| invalid())?;
+    if q.section_id.is_some() || q.staff_member_id.is_some() {
+        return Err(invalid());
+    }
+    let (school, tenant, year) = (
+        q.school_id.clone(),
+        q.tenant_id.clone(),
+        q.academic_year.clone(),
+    );
+    guarded_read(&state, &headers, &q, |g| async move {
+        repository::weights::list(&g, &school, &tenant, &year).await
+    })
+    .await
+}
+
+async fn save_grade_weights(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Json<weights::Change>, JsonRejection>,
+) -> Result<Json<Value>, Failure> {
+    let Json(change) = body.map_err(|_| invalid())?;
+    if !change.valid() {
+        return Err(invalid());
+    }
+    let (school, tenant) = (change.school_id.clone(), change.tenant_id.clone());
+    write(
+        state,
+        headers,
+        school,
+        tenant,
+        change,
+        |g, h, actor, role, school, tenant, command, change| async move {
+            let w = Writer {
+                session: Session::Headers(&h),
+                actor: &actor,
+                role: &role,
+                school: &school,
+                tenant: &tenant,
+                command: &command,
+            };
+            repository::weights::save(&g, &w, &change).await
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WeightsFor {
+    school_id: String,
+    tenant_id: String,
+    section_id: String,
+    subject: String,
+    term: String,
+}
+
+/// The weights Learning applies to one class, subject and term. Teachers of the school read them
+/// as well as its administrators and Owners; nobody writes here.
+async fn learning_grade_weights(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    q: Result<Query<WeightsFor>, QueryRejection>,
+) -> Result<Json<Value>, Failure> {
+    let Query(q) = q.map_err(|_| invalid())?;
+    if !(identifier(&q.school_id)
+        && identifier(&q.tenant_id)
+        && identifier(&q.section_id)
+        && model::subject_code(&q.subject)
+        && weights::term(&q.term))
+    {
+        return Err(invalid());
+    }
+    let actor =
+        match crate::school_portal::auth::teacher_in(&headers, &q.school_id, &q.tenant_id).await {
+            Ok(m) if m.school_ids.contains(&q.school_id) && m.tenant_ids.contains(&q.tenant_id) => {
+                m.staff_member_id
+            }
+            _ => {
+                crate::learning_access::administrator_actor(&headers, &q.tenant_id, &q.school_id)
+                    .await?
+                    .0
+            }
+        };
+    let data = tokio::time::timeout(
+        Duration::from_secs(8),
+        repository::weights::for_section(
+            &state.graph,
+            &actor,
+            &q.school_id,
+            &q.tenant_id,
+            &q.section_id,
+            &q.subject,
+            &q.term,
+        ),
+    )
+    .await
+    .map_err(unavailable)??;
+    Ok(Json(json!({ "data": data })))
+}
+
 pub use repository::init;
 
 pub fn router() -> Router<AppState> {
@@ -289,6 +395,14 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/v1/sis-service/academic/teaching-assignments/commands",
             post(commands),
+        )
+        .route(
+            "/api/v1/sis-service/academic/grade-weights",
+            get(grade_weights).put(save_grade_weights),
+        )
+        .route(
+            "/api/v1/sis-service/learning/grade-weights",
+            get(learning_grade_weights),
         )
         .layer(axum::extract::DefaultBodyLimit::max(32 * 1024))
         .layer(axum::middleware::map_response(

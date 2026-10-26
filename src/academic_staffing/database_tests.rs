@@ -479,3 +479,152 @@ async fn subject_plans_and_assignments_are_revisioned_audited_and_grant_learning
         .unwrap();
     assert_eq!(budi.planned_periods, 2);
 }
+
+fn weights(body: &str) -> super::weights::Change {
+    serde_json::from_str(&format!(
+        r#"{{"tenantId":"tenant","schoolId":"school","academicYear":"2026/2027",{body}}}"#
+    ))
+    .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn grade_weights_resolve_subject_then_school_then_default_and_are_audited() {
+    let uri = std::env::var("SCHOOL_PORTAL_TEST_BOLT").unwrap();
+    assert_eq!(uri, "127.0.0.1:3223");
+    let g = Graph::new(uri, "neo4j", "parent-otp-fixture-password")
+        .await
+        .unwrap();
+    g.run(query("MATCH(n) DETACH DELETE n")).await.unwrap();
+    repo::init(&g).await.unwrap();
+    for statement in [
+        "CREATE(:School {school_id:'school',tenant_id:'tenant'})",
+        "CREATE(:StaffMember {id:'admin',membershipStatus:'ACTIVE',roles:['school_admin'],schoolIds:['school'],tenantIds:['tenant']}) CREATE(:StaffMember {id:'t1',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:['school'],tenantIds:['tenant']}) CREATE(:StaffMember {id:'parent-ish',membershipStatus:'ACTIVE',roles:['finance'],schoolIds:['school'],tenantIds:['tenant']})",
+        "CREATE(:Section {section_id:'7A',name:'7A',year_group:'Year 7',academic_year:'2026/2027',school_id:'school',tenant_id:'tenant',status:'active'})",
+        "CREATE(:AcademicSubjectPlan {key:'tenant|school|2026/2027|Year 7',tenant_id:'tenant',school_id:'school',academic_year:'2026/2027',grade:'Year 7',version:1,payload:'[]',subjects:['mathematics','art'],active_subjects:['mathematics']})",
+    ] {
+        g.run(query(statement)).await.unwrap();
+    }
+    let read = |actor: &'static str, subject: &'static str| {
+        let g = g.clone();
+        async move {
+            repo::weights::for_section(&g, actor, "school", "tenant", "7A", subject, "semester_1")
+                .await
+        }
+    };
+    // Nothing saved: the built-in 20/20/20/15/25 and KKM 75.
+    let builtin = read("t1", "mathematics").await.unwrap();
+    assert_eq!(
+        (builtin["source"].clone(), builtin["passMark"].clone()),
+        (Value::from("default"), Value::from(75))
+    );
+    assert_eq!(builtin["weights"]["pas"], 25);
+    assert_eq!(builtin["grade"], "Year 7");
+    assert_eq!(code(read("parent-ish", "mathematics").await), "FORBIDDEN");
+
+    let set = r#""set":{"weights":{"chapterQuiz":10,"quiz":20,"assignment":30,"pts":15,"pas":25},"passMark":70}"#;
+    let school = repo::weights::save(
+        &g,
+        &writer("admin", "school_admin", "weights-school-01"),
+        &weights(&format!(r#""expectedVersion":0,{set}"#)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(school["version"], 1);
+    let by_school = read("t1", "mathematics").await.unwrap();
+    assert_eq!(by_school["source"], "school");
+    assert_eq!(by_school["weights"]["assignment"], 30);
+    assert_eq!(by_school["passMark"], 70);
+
+    let subject = r#""grade":"Year 7","subject":"mathematics","term":"semester_1""#;
+    let override_set = r#""set":{"weights":{"chapterQuiz":20,"quiz":20,"assignment":20,"pts":20,"pas":20},"passMark":80}"#;
+    assert_eq!(
+        code(
+            repo::weights::save(
+                &g,
+                &writer("admin", "school_admin", "weights-art-0001"),
+                &weights(&format!(
+                    r#""grade":"Year 7","subject":"art","term":"semester_1","expectedVersion":0,{override_set}"#
+                )),
+            )
+            .await
+        ),
+        "SUBJECT_NOT_IN_PLAN"
+    );
+    let saved = repo::weights::save(
+        &g,
+        &writer("admin", "school_admin", "weights-math-001"),
+        &weights(&format!(r#"{subject},"expectedVersion":0,{override_set}"#)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (saved["version"].clone(), saved["status"].clone()),
+        (Value::from(1), Value::from("active"))
+    );
+    let by_subject = read("t1", "mathematics").await.unwrap();
+    assert_eq!(
+        (
+            by_subject["source"].clone(),
+            by_subject["version"].clone(),
+            by_subject["passMark"].clone()
+        ),
+        (Value::from("subject"), Value::from(1), Value::from(80))
+    );
+    // Another term of the same subject still uses the school default.
+    let other_term = repo::weights::for_section(
+        &g,
+        "t1",
+        "school",
+        "tenant",
+        "7A",
+        "mathematics",
+        "semester_2",
+    )
+    .await
+    .unwrap();
+    assert_eq!(other_term["source"], "school");
+    assert_eq!(
+        code(
+            repo::weights::save(
+                &g,
+                &writer("admin", "school_admin", "weights-math-002"),
+                &weights(&format!(r#"{subject},"expectedVersion":0,{override_set}"#)),
+            )
+            .await
+        ),
+        "REVISION_CONFLICT"
+    );
+    let cleared = repo::weights::save(
+        &g,
+        &writer("admin", "school_admin", "weights-math-003"),
+        &weights(&format!(r#"{subject},"expectedVersion":1,"clear":true"#)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (cleared["version"].clone(), cleared["status"].clone()),
+        (Value::from(2), Value::from("cleared"))
+    );
+    assert_eq!(read("t1", "mathematics").await.unwrap()["source"], "school");
+
+    let listed = repo::weights::list(&g, "school", "tenant", "2026/2027")
+        .await
+        .unwrap();
+    assert_eq!(listed["school"]["weights"]["chapterQuiz"], 10);
+    assert_eq!(listed["subjects"][0]["status"], "cleared");
+    assert_eq!(listed["subjects"][0]["weights"], Value::Null);
+    assert_eq!(listed["builtin"]["passMark"], 75);
+    assert_eq!(
+        count(
+            &g,
+            "MATCH(a:AcademicStaffingAudit {kind:'grade_weights'}) RETURN count(a) AS n"
+        )
+        .await,
+        3
+    );
+    assert_eq!(
+        count(&g, "MATCH(a:AcademicStaffingAudit {kind:'grade_weights',action:'clear'}) WHERE a.after='null' RETURN count(a) AS n").await,
+        1
+    );
+}
