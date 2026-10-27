@@ -327,3 +327,84 @@ async fn homeroom_access_and_summary_belong_to_the_homeroom_teacher_or_an_owner(
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated disposable SCHOOL_PORTAL_TEST_BOLT=127.0.0.1:3223"]
+async fn school_classes_carry_grade_year_and_the_callers_taught_subjects() {
+    assert_eq!(
+        std::env::var("SCHOOL_PORTAL_TEST_BOLT").unwrap(),
+        "127.0.0.1:3223"
+    );
+    let graph = neo4rs::Graph::new("127.0.0.1:3223", "neo4j", "parent-otp-fixture-password")
+        .await
+        .unwrap();
+    for statement in include_str!("../../../migrations/0001_learning_access.cypher")
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        graph.run(query(statement)).await.unwrap();
+    }
+    let key = uuid::Uuid::new_v4().to_string();
+    let (school, tenant) = (format!("sch-{key}"), format!("ten-{key}"));
+    let (teacher, owner, parentless) = (
+        format!("t-{key}"),
+        format!("own-{key}"),
+        format!("other-{key}"),
+    );
+    graph.run(query("CREATE(:School {school_id:$school,tenant_id:$tenant,test_key:$key}) CREATE(:StaffMember {id:$teacher,membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:[$school],tenantIds:[$tenant],test_key:$key}) CREATE(:StaffMember {id:$other,membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:['elsewhere'],tenantIds:[$tenant],test_key:$key}) CREATE(:StaffMember {id:$owner,membershipStatus:'ACTIVE',roles:['owner'],schoolIds:[],tenantIds:[],teamIds:[],test_key:$key}) CREATE(:Section {section_id:'7a-'+$key,name:'7A',year_group:'Year 7',academic_year:'2026/2027',school_id:$school,tenant_id:$tenant,status:'active',test_key:$key}) CREATE(:Section {section_id:'7b-'+$key,name:'7B',year_group:'Year 7',academic_year:'2026/2027',school_id:$school,tenant_id:$tenant,status:'active',test_key:$key}) CREATE(:Section {section_id:'7c-'+$key,name:'7C',school_id:$school,tenant_id:$tenant,status:'archived',test_key:$key}) CREATE(:TeachingAssignment {staff_member_id:$teacher,section_id:'7b-'+$key,subject:'mathematics',academic_year:'2026/2027',school_id:$school,tenant_id:$tenant,status:'active',test_key:$key}) CREATE(:TeachingAssignment {staff_member_id:$teacher,section_id:'7a-'+$key,subject:'science',academic_year:'2025/2026',school_id:$school,tenant_id:$tenant,status:'active',test_key:$key}) CREATE(:TeachingAssignment {staff_member_id:$teacher,section_id:'7a-'+$key,subject:'physics',academic_year:'2026/2027',school_id:$school,tenant_id:$tenant,status:'ended',test_key:$key})")
+        .param("key",key.clone()).param("school",school.clone()).param("tenant",tenant.clone()).param("teacher",teacher.clone()).param("owner",owner.clone()).param("other",parentless.clone())).await.unwrap();
+    let s = AppState {
+        graph: graph.clone(),
+        config: crate::config::config::AppConfig {
+            server_port: 0,
+            neo4j_uri: "127.0.0.1:3223".into(),
+            neo4j_user: "neo4j".into(),
+            neo4j_password: "parent-otp-fixture-password".into(),
+            jwt_secret: "owner-contract-test-key-at-least-32-bytes".into(),
+        },
+        http_client: reqwest::Client::new(),
+    };
+    let scope = Scope {
+        school_id: school.clone(),
+        tenant_id: tenant.clone(),
+        class_id: None,
+        student_id: None,
+        access: None,
+    };
+    let actor = |id: &str, role: &str| Actor {
+        id: id.into(),
+        role: role.into(),
+    };
+    let classes = school_classes::read(&s, &actor(&teacher, "teacher"), &scope)
+        .await
+        .unwrap();
+    assert_eq!(classes.len(), 2, "an archived class is left out");
+    assert_eq!(
+        classes[0],
+        json!({"id":format!("7a-{key}"),"name":"7A","yearGroup":"Year 7","academicYear":"2026/2027","taughtSubjects":[]}),
+        "an ended or other-year assignment is not taught"
+    );
+    assert_eq!(classes[1]["taughtSubjects"], json!(["mathematics"]));
+    let owned = school_classes::read(&s, &actor(&owner, "owner"), &scope)
+        .await
+        .unwrap();
+    assert_eq!(owned.len(), 2);
+    for (id, role) in [
+        (&parentless, "teacher"),
+        (&teacher, "owner"),
+        (&teacher, "student"),
+    ] {
+        assert_eq!(
+            school_classes::read(&s, &actor(id, role), &scope)
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    graph
+        .run(query("MATCH(n {test_key:$key}) DETACH DELETE n").param("key", key))
+        .await
+        .unwrap();
+}

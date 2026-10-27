@@ -3,6 +3,7 @@ use super::*;
 use axum::routing::get;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use std::collections::{BTreeMap, BTreeSet};
+mod school_classes;
 mod student_profile;
 mod student_school;
 
@@ -278,6 +279,10 @@ pub(super) fn router() -> Router<AppState> {
             get(student_school::calendar),
         )
         .route("/api/v1/sis-service/learning/owner/context", get(context))
+        .route(
+            "/api/v1/sis-service/learning/owner/classes",
+            get(school_classes::handler),
+        )
         .route(
             "/api/v1/sis-service/learning/owner/authorize",
             get(authorize),
