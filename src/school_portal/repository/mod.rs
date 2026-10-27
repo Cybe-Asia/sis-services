@@ -90,3 +90,5 @@ mod growth;
 pub use growth::parent_growth;
 mod homeroom;
 pub use homeroom::homeroom_summary;
+mod extracurricular;
+pub use extracurricular::class_extracurricular;

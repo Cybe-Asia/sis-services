@@ -94,6 +94,25 @@ async fn homeroom_summary(
         Err(_) => Err(failure(StatusCode::SERVICE_UNAVAILABLE)),
     }
 }
+/// Audit gap P1b: the extracurricular records of a class's Students (enrolment, attendance counts,
+/// released coach outcome, match results) for its homeroom teacher or an Owner. Read-only; the
+/// coach's drafts and commands stay on `activities/teacher`.
+async fn class_extracurricular(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    Path(section): Path<String>,
+    Query(scope): Query<staff_capability::Selection>,
+) -> Result<Json<Value>, Failure> {
+    let m = auth::teacher(&h).await?.select(&scope)?;
+    if !model::identifier(&section) {
+        return Err(failure(StatusCode::BAD_REQUEST));
+    }
+    match repository::class_extracurricular(&s.graph, &m, &section).await {
+        Ok(Some(v)) => Ok(envelope(v)),
+        Ok(None) => Err(failure(StatusCode::FORBIDDEN)),
+        Err(_) => Err(failure(StatusCode::SERVICE_UNAVAILABLE)),
+    }
+}
 async fn classroom(
     State(s): State<AppState>,
     h: HeaderMap,
@@ -300,6 +319,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/leads/v1/teacher/school/classes/:section/homeroom-summary",
             get(homeroom_summary),
+        )
+        .route(
+            "/api/leads/v1/teacher/school/classes/:section/extracurricular",
+            get(class_extracurricular),
         )
         .route(
             "/api/leads/v1/teacher/school/classes/:section/records",

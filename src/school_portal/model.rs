@@ -1,5 +1,6 @@
 use chrono::{Days, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
+pub mod extracurricular;
 pub mod growth;
 pub mod homeroom;
 
