@@ -196,7 +196,8 @@ All under `/api/v1/sis-service/authorization`. Bodies are `{"data": …}` or `{"
 ### `GET /templates?tenantId`
 
 `{"templates":[{"code","name":{"id","en"},"version","capabilities","allowedScopes","status","seeded","updatedAt","people"}],"authorizationVersion","cacheSeconds"}`.
-`people` counts the people who hold the template now, explicitly or derived.
+`people` counts the people who hold the template now, explicitly or derived. `canEditTemplates` (manage across the whole tenant) and
+`canGrantSensitive` (an Owner of every school) are hints for Admin menus. Every write checks again.
 
 ### `GET /templates/history?tenantId&code`
 
@@ -241,7 +242,9 @@ The answer has:
   `current`, `derived:false`) and derived rows (`source`, `scope`, `scopeLabel`, `templateName`,
   `capabilities`, `staffMemberId`, `name`, `derived:true`);
 - `people`, `schools`, `sections` and `templates`, for the pickers;
-- `tenantWide`.
+- `tenantWide`;
+- `manageSchools` and `ownerSchools`: the readable schools where the caller may change assignments, and where
+  they are an Owner (sensitive capabilities). These are menu hints; every write checks again.
 
 `status` is `active` (the default), `revoked` or `all`. Derived rows are always active. `includeDerived`
 defaults to `true`.

@@ -23,6 +23,12 @@ pub struct View {
     pub readable: BTreeSet<String>,
     /// Reads the whole tenant, so tenant-wide holdings are shown as such.
     pub tenant_wide: bool,
+    /// Readable schools where the reader may also change assignments; whether they may change
+    /// templates (manage across the tenant), and as an Owner (sensitive capabilities). Hints for
+    /// Admin menus only: every write checks again.
+    pub managed: BTreeSet<String>,
+    pub edits_templates: bool,
+    pub owner_templates: bool,
     pub version: i64,
 }
 pub async fn view(
@@ -49,10 +55,21 @@ pub async fn view(
     let tenant_wide = reader.schools.is_none()
         && (holds_tenant(&facts, &mine, READ) || holds_tenant(&facts, &mine, MANAGE));
     let version = facts::version(&mut db, tenant).await?;
+    let managed = readable
+        .iter()
+        .filter(|s| decide(&facts, &mine, MANAGE, &Scope::school(s)).is_some())
+        .cloned()
+        .collect();
+    let edits_templates = reader.schools.is_none() && holds_tenant(&facts, &mine, MANAGE);
+    let owner_templates =
+        edits_templates && super::model::owner_at(&facts, &mine, &Scope::tenant());
     Ok(View {
         facts,
         readable,
         tenant_wide,
+        managed,
+        edits_templates,
+        owner_templates,
         version,
     })
 }
@@ -239,7 +256,11 @@ pub async fn templates(graph: &Graph, reader: &Reader, tenant: &str) -> Result<V
             row
         })
         .collect();
-    Ok(v.envelope(json!({ "templates": rows })))
+    Ok(v.envelope(json!({
+        "templates": rows,
+        "canEditTemplates": v.edits_templates,
+        "canGrantSensitive": v.owner_templates,
+    })))
 }
 
 fn people_by_template(facts: &Facts) -> BTreeMap<&str, BTreeSet<&str>> {
@@ -437,6 +458,8 @@ pub async fn assignments(graph: &Graph, reader: &Reader, f: &Filter) -> Result<V
     Ok(v.envelope(json!({
         "assignments": rows, "people": people, "schools": schools, "sections": sections,
         "templates": v.facts.templates, "tenantWide": v.tenant_wide,
+        "manageSchools": v.managed,
+        "ownerSchools": v.readable.iter().filter(|s| super::model::owner_at(&v.facts, &v.facts.holdings(&reader.actor), &Scope::school(s))).collect::<Vec<_>>(),
     })))
 }
 

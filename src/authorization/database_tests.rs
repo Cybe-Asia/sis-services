@@ -690,6 +690,28 @@ async fn authorization_graph_commands_guardrails_reads_and_audit() {
     assert!(rows
         .iter()
         .any(|r| r["derived"] == false && r["id"] == lead_id.as_str()));
+    assert_eq!(listed["manageSchools"], serde_json::json!(["school"]));
+    assert_eq!(listed["ownerSchools"], serde_json::json!([]));
+    let hints = reads::templates(&g, &scoped_reader("admin", &["school"]), "tenant")
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            hints["canEditTemplates"].as_bool(),
+            hints["canGrantSensitive"].as_bool()
+        ),
+        (Some(false), Some(false))
+    );
+    let hints = reads::templates(&g, &reader("owner"), "tenant")
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            hints["canEditTemplates"].as_bool(),
+            hints["canGrantSensitive"].as_bool()
+        ),
+        (Some(true), Some(true))
+    );
 
     // The last holder of authorization.manage in a school keeps it.
     g.run(query(
