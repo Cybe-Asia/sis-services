@@ -37,6 +37,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
 mod academic_staffing;
 mod academic_teachers;
+mod authorization;
 mod config;
 mod billing_owner;
 mod enrollment_handover;
@@ -133,6 +134,7 @@ async fn main() {
     education_calendar::repository::init(&graph).await.expect("failed to initialize education calendar indexes");
     school_rooms::init(&graph).await.expect("failed to initialize school room indexes");
     academic_staffing::init(&graph).await.expect("failed to initialize subject plan and teaching assignment constraints");
+    authorization::init(&graph).await.expect("failed to initialize the authorization catalogue and constraints");
     student_biodata::init(&graph).await.expect("failed to initialize student biodata constraints");
     school_articles::repository::init(&graph).await.expect("failed to initialize school article indexes");
     extra_curricular::repository::init(&graph).await.expect("extracurricular schema initialization failed");
@@ -164,6 +166,7 @@ async fn main() {
         .merge(student_biodata::router())
         .merge(academic_teachers::router())
         .merge(academic_staffing::router())
+        .merge(authorization::router())
         .merge(extra_curricular::router())
         .merge(
             SwaggerUi::new("/api/v1/sis-service/swagger-ui")

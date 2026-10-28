@@ -1,0 +1,906 @@
+use super::commands::{self, Session, Writer};
+use super::facts::{self, Db};
+use super::model::*;
+use super::reads::{self, Reader};
+use crate::academic_staffing::repository::Failure;
+use neo4rs::{query, Graph};
+use serde_json::Value;
+
+fn writer<'a>(actor: &'a str, role: &'a str, command: &'a str) -> Writer<'a> {
+    Writer {
+        session: Session::Unchecked,
+        actor,
+        role,
+        tenant: "tenant",
+        command,
+    }
+}
+fn code(result: Result<Value, Failure>) -> String {
+    let (_, body) = result.expect_err("refused");
+    body.0["error"]["code"].as_str().unwrap().to_string()
+}
+fn reader(actor: &str) -> Reader {
+    Reader {
+        actor: actor.into(),
+        schools: None,
+    }
+}
+fn scoped_reader(actor: &str, schools: &[&str]) -> Reader {
+    Reader {
+        actor: actor.into(),
+        schools: Some(schools.iter().map(|s| s.to_string()).collect()),
+    }
+}
+async fn count(g: &Graph, cypher: &str) -> i64 {
+    let mut rows = g.execute(query(cypher)).await.unwrap();
+    rows.next().await.unwrap().unwrap().get::<i64>("n").unwrap()
+}
+async fn today(g: &Graph, cypher: &str, actor: &str, school: &str, class: &str) -> bool {
+    let mut rows = g
+        .execute(
+            query(cypher)
+                .param("principal", actor)
+                .param("actor", actor)
+                .param("school", school)
+                .param("tenant", "tenant")
+                .param("class", class),
+        )
+        .await
+        .unwrap();
+    rows.next().await.unwrap().unwrap().get::<i64>("n").unwrap() > 0
+}
+async fn new(g: &Graph, actor: &str, capability: &str, scope: &Scope) -> bool {
+    let sections: Vec<String> = scope.section_id.iter().cloned().collect();
+    let f = facts::load(&mut Db::Graph(g), "tenant", &[actor.to_string()], &sections)
+        .await
+        .unwrap();
+    decide(&f, &f.holdings(actor), capability, scope).is_some()
+}
+fn subject_scope(subject: &str) -> Scope {
+    Scope {
+        kind: SCHOOL_SUBJECT.into(),
+        school_id: Some("school".into()),
+        subject: Some(subject.into()),
+        ..Scope::default()
+    }
+}
+fn assign(staff: &str, template: &str, scope: Scope, version: u32) -> AssignmentCommand {
+    AssignmentCommand {
+        action: ASSIGN.into(),
+        assignment_id: None,
+        staff_member_id: Some(staff.into()),
+        template_code: Some(template.into()),
+        scope: Some(scope),
+        academic_year: None,
+        valid_from: None,
+        valid_until: None,
+        expected_version: version,
+    }
+}
+fn by_id(action: &str, id: &str, version: u32) -> AssignmentCommand {
+    AssignmentCommand {
+        action: action.into(),
+        assignment_id: Some(id.into()),
+        staff_member_id: None,
+        template_code: None,
+        scope: None,
+        academic_year: None,
+        valid_from: None,
+        valid_until: None,
+        expected_version: version,
+    }
+}
+fn batch(commands: Vec<AssignmentCommand>) -> AssignmentCommands {
+    AssignmentCommands {
+        tenant_id: "tenant".into(),
+        commands,
+    }
+}
+fn template(
+    action: &str,
+    code: &str,
+    caps: &[&str],
+    scopes: &[&str],
+    version: u32,
+) -> TemplateCommands {
+    TemplateCommands {
+        tenant_id: "tenant".into(),
+        commands: vec![TemplateCommand {
+            action: action.into(),
+            code: code.into(),
+            name: (action != ARCHIVE).then(|| Text {
+                id: format!("Nama {code}"),
+                en: format!("Name {code}"),
+            }),
+            capabilities: (action != ARCHIVE).then(|| caps.iter().map(|c| c.to_string()).collect()),
+            allowed_scopes: (action != ARCHIVE)
+                .then(|| scopes.iter().map(|c| c.to_string()).collect()),
+            expected_version: version,
+        }],
+    }
+}
+
+async fn fixture() -> Graph {
+    let uri = std::env::var("SCHOOL_PORTAL_TEST_BOLT").unwrap();
+    assert_eq!(uri, "127.0.0.1:3223");
+    let g = Graph::new(uri, "neo4j", "parent-otp-fixture-password")
+        .await
+        .unwrap();
+    g.run(query("MATCH(n) DETACH DELETE n")).await.unwrap();
+    super::init(&g).await.unwrap();
+    super::init(&g).await.unwrap();
+    for statement in [
+        "CREATE(:School {school_id:'school',tenant_id:'tenant',name:'IISS'}) CREATE(:School {school_id:'school-2',tenant_id:'tenant',name:'IIHS'})",
+        "CREATE(:StaffMember {id:'owner',membershipStatus:'ACTIVE',roles:['owner'],schoolIds:[],tenantIds:[]}) CREATE(:StaffMember {id:'owner-a',membershipStatus:'ACTIVE',roles:['owner'],schoolIds:['school'],tenantIds:['tenant']}) CREATE(:StaffMember {id:'owner-team',membershipStatus:'ACTIVE',roles:['owner'],schoolIds:['school'],tenantIds:['tenant'],teamIds:['team']})",
+        "CREATE(:StaffMember {id:'admin',displayName:'Ayu Admin',membershipStatus:'ACTIVE',roles:['school_admin'],schoolIds:['school'],tenantIds:['tenant']}) CREATE(:StaffMember {id:'admin-2',membershipStatus:'ACTIVE',roles:['school_admin'],schoolIds:['school-2'],tenantIds:['tenant']}) CREATE(:StaffMember {id:'admin-off',membershipStatus:'DISABLED',roles:['school_admin'],schoolIds:['school'],tenantIds:['tenant']})",
+        "CREATE(:StaffMember {id:'t-home',displayName:'Siti Rahmawati',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:['school'],tenantIds:['tenant']}) CREATE(:StaffMember {id:'t-assigned',displayName:'Budi Santoso',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:['school'],tenantIds:['tenant']}) CREATE(:StaffMember {id:'t-grant',displayName:'Dewi Lestari',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:['school'],tenantIds:['tenant']}) CREATE(:StaffMember {id:'t-revoked',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:['school'],tenantIds:['tenant']}) CREATE(:StaffMember {id:'t-off',membershipStatus:'DISABLED',roles:['teacher'],schoolIds:['school'],tenantIds:['tenant']}) CREATE(:StaffMember {id:'t-other',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:['school-2'],tenantIds:['tenant']})",
+        "CREATE(:Section {section_id:'7A',name:'7A',year_group:'Year 7',academic_year:'2026/2027',school_id:'school',tenant_id:'tenant',status:'active',homeroom_staff_member_id:'t-home'}) CREATE(:Section {section_id:'7B',name:'7B',year_group:'Year 7',academic_year:'2026/2027',school_id:'school',tenant_id:'tenant',status:'active'}) CREATE(:Section {section_id:'9A',name:'9A',year_group:'Year 9',academic_year:'2026/2027',school_id:'school',tenant_id:'tenant',status:'active'}) CREATE(:Section {section_id:'OLD',name:'7A',year_group:'Year 7',academic_year:'2025/2026',school_id:'school',tenant_id:'tenant',status:'archived',homeroom_staff_member_id:'t-grant'}) CREATE(:Section {section_id:'10A',name:'10A',year_group:'Year 10',academic_year:'2026/2027',school_id:'school-2',tenant_id:'tenant',status:'active'})",
+        "CREATE(:TeachingAssignment {id:'ta-1',key:'k1',staff_member_id:'t-assigned',section_id:'7B',school_id:'school',tenant_id:'tenant',academic_year:'2026/2027',subject:'mathematics',status:'active',periods:4,version:1}) CREATE(:LearningTeachingGrant {key:'t-assigned|7B',staff_member_id:'t-assigned',section_id:'7B',school_id:'school',tenant_id:'tenant',status:'ACTIVE',version:1})",
+        "CREATE(:TeachingAssignment {id:'ta-2',key:'k2',staff_member_id:'t-revoked',section_id:'7B',school_id:'school',tenant_id:'tenant',academic_year:'2026/2027',subject:'science',status:'active',periods:2,version:1}) CREATE(:LearningTeachingGrant {key:'t-revoked|7B',staff_member_id:'t-revoked',section_id:'7B',school_id:'school',tenant_id:'tenant',status:'REVOKED',version:2})",
+        "CREATE(:LearningTeachingGrant {key:'t-grant|9A',staff_member_id:'t-grant',section_id:'9A',school_id:'school',tenant_id:'tenant',status:'ACTIVE',version:1}) CREATE(:LearningTeachingGrant {key:'t-grant|OLD',staff_member_id:'t-grant',section_id:'OLD',school_id:'school',tenant_id:'tenant',status:'ACTIVE',version:1}) CREATE(:LearningTeachingGrant {key:'t-off|9A',staff_member_id:'t-off',section_id:'9A',school_id:'school',tenant_id:'tenant',status:'ACTIVE',version:1}) CREATE(:LearningTeachingGrant {key:'t-other|7A',staff_member_id:'t-other',section_id:'7A',school_id:'school',tenant_id:'tenant',status:'ACTIVE',version:1})",
+    ] {
+        g.run(query(statement)).await.unwrap();
+    }
+    g
+}
+
+const PEOPLE: [&str; 12] = [
+    "owner",
+    "owner-a",
+    "owner-team",
+    "admin",
+    "admin-2",
+    "admin-off",
+    "t-home",
+    "t-assigned",
+    "t-grant",
+    "t-revoked",
+    "t-off",
+    "t-other",
+];
+const CLASSES: [(&str, &str); 5] = [
+    ("school", "7A"),
+    ("school", "7B"),
+    ("school", "9A"),
+    ("school", "OLD"),
+    ("school-2", "10A"),
+];
+
+/// Day one: every new decision equals today's Cypher check, person by person and class by
+/// class: Learning `teach` and `homeroom` (owner context) and school administration.
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn authorization_graph_day_one_equals_todays_checks() {
+    let g = fixture().await;
+    let owner = crate::school_portal::staff_capability::owner("p", "$school", "$tenant");
+    let owner_teach = format!("MATCH(p:StaffMember {{id:$principal,membershipStatus:'ACTIVE'}}) WHERE {owner} MATCH(c:Section {{section_id:$class,school_id:$school,tenant_id:$tenant,status:'active'}}) RETURN count(c) AS n");
+    let teacher_teach = format!(
+        "{} WITH DISTINCT c,p WHERE c.section_id=$class RETURN count(c) AS n",
+        crate::learning_access::owner::TEACHER
+    );
+    let teacher_homeroom = format!(
+        "{} WITH DISTINCT c,p WHERE c.section_id=$class AND c.homeroom_staff_member_id=p.id RETURN count(c) AS n",
+        crate::learning_access::owner::TEACHER
+    );
+    let admin = format!(
+        "{} RETURN count(a) AS n",
+        crate::academic_teachers::repository::authorized("$school", "$tenant")
+    );
+    let mut compared = 0;
+    for person in PEOPLE {
+        for (school, class) in CLASSES {
+            let scope = Scope::section(school, class);
+            let is_owner = today(&g, &owner_teach, person, school, class).await;
+            let teach = is_owner || today(&g, &teacher_teach, person, school, class).await;
+            let homeroom = is_owner || today(&g, &teacher_homeroom, person, school, class).await;
+            assert_eq!(
+                new(&g, person, "learning.class.teach", &scope).await,
+                teach,
+                "{person} teach {class}"
+            );
+            assert_eq!(
+                new(&g, person, HOMEROOM, &scope).await,
+                homeroom,
+                "{person} homeroom {class}"
+            );
+            compared += 2;
+        }
+        for school in ["school", "school-2"] {
+            let scope = Scope::school(school);
+            let administers = today(&g, &admin, person, school, "").await;
+            for capability in [
+                "academic.staffing.manage",
+                "academic.subject_plan.manage",
+                "student.biodata.manage",
+            ] {
+                assert_eq!(
+                    new(&g, person, capability, &scope).await,
+                    administers,
+                    "{person} {capability} {school}"
+                );
+                compared += 1;
+            }
+        }
+    }
+    assert_eq!(compared, 12 * 5 * 2 + 12 * 2 * 3);
+    // The personas the ADR names, spelled out.
+    assert!(new(&g, "owner", MANAGE, &Scope::school("school-2")).await);
+    assert!(
+        new(
+            &g,
+            "admin",
+            "academic.staffing.manage",
+            &Scope::school("school")
+        )
+        .await
+    );
+    assert!(
+        new(
+            &g,
+            "t-assigned",
+            "learning.class.teach",
+            &Scope::section("school", "7B")
+        )
+        .await
+    );
+    assert!(
+        new(
+            &g,
+            "t-grant",
+            "learning.class.teach",
+            &Scope::section("school", "9A")
+        )
+        .await
+    );
+    assert!(new(&g, "t-home", HOMEROOM, &Scope::section("school", "7A")).await);
+    assert!(!new(&g, "t-home", HOMEROOM, &Scope::section("school", "7B")).await);
+
+    // The Learning authorize answer gains the class's `learning.*` capabilities.
+    let caps = reads::learning_capabilities(&g, "tenant", "school", "7A", "t-home")
+        .await
+        .unwrap();
+    assert!(
+        caps.contains(&"learning.class.teach".to_string()) && caps.contains(&HOMEROOM.to_string())
+    );
+    let caps = reads::learning_capabilities(&g, "tenant", "school", "9A", "t-grant")
+        .await
+        .unwrap();
+    assert!(
+        caps.contains(&"learning.module.write".to_string())
+            && !caps.contains(&HOMEROOM.to_string())
+    );
+    assert!(!caps.contains(&"learning.module.review".to_string()));
+    let caps = reads::learning_capabilities(&g, "tenant", "school", "9A", "owner")
+        .await
+        .unwrap();
+    assert_eq!(
+        caps.len(),
+        reference()
+            .catalogue
+            .capabilities
+            .iter()
+            .filter(|c| c.code.starts_with("learning."))
+            .count()
+    );
+    assert!(
+        reads::learning_capabilities(&g, "tenant", "school", "7B", "t-revoked")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Deliberately narrower than today: a duplicated Staff Member node holds nothing (fail closed,
+    // as the Owner and school-admin checks already do).
+    g.run(query("CREATE(:StaffMember {id:'t-grant',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:['school'],tenantIds:['tenant']})")).await.unwrap();
+    assert!(
+        !new(
+            &g,
+            "t-grant",
+            "learning.class.teach",
+            &Scope::section("school", "9A")
+        )
+        .await
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn authorization_graph_commands_guardrails_reads_and_audit() {
+    let g = fixture().await;
+    let math_7b = Scope::section_subject("school", "7B", "mathematics");
+
+    // Seeded templates read as version 1 with their holders counted; nobody else reads.
+    let listed = reads::templates(&g, &reader("owner"), "tenant")
+        .await
+        .unwrap();
+    let regular = listed["templates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["code"] == REGULAR_TEACHER)
+        .unwrap();
+    assert_eq!(
+        (regular["version"].as_i64(), regular["seeded"].as_bool()),
+        (Some(1), Some(true))
+    );
+    assert_eq!(
+        regular["people"], 3,
+        "homeroom, assignment and grant holders"
+    );
+    assert_eq!(
+        code(reads::templates(&g, &reader("t-grant"), "tenant").await),
+        "FORBIDDEN"
+    );
+
+    // A school admin reads but cannot change access.
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &writer("admin", "school_admin", "admin-assign-01"),
+                &batch(vec![assign(
+                    "t-grant",
+                    "subject_lead",
+                    subject_scope("mathematics"),
+                    0
+                )])
+            )
+            .await
+        ),
+        "FORBIDDEN"
+    );
+    assert_eq!(
+        code(
+            commands::templates(
+                &g,
+                &writer("admin", "school_admin", "admin-template-01"),
+                &template(CREATE, "helper", &[READ], &[SCHOOL], 0)
+            )
+            .await
+        ),
+        "FORBIDDEN"
+    );
+
+    // An Owner assigns; replay, key reuse and stale revisions behave as everywhere in SIS.
+    let lead = batch(vec![assign(
+        "t-grant",
+        "subject_lead",
+        subject_scope("mathematics"),
+        0,
+    )]);
+    let saved = commands::assignments(&g, &writer("owner", "owner", "owner-lead-0001"), &lead)
+        .await
+        .unwrap();
+    let lead_id = saved["assignments"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(saved["assignments"][0]["version"], 1);
+    assert_eq!(saved["authorizationVersion"], 1);
+    let replay = commands::assignments(&g, &writer("owner", "owner", "owner-lead-0001"), &lead)
+        .await
+        .unwrap();
+    assert_eq!(replay, saved);
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &writer("owner", "owner", "owner-lead-0001"),
+                &batch(vec![assign(
+                    "t-home",
+                    "subject_lead",
+                    subject_scope("science"),
+                    0
+                )])
+            )
+            .await
+        ),
+        "IDEMPOTENCY_KEY_REUSED"
+    );
+    assert_eq!(
+        code(commands::assignments(&g, &writer("owner", "owner", "owner-lead-0002"), &lead).await),
+        "REVISION_CONFLICT"
+    );
+    let check = |actor: Option<&str>, capability: &str, scope: Scope| CheckRequest {
+        tenant_id: "tenant".into(),
+        actor: actor.map(Into::into),
+        capability: capability.into(),
+        scope,
+    };
+    let answer = reads::check(
+        &g,
+        &reader("owner"),
+        &check(Some("t-grant"), "learning.module.review", math_7b.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer["allowed"], true);
+    assert_eq!(answer["source"]["kind"], "assignment");
+    assert_eq!(answer["source"]["id"], lead_id.as_str());
+    assert_eq!(answer["templateVersion"], 1);
+    assert_eq!(answer["authorizationVersion"], 1);
+    let science = reads::check(
+        &g,
+        &reader("owner"),
+        &check(
+            Some("t-grant"),
+            "learning.module.review",
+            Scope::section_subject("school", "7B", "science"),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (science["allowed"].as_bool(), science["reason"].as_str()),
+        (Some(false), Some("NOT_IN_SCOPE"))
+    );
+    assert_eq!(science["heldAt"].as_array().unwrap().len(), 1);
+    let unknown = reads::check(
+        &g,
+        &reader("owner"),
+        &check(Some("t-grant"), "learning.made.up", math_7b.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(unknown["reason"], "UNKNOWN_CAPABILITY");
+
+    // Each refusal names its command, and nothing of a refused batch is written.
+    let before = count(&g, "MATCH(a:AuthorizationAssignment) RETURN count(a) AS n").await;
+    for (command, expected) in [
+        (
+            assign("t-home", "subject_lead", Scope::school("school"), 0),
+            "SCOPE_NOT_ALLOWED",
+        ),
+        (
+            assign("t-home", "nope_template", Scope::school("school"), 0),
+            "TEMPLATE_NOT_FOUND",
+        ),
+        (
+            assign("t-home", "admin_teacher", Scope::section("school", "8Z"), 0),
+            "SCOPE_NOT_FOUND",
+        ),
+        (
+            assign("t-other", "admin_teacher", Scope::school("school"), 0),
+            "TARGET_NOT_ELIGIBLE",
+        ),
+        (
+            assign("owner-a", "admin_teacher", Scope::school("school"), 0),
+            "TARGET_NOT_ELIGIBLE",
+        ),
+        (
+            assign("t-off", "admin_teacher", Scope::school("school"), 0),
+            "TARGET_NOT_ELIGIBLE",
+        ),
+    ] {
+        let refused = commands::assignments(
+            &g,
+            &writer("owner", "owner", &format!("refused-{expected}")),
+            &batch(vec![
+                assign("t-home", "admin_teacher", Scope::school("school"), 0),
+                command,
+            ]),
+        )
+        .await;
+        let (_, body) = refused.expect_err("refused");
+        assert_eq!(body.0["error"]["code"], expected);
+        assert_eq!(body.0["error"]["index"], 1);
+    }
+    assert_eq!(
+        count(&g, "MATCH(a:AuthorizationAssignment) RETURN count(a) AS n").await,
+        before
+    );
+
+    // An Owner creates an access-manager template (sensitive: Owner only) and gives it to the
+    // school admin of one school.
+    let created = commands::templates(
+        &g,
+        &writer("owner", "owner", "manager-template-01"),
+        &template(CREATE, "access_manager", &[MANAGE, READ], &[SCHOOL], 0),
+    )
+    .await
+    .unwrap();
+    assert_eq!(created["templates"][0]["version"], 1);
+    let given = commands::assignments(
+        &g,
+        &writer("owner", "owner", "manager-assign-0001"),
+        &batch(vec![assign(
+            "admin",
+            "access_manager",
+            Scope::school("school"),
+            0,
+        )]),
+    )
+    .await
+    .unwrap();
+    let manager_id = given["assignments"][0]["id"].as_str().unwrap().to_string();
+    // Owner-a holds only one of two schools: it cannot change tenant templates.
+    assert_eq!(
+        code(
+            commands::templates(
+                &g,
+                &writer("owner-a", "owner", "owner-a-template-1"),
+                &template(CREATE, "helper", &[READ], &[SCHOOL], 0)
+            )
+            .await
+        ),
+        "FORBIDDEN"
+    );
+
+    // Guardrails for a manager who is not an Owner.
+    let admin = |key: &'static str| writer("admin", "school_admin", key);
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &admin("admin-wider-0002"),
+                &batch(vec![assign(
+                    "t-other",
+                    "access_manager",
+                    Scope::school("school-2"),
+                    0
+                )])
+            )
+            .await
+        ),
+        "FORBIDDEN",
+        "no scope wider than their own"
+    );
+    let (_, body) = commands::assignments(
+        &g,
+        &admin("admin-notheld-001"),
+        &batch(vec![assign(
+            "t-home",
+            "subject_lead",
+            subject_scope("mathematics"),
+            0,
+        )]),
+    )
+    .await
+    .expect_err("refused");
+    assert_eq!(body.0["error"]["code"], "CAPABILITY_NOT_HELD");
+    assert_eq!(body.0["error"]["capability"], "learning.module.review");
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &admin("admin-sensitive-01"),
+                &batch(vec![assign(
+                    "t-home",
+                    SCHOOL_ADMIN,
+                    Scope::school("school"),
+                    0
+                )])
+            )
+            .await
+        ),
+        "SENSITIVE_NEEDS_OWNER",
+        "School admin carries student biodata"
+    );
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &admin("admin-sensitive-02"),
+                &batch(vec![assign(
+                    "t-home",
+                    "access_manager",
+                    Scope::school("school"),
+                    0
+                )])
+            )
+            .await
+        ),
+        "SENSITIVE_NEEDS_OWNER"
+    );
+    // What the manager does hold, they may hand on within their school.
+    commands::templates(
+        &g,
+        &writer("owner", "owner", "reader-template-01"),
+        &template(CREATE, "access_reader", &[READ], &[SCHOOL, SECTION], 0),
+    )
+    .await
+    .unwrap();
+    let handed = commands::assignments(
+        &g,
+        &admin("admin-handon-0001"),
+        &batch(vec![assign(
+            "t-home",
+            "access_reader",
+            Scope::section("school", "7A"),
+            0,
+        )]),
+    )
+    .await
+    .unwrap();
+    let reader_id = handed["assignments"][0]["id"].as_str().unwrap().to_string();
+    let validity = AssignmentCommand {
+        valid_from: Some("2026-07-01".into()),
+        valid_until: Some("2027-06-30".into()),
+        ..by_id(CHANGE_VALIDITY, &reader_id, 1)
+    };
+    let changed = commands::assignments(&g, &admin("admin-validity-01"), &batch(vec![validity]))
+        .await
+        .unwrap();
+    assert_eq!(changed["assignments"][0]["validUntil"], "2027-06-30");
+    assert_eq!(changed["assignments"][0]["version"], 2);
+
+    // Reads stay within the reader's schools.
+    let theirs = reads::effective(
+        &g,
+        &scoped_reader("admin-2", &["school-2"]),
+        "tenant",
+        "t-grant",
+    )
+    .await;
+    assert_eq!(code(theirs), "NOT_FOUND");
+    let seen = reads::effective(
+        &g,
+        &scoped_reader("admin", &["school"]),
+        "tenant",
+        "t-grant",
+    )
+    .await
+    .unwrap();
+    let sources: Vec<&str> = seen["holdings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["source"]["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        sources,
+        ["assignment", "teaching_grant"],
+        "archived class OLD left out"
+    );
+    assert_eq!(seen["person"]["name"], "Dewi Lestari");
+    let owner_seen = reads::effective(&g, &scoped_reader("admin", &["school"]), "tenant", "owner")
+        .await
+        .unwrap();
+    assert_eq!(
+        owner_seen["holdings"][0]["scope"]["type"], SCHOOL,
+        "tenant-wide shown per readable school"
+    );
+    assert_eq!(
+        code(
+            reads::check(
+                &g,
+                &scoped_reader("admin", &["school"]),
+                &check(
+                    Some("t-other"),
+                    "learning.class.teach",
+                    Scope::section("school-2", "10A")
+                )
+            )
+            .await
+        ),
+        "FORBIDDEN"
+    );
+    let listed = reads::assignments(
+        &g,
+        &scoped_reader("admin", &["school"]),
+        &reads::Filter {
+            tenant_id: "tenant".into(),
+            ..reads::Filter::default()
+        },
+    )
+    .await
+    .unwrap();
+    let rows = listed["assignments"].as_array().unwrap();
+    assert!(rows.iter().all(|r| r["scope"]["schoolId"] == "school"));
+    assert!(rows
+        .iter()
+        .any(|r| r["source"]["kind"] == "homeroom" && r["staffMemberId"] == "t-home"));
+    assert!(rows
+        .iter()
+        .any(|r| r["derived"] == false && r["id"] == lead_id.as_str()));
+
+    // The last holder of authorization.manage in a school keeps it.
+    g.run(query(
+        "MATCH(s:StaffMember) WHERE s.id IN ['owner','owner-a'] SET s.membershipStatus='DISABLED'",
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &admin("admin-last-00001"),
+                &batch(vec![by_id(REVOKE, &manager_id, 1)])
+            )
+            .await
+        ),
+        "LAST_AUTHORIZATION_MANAGER"
+    );
+    g.run(query(
+        "MATCH(s:StaffMember) WHERE s.id IN ['owner','owner-a'] SET s.membershipStatus='ACTIVE'",
+    ))
+    .await
+    .unwrap();
+    let revoked = commands::assignments(
+        &g,
+        &writer("owner", "owner", "owner-revoke-0001"),
+        &batch(vec![by_id(REVOKE, &manager_id, 1)]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(revoked["assignments"][0]["status"], "revoked");
+    assert!(!new(&g, "admin", MANAGE, &Scope::school("school")).await);
+    // Reassigning reopens the revoked record at its version.
+    let reopened = commands::assignments(
+        &g,
+        &writer("owner", "owner", "owner-reopen-0001"),
+        &batch(vec![assign(
+            "admin",
+            "access_manager",
+            Scope::school("school"),
+            2,
+        )]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            reopened["assignments"][0]["id"].as_str(),
+            reopened["assignments"][0]["version"].as_i64()
+        ),
+        (Some(manager_id.as_str()), Some(3))
+    );
+
+    // Templates: a seed's first save keeps the seed as version 1; derived holders follow it.
+    let without_gradebook: Vec<&str> = [
+        "learning.class.teach",
+        "learning.module.write",
+        "learning.module.publish",
+        "learning.curriculum.read",
+        "learning.objective_tag.write",
+        "learning.mastery.read",
+    ]
+    .to_vec();
+    let impact = reads::impact(&g, &reader("owner"), "tenant", REGULAR_TEACHER)
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            impact["people"].as_i64(),
+            impact["sources"]["homeroom"].as_i64()
+        ),
+        (Some(3), Some(1))
+    );
+    let revised = commands::templates(
+        &g,
+        &writer("owner", "owner", "regular-revise-001"),
+        &template(
+            REVISE,
+            REGULAR_TEACHER,
+            &without_gradebook,
+            &[SECTION_SUBJECT, SECTION, SCHOOL_SUBJECT],
+            1,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(revised["templates"][0]["version"], 2);
+    let history = reads::history(&g, &reader("owner"), "tenant", REGULAR_TEACHER)
+        .await
+        .unwrap();
+    let versions: Vec<(i64, bool)> = history["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| (v["version"].as_i64().unwrap(), v["seed"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(versions, [(2, false), (1, true)]);
+    assert!(
+        !new(
+            &g,
+            "t-grant",
+            "learning.gradebook.read",
+            &Scope::section("school", "9A")
+        )
+        .await
+    );
+    let answer = reads::check(
+        &g,
+        &reader("owner"),
+        &check(
+            Some("t-grant"),
+            "learning.class.teach",
+            Scope::section("school", "9A"),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            answer["source"]["kind"].as_str(),
+            answer["templateVersion"].as_i64()
+        ),
+        (Some("teaching_grant"), Some(2))
+    );
+    for (cmd, expected) in [
+        (
+            template(ARCHIVE, REGULAR_TEACHER, &[], &[], 2),
+            "TEMPLATE_REQUIRED",
+        ),
+        (
+            template(ARCHIVE, "access_manager", &[], &[], 1),
+            "TEMPLATE_IN_USE",
+        ),
+        (
+            template(REVISE, "access_reader", &[READ], &[SCHOOL], 1),
+            "SCOPE_IN_USE",
+        ),
+        (
+            template(REVISE, "access_reader", &[READ], &[SCHOOL, SECTION], 7),
+            "REVISION_CONFLICT",
+        ),
+        (
+            template(CREATE, "access_reader", &[READ], &[SCHOOL], 0),
+            "REVISION_CONFLICT",
+        ),
+        (
+            template(CREATE, "made_up", &["learning.made.up"], &[SCHOOL], 0),
+            "UNKNOWN_CAPABILITY",
+        ),
+    ] {
+        assert_eq!(
+            code(
+                commands::templates(
+                    &g,
+                    &writer("owner", "owner", &format!("template-{expected}")),
+                    &cmd
+                )
+                .await
+            ),
+            expected
+        );
+    }
+    let archived = commands::templates(
+        &g,
+        &writer("owner", "owner", "lead-archive-00"),
+        &template(ARCHIVE, "curriculum_coordinator", &[], &[], 1),
+    )
+    .await
+    .unwrap();
+    assert_eq!(archived["templates"][0]["status"], "archived");
+    assert_eq!(
+        code(
+            commands::templates(
+                &g,
+                &writer("owner", "owner", "lead-archive-01"),
+                &template(REVISE, "curriculum_coordinator", &[READ], &[SCHOOL], 2)
+            )
+            .await
+        ),
+        "TEMPLATE_ARCHIVED"
+    );
+
+    // Audit: one entry per change with before, after and the source that allowed it.
+    assert_eq!(
+        count(
+            &g,
+            "MATCH(e:AuthorizationAudit {kind:'assignment'}) RETURN count(e) AS n"
+        )
+        .await,
+        6
+    );
+    assert_eq!(
+        count(
+            &g,
+            "MATCH(e:AuthorizationAudit {kind:'template'}) RETURN count(e) AS n"
+        )
+        .await,
+        4
+    );
+    assert_eq!(count(&g, "MATCH(e:AuthorizationAudit {action:'revoke'}) WHERE e.before CONTAINS '\"active\"' AND e.after CONTAINS '\"revoked\"' AND e.authorized_by CONTAINS 'owner' RETURN count(e) AS n").await, 1);
+    assert_eq!(count(&g, "MATCH(e:AuthorizationAudit {action:'assign',actor_id:'admin'}) WHERE e.authorized_by CONTAINS 'access_manager' RETURN count(e) AS n").await, 1);
+    assert_eq!(
+        count(
+            &g,
+            "MATCH(s:AuthorizationTenantState {tenant_id:'tenant'}) RETURN s.version AS n"
+        )
+        .await,
+        10
+    );
+    let audit = reads::audit(&g, &scoped_reader("admin", &["school"]), "tenant")
+        .await
+        .unwrap();
+    assert_eq!(audit["entries"].as_array().unwrap().len(), 10);
+}

@@ -227,7 +227,7 @@ impl StaffSession {
 }
 pub(crate) mod class_meetings;
 mod context;
-mod owner;
+pub(crate) mod owner;
 mod parent_binding;
 mod prework_policy;
 pub(crate) mod timetable;

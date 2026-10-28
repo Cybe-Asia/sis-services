@@ -7,7 +7,7 @@ mod school_classes;
 mod student_profile;
 mod student_school;
 
-const TEACHER: &str = "MATCH (p:StaffMember {id:$principal,membershipStatus:'ACTIVE'}) WHERE NOT 'owner' IN coalesce(p.roles,[]) AND 'teacher' IN coalesce(p.roles,[]) AND $school IN coalesce(p.schoolIds,[]) AND $tenant IN coalesce(p.tenantIds,[]) MATCH (c:Section {school_id:$school,tenant_id:$tenant,status:'active'}) WHERE c.homeroom_staff_member_id=p.id OR EXISTS { MATCH (:LearningTeachingGrant {staff_member_id:p.id,section_id:c.section_id,status:'ACTIVE',school_id:$school,tenant_id:$tenant}) } OPTIONAL MATCH (s:Student)-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:$school,tenant_id:$tenant})-[:ENROLLED_IN]->(c)";
+pub(crate) const TEACHER: &str = "MATCH (p:StaffMember {id:$principal,membershipStatus:'ACTIVE'}) WHERE NOT 'owner' IN coalesce(p.roles,[]) AND 'teacher' IN coalesce(p.roles,[]) AND $school IN coalesce(p.schoolIds,[]) AND $tenant IN coalesce(p.tenantIds,[]) MATCH (c:Section {school_id:$school,tenant_id:$tenant,status:'active'}) WHERE c.homeroom_staff_member_id=p.id OR EXISTS { MATCH (:LearningTeachingGrant {staff_member_id:p.id,section_id:c.section_id,status:'ACTIVE',school_id:$school,tenant_id:$tenant}) } OPTIONAL MATCH (s:Student)-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:$school,tenant_id:$tenant})-[:ENROLLED_IN]->(c)";
 const STUDENT: &str = "MATCH (p:User {id:$principal,role:'student'}) MATCH (b:LearningStudentBinding {user_id:p.id,status:'ACTIVE',school_id:$school,tenant_id:$tenant}) MATCH (s:Student {studentId:b.student_id})-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:$school,tenant_id:$tenant})-[:ENROLLED_IN]->(c:Section {school_id:$school,tenant_id:$tenant,status:'active'})";
 
 #[derive(Deserialize)]
@@ -268,9 +268,23 @@ async fn authorize(
     }
     let a = actor(&h, &q).await?;
     permitted(&s, &a, &q).await?;
-    Ok(Json(
-        json!({"data":{"contractVersion":1,"databaseId":identity(&s.graph).await?,"actor":{"id":a.id,"role":a.role},"schoolId":q.school_id,"tenantId":q.tenant_id,"allowed":true}}),
-    ))
+    let mut data = json!({"contractVersion":1,"databaseId":identity(&s.graph).await?,"actor":{"id":a.id,"role":a.role},"schoolId":q.school_id,"tenantId":q.tenant_id,"allowed":true});
+    // ADR 0018: what the staff member may do in the class, for Learning to move to
+    // capabilities. Informational until it does; `allowed` above is unchanged.
+    if matches!(a.role.as_str(), "teacher" | "owner") {
+        let class = q.class_id.clone().unwrap_or_default();
+        let capabilities = crate::authorization::reads::learning_capabilities(
+            &s.graph,
+            &q.tenant_id,
+            &q.school_id,
+            &class,
+            &a.id,
+        )
+        .await
+        .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+        data["capabilities"] = json!(capabilities);
+    }
+    Ok(Json(json!({ "data": data })))
 }
 pub(super) fn router() -> Router<AppState> {
     Router::new()

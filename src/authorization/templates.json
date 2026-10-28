@@ -1,0 +1,25 @@
+{
+  "templates": [
+    {"code": "regular_teacher", "name": {"id": "Guru", "en": "Regular teacher"},
+     "allowedScopes": ["SECTION_SUBJECT", "SECTION", "SCHOOL_SUBJECT"],
+     "capabilities": ["learning.class.teach", "learning.module.write", "learning.module.publish", "learning.curriculum.read",
+                      "learning.objective_tag.write", "learning.mastery.read", "learning.gradebook.read"]},
+    {"code": "admin_teacher", "name": {"id": "Guru admin", "en": "Admin teacher"},
+     "allowedScopes": ["SCHOOL", "SCHOOL_SUBJECT", "SECTION"],
+     "capabilities": ["learning.class.teach", "learning.module.write", "learning.module.publish", "learning.curriculum.read",
+                      "learning.objective_tag.write", "learning.mastery.read", "learning.gradebook.read",
+                      "learning.module.review", "learning.module.manage_any", "academic.staffing.read"]},
+    {"code": "subject_lead", "name": {"id": "Koordinator mapel", "en": "Subject lead"},
+     "allowedScopes": ["SCHOOL_SUBJECT"],
+     "capabilities": ["learning.module.review", "learning.module.manage_any", "learning.plan.manage", "learning.question_bank.manage"]},
+    {"code": "curriculum_coordinator", "name": {"id": "Koordinator kurikulum", "en": "Curriculum coordinator"},
+     "allowedScopes": ["SCHOOL"],
+     "capabilities": ["learning.curriculum.manage", "learning.plan.manage", "learning.module.review", "learning.module.manage_any",
+                      "learning.mastery.read"]},
+    {"code": "school_admin", "name": {"id": "Admin sekolah", "en": "School admin"},
+     "allowedScopes": ["SCHOOL"],
+     "capabilities": ["academic.staffing.read", "academic.staffing.manage", "academic.subject_plan.manage", "academic.calendar.manage",
+                      "academic.class_access.manage", "academic.extracurricular.manage", "school.content.manage",
+                      "staff.directory.manage", "student.biodata.manage", "authorization.read"]}
+  ]
+}
