@@ -57,9 +57,9 @@ pub async fn live_session(
     headers: &axum::http::HeaderMap,
     tenant: &str,
 ) -> Result<(String, String), Failure> {
-    let (actor, role, schools, tenants) = crate::learning_access::staff_session(headers)
+    let (actor, role, schools, tenants) = crate::learning_access::any_staff_session(headers)
         .await?
-        .scope();
+        .staff_scope();
     let unscoped = role == "owner" && schools.is_empty() && tenants.is_empty();
     if !unscoped && !tenants.iter().any(|t| t == tenant) {
         return Err(forbidden(json!({})));
@@ -423,7 +423,7 @@ async fn by_key(tx: &mut Txn, key: &str) -> Result<Option<Assignment>, Failure> 
 /// The caller may hand out `template` at `scope`: they manage access there, hold every one of its
 /// capabilities there, and are an Owner there when one of them is sensitive. The Principal
 /// template is given by an Owner only (spec §10 #8.3), whatever it carries.
-fn may_grant(
+pub(super) fn may_grant(
     facts: &Facts,
     mine: &[Holding],
     template: &Template,
@@ -516,9 +516,11 @@ async fn assignment_command(
         .template(&next.template_code)
         .filter(|t| t.status == "active")
         .cloned();
-    let authorized = if c.action == REVOKE {
+    let (authorized, validity) = if c.action == REVOKE {
         next.status = "revoked".into();
-        manager(facts, mine, &next.scope).ok_or_else(|| forbidden(json!({ "index": index })))?
+        let authorized = manager(facts, mine, &next.scope)
+            .ok_or_else(|| forbidden(json!({ "index": index })))?;
+        (authorized, None)
     } else {
         let template = template.ok_or_else(|| unprocessable("TEMPLATE_NOT_FOUND"))?;
         if !template.allowed_scopes.contains(&next.scope.kind) {
@@ -550,9 +552,17 @@ async fn assignment_command(
         }
         let authorized = may_grant(facts, mine, &template, &next.scope, index)?;
         next.status = "active".into();
+        // Without an end, the assignment ends with the academic year (spec §10 #8.4).
+        let validity = facts.validity(
+            &next.template_code,
+            &next.scope,
+            next.academic_year.as_deref(),
+            c.valid_from.as_deref(),
+            c.valid_until.as_deref(),
+        );
         next.valid_from = c.valid_from.clone();
-        next.valid_until = c.valid_until.clone();
-        authorized
+        next.valid_until = validity.valid_until.clone();
+        (authorized, Some(validity))
     };
     let saved = save(tx, w, &next, key.as_deref()).await?;
     let template_version = facts.template(&saved.template_code).map(|t| t.version);
@@ -574,7 +584,11 @@ async fn assignment_command(
         ),
     )
     .await?;
-    Ok(assignment_json(&saved))
+    let mut out = assignment_json(&saved);
+    if let Some(validity) = validity {
+        out["validity"] = json!(validity);
+    }
+    Ok(out)
 }
 
 pub async fn assignments(

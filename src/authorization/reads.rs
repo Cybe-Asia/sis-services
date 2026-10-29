@@ -2,12 +2,13 @@
 //! `authorization.read` or `authorization.manage`; nothing about other schools is revealed.
 use super::facts::{self, get, Db};
 use super::model::{
-    covers, decide, grade_number, holds_tenant, readable_schools, reference, Assignment,
-    CheckRequest, Facts, Holding, Scope, CACHE_SECONDS, MANAGE, MASTERY_READ, READ, SCHOOL_SUBJECT,
-    SECTION_SUBJECT, TENANT,
+    covers, decide, grade_number, holds_tenant, parse_date, readable_schools, reference,
+    Assignment, CheckRequest, Facts, Holding, Scope, CACHE_SECONDS, MANAGE, MASTERY_READ, READ,
+    SCHOOL_SUBJECT, SECTION_SUBJECT, TENANT,
 };
 use crate::academic_staffing::repository::{refuse, unavailable, Failure};
 use axum::http::StatusCode;
+use chrono::NaiveDate;
 use neo4rs::{query, Graph};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -136,6 +137,16 @@ impl View {
         data["cacheSeconds"] = json!(CACHE_SECONDS);
         data
     }
+    fn explicit(&self, a: &Assignment, today: NaiveDate) -> Value {
+        let mut row = json!(a);
+        row["name"] = json!(self.facts.person(&a.staff_member_id).map(|p| &p.name));
+        row["derived"] = json!(false);
+        row["current"] = json!(a.current(today));
+        row["templateName"] = self.template_name(Some(&a.template_code));
+        row["templateVersion"] = json!(self.facts.template(&a.template_code).map(|t| t.version));
+        row["scopeLabel"] = self.label(&a.scope);
+        row
+    }
     /// Someone the reader may look at: a member of a readable school, or an Owner over one.
     fn person(&self, id: &str) -> Option<&super::model::Staff> {
         self.facts.person(id).filter(|p| {
@@ -174,6 +185,53 @@ pub async fn effective(
             "staffMemberId": person.id, "name": person.name, "active": person.active(),
             "roles": person.roles, "owner": person.owner(),
         },
+        "holdings": holdings.iter().map(|h| v.holding(h)).collect::<Vec<_>>(),
+        "capabilities": by_capability,
+    })))
+}
+
+/// The caller's own holdings, in the schools their session covers (tenant-wide ones as such): no
+/// read capability is needed to see one's own access. Admin builds its gate and menus from it.
+pub async fn own(graph: &Graph, reader: &Reader, tenant: &str) -> Result<Value, Failure> {
+    let mut db = Db::Graph(graph);
+    let facts = facts::load(&mut db, tenant, std::slice::from_ref(&reader.actor), &[]).await?;
+    let person = facts
+        .person(&reader.actor)
+        .filter(|p| p.active())
+        .map(|p| {
+            json!({
+                "staffMemberId": p.id, "name": p.name, "active": true,
+                "roles": p.roles, "owner": p.owner(),
+            })
+        })
+        .ok_or_else(|| refuse(StatusCode::FORBIDDEN, "FORBIDDEN", json!({})))?;
+    let covered = |scope: &Scope| match (&reader.schools, scope.school_id.as_deref()) {
+        (None, _) => true,
+        (Some(session), Some(school)) => session.iter().any(|s| s == school),
+        (Some(session), None) => !session.is_empty(),
+    };
+    let holdings: Vec<Holding> = facts
+        .holdings(&reader.actor)
+        .into_iter()
+        .filter(|h| covered(&h.scope))
+        .collect();
+    let v = View {
+        readable: facts.schools.keys().cloned().collect(),
+        tenant_wide: true,
+        managed: BTreeSet::new(),
+        edits_templates: false,
+        owner_templates: false,
+        version: facts::version(&mut db, tenant).await?,
+        facts,
+    };
+    let mut by_capability: BTreeMap<&str, Vec<&Scope>> = BTreeMap::new();
+    for h in &holdings {
+        for c in &h.capabilities {
+            by_capability.entry(c).or_default().push(&h.scope);
+        }
+    }
+    Ok(v.envelope(json!({
+        "person": person,
         "holdings": holdings.iter().map(|h| v.holding(h)).collect::<Vec<_>>(),
         "capabilities": by_capability,
     })))
@@ -403,21 +461,13 @@ pub async fn assignments(graph: &Graph, reader: &Reader, f: &Filter) -> Result<V
                 .as_deref()
                 .is_none_or(|x| scope.subject.as_deref() == Some(x))
     };
-    let name = |id: &str| v.facts.person(id).map(|p| p.name.clone());
-    let today = (chrono::Utc::now() + chrono::Duration::hours(7)).date_naive();
+    let today = super::model::today();
     let mut rows = vec![];
     for a in &explicit {
         if !wanted(&a.staff_member_id, Some(&a.template_code), &a.scope) {
             continue;
         }
-        let mut row = json!(a);
-        row["name"] = json!(name(&a.staff_member_id));
-        row["derived"] = json!(false);
-        row["current"] = json!(a.current(today));
-        row["templateName"] = v.template_name(Some(&a.template_code));
-        row["templateVersion"] = json!(v.facts.template(&a.template_code).map(|t| t.version));
-        row["scopeLabel"] = v.label(&a.scope);
-        rows.push(row);
+        rows.push(v.explicit(a, today));
     }
     if f.include_derived.unwrap_or(true) && status != "revoked" {
         for s in &v.facts.staff {
@@ -461,6 +511,70 @@ pub async fn assignments(graph: &Graph, reader: &Reader, f: &Filter) -> Result<V
         "templates": v.facts.templates, "tenantWide": v.tenant_wide,
         "manageSchools": v.managed,
         "ownerSchools": v.readable.iter().filter(|s| super::model::owner_at(&v.facts, &v.facts.holdings(&reader.actor), &Scope::school(s))).collect::<Vec<_>>(),
+    })))
+}
+
+/// Active explicit assignments in the readable schools whose end falls within `days` from today,
+/// soonest first, for Admin's reminder (spec §10 #8.4). Each row says whether the reader may renew
+/// it and suggests the end of the next academic year.
+pub async fn expiring(
+    graph: &Graph,
+    reader: &Reader,
+    tenant: &str,
+    days: u32,
+    school: Option<&str>,
+) -> Result<Value, Failure> {
+    let v = view(graph, reader, tenant, &[], &[]).await?;
+    let today = v.facts.today();
+    let last = today + chrono::Duration::days(i64::from(days));
+    let mut soon: Vec<(NaiveDate, &Assignment)> = v
+        .facts
+        .assignments
+        .iter()
+        .filter(|a| v.sees(&a.scope))
+        .filter(|a| school.is_none_or(|s| a.scope.school_id.as_deref() == Some(s)))
+        .filter(|a| a.current(today))
+        .filter_map(|a| {
+            a.valid_until
+                .as_deref()
+                .and_then(parse_date)
+                .filter(|end| *end <= last)
+                .map(|end| (end, a))
+        })
+        .collect();
+    soon.sort_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.id.cmp(&y.1.id)));
+    let mine = v.facts.holdings(&reader.actor);
+    // Renewing is a `change_validity`, which runs the grant rules again: the hint asks them too.
+    let renewable = |a: &Assignment| {
+        let session = match a.scope.school_id.as_deref() {
+            Some(s) => v.managed.contains(s),
+            None => v.edits_templates,
+        };
+        session
+            && v.facts
+                .template(&a.template_code)
+                .filter(|t| t.status == "active")
+                .is_some_and(|t| {
+                    super::commands::may_grant(&v.facts, &mine, t, &a.scope, 0).is_ok()
+                })
+    };
+    let rows: Vec<Value> = soon
+        .iter()
+        .map(|(end, a)| {
+            let mut row = v.explicit(a, today);
+            let next = *end + chrono::Duration::days(1);
+            let (year, renew, _) = v.facts.academic_year_on(a.scope.school_id.as_deref(), next);
+            row["daysLeft"] = json!((*end - today).num_days());
+            row["renewUntil"] = json!(renew.format("%Y-%m-%d").to_string());
+            row["renewAcademicYear"] = json!(year);
+            row["canRenew"] = json!(renewable(a));
+            row
+        })
+        .collect();
+    Ok(v.envelope(json!({
+        "today": today.format("%Y-%m-%d").to_string(),
+        "days": days,
+        "assignments": rows,
     })))
 }
 

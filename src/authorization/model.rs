@@ -3,7 +3,7 @@
 //! explicit assignments and from today's records. Pure; the graph only supplies `Facts`.
 use crate::academic_staffing::model::{key_part, subject_code};
 use crate::school_portal::model::identifier;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
@@ -24,6 +24,10 @@ pub const SCHOOL_ADMIN: &str = "school_admin";
 /// Kepala Sekolah per unit (spec §10 #8.3): the one seed that carries `authorization.manage`, at
 /// `SCHOOL` only, and only an Owner may give it.
 pub const PRINCIPAL: &str = "principal";
+pub const CURRICULUM_COORDINATOR: &str = "curriculum_coordinator";
+/// Templates whose assignments run until revoked; every other assignment ends with the academic
+/// year when the command names no end (spec §10 #8.4).
+pub const UNTIL_REVOKED: [&str; 2] = [PRINCIPAL, CURRICULUM_COORDINATOR];
 pub const MASTERY_READ: &str = "learning.mastery.read";
 /// Owner, Student and Parent are system roles; `homeroom` names a derived source.
 const RESERVED: [&str; 4] = ["owner", "student", "parent", "homeroom"];
@@ -487,8 +491,41 @@ impl Staff {
     }
 }
 
-fn parse_date(value: &str) -> Option<NaiveDate> {
+pub fn parse_date(value: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()
+}
+/// Today at the schools (UTC+7).
+pub fn today() -> NaiveDate {
+    (chrono::Utc::now() + chrono::Duration::hours(7)).date_naive()
+}
+/// The first and last day of an academic year written `YYYY/YYYY` (or `YYYY-YYYY`) with
+/// consecutive years: 1 July to 30 June. Other spellings name no span.
+pub fn academic_year_span(value: &str) -> Option<(NaiveDate, NaiveDate)> {
+    let (a, b) = value.trim().split_once(['/', '-'])?;
+    let digits = |x: &str| x.len() == 4 && x.bytes().all(|c| c.is_ascii_digit());
+    if !digits(a) || !digits(b) {
+        return None;
+    }
+    let (a, b): (i32, i32) = (a.parse().ok()?, b.parse().ok()?);
+    if b != a + 1 {
+        return None;
+    }
+    Some((
+        NaiveDate::from_ymd_opt(a, 7, 1)?,
+        NaiveDate::from_ymd_opt(b, 6, 30)?,
+    ))
+}
+/// How an assignment's end was set; see `Facts::validity`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Validity {
+    #[serde(skip)]
+    pub valid_until: Option<String>,
+    pub rule: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub academic_year: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<&'static str>,
 }
 impl Assignment {
     /// Active and inside its dates today.
@@ -519,9 +556,75 @@ impl Facts {
     pub fn person(&self, id: &str) -> Option<&Staff> {
         self.staff.iter().find(|s| s.id == id)
     }
-    fn today(&self) -> NaiveDate {
-        self.today
-            .unwrap_or_else(|| (chrono::Utc::now() + chrono::Duration::hours(7)).date_naive())
+    pub fn today(&self) -> NaiveDate {
+        self.today.unwrap_or_else(today)
+    }
+    /// The academic year in force on `on` at `school` (any school of the tenant when `None`): the
+    /// year of its active classes whose span holds `on`, else the calendar year from 1 July.
+    pub fn academic_year_on(
+        &self,
+        school: Option<&str>,
+        on: NaiveDate,
+    ) -> (String, NaiveDate, &'static str) {
+        let from_classes = self
+            .sections
+            .iter()
+            .filter(|s| school.is_none_or(|x| x == s.school))
+            .filter_map(|s| academic_year_span(&s.year).map(|span| (s.year.as_str(), span)))
+            .filter(|(_, (start, end))| *start <= on && on <= *end)
+            .map(|(year, (_, end))| (year.to_string(), end))
+            .min_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        if let Some((year, end)) = from_classes {
+            return (year, end, "classes");
+        }
+        let first = if on.month() >= 7 {
+            on.year()
+        } else {
+            on.year() - 1
+        };
+        let year = format!("{first}/{}", first + 1);
+        let end = academic_year_span(&year).map_or(on, |(_, end)| end);
+        (year, end, "calendar")
+    }
+    /// The dates an `assign` or `change_validity` command saves, and the rule that set the end:
+    /// `explicit` (the command named it), `until_revoked` (Principal and Curriculum coordinator) or
+    /// `academic_year_end` (the academic year the command names, else the one in force on
+    /// `validFrom` or today, at the scope's school).
+    pub fn validity(
+        &self,
+        template: &str,
+        scope: &Scope,
+        academic_year: Option<&str>,
+        from: Option<&str>,
+        until: Option<&str>,
+    ) -> Validity {
+        if let Some(until) = until {
+            return Validity {
+                valid_until: Some(until.into()),
+                rule: "explicit",
+                academic_year: None,
+                source: None,
+            };
+        }
+        if UNTIL_REVOKED.contains(&template) {
+            return Validity {
+                valid_until: None,
+                rule: "until_revoked",
+                academic_year: None,
+                source: None,
+            };
+        }
+        let on = from.and_then(parse_date).unwrap_or_else(|| self.today());
+        let (year, end, source) = academic_year
+            .and_then(|y| academic_year_span(y).map(|(_, end)| (y.to_string(), end, "command")))
+            .filter(|(_, end, _)| *end >= on)
+            .unwrap_or_else(|| self.academic_year_on(scope.school_id.as_deref(), on));
+        Validity {
+            valid_until: Some(end.format("%Y-%m-%d").to_string()),
+            rule: "academic_year_end",
+            academic_year: Some(year),
+            source: Some(source),
+        }
     }
     fn caps(&self, code: &str) -> Option<(BTreeSet<String>, u32)> {
         self.template(code)

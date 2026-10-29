@@ -549,3 +549,86 @@ fn authorization_commands_are_validated() {
         "an unknown capability is answered with a deny"
     );
 }
+
+#[test]
+fn authorization_validity_defaults_to_the_end_of_the_academic_year() {
+    let date = |y, m, d| chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap();
+    assert_eq!(
+        academic_year_span("2026/2027"),
+        Some((date(2026, 7, 1), date(2027, 6, 30)))
+    );
+    assert_eq!(
+        academic_year_span("2026-2027"),
+        Some((date(2026, 7, 1), date(2027, 6, 30)))
+    );
+    for odd in [
+        "2026/2028",
+        "2026",
+        "26/27",
+        "TA 2026/2027",
+        "abcd/efgh",
+        "",
+    ] {
+        assert_eq!(academic_year_span(odd), None, "{odd}");
+    }
+
+    let mut f = facts();
+    let school = Scope::school("school");
+    let until = |f: &Facts, template: &str, year: Option<&str>, from: Option<&str>| {
+        f.validity(template, &school, year, from, None)
+    };
+    // The year of the school's active classes that holds today.
+    let v = until(&f, "subject_lead", None, None);
+    assert_eq!(v.valid_until.as_deref(), Some("2027-06-30"));
+    assert_eq!(
+        (v.rule, v.academic_year.as_deref(), v.source),
+        ("academic_year_end", Some("2026/2027"), Some("classes"))
+    );
+    // A start date in the next year picks that year; there are no classes yet, so the calendar.
+    let v = until(&f, "subject_lead", None, Some("2027-08-01"));
+    assert_eq!(v.valid_until.as_deref(), Some("2028-06-30"));
+    assert_eq!(
+        (v.academic_year.as_deref(), v.source),
+        (Some("2027/2028"), Some("calendar"))
+    );
+    // The year the command names, unless it is already over.
+    let v = until(&f, "school_admin", Some("2027/2028"), None);
+    assert_eq!(
+        (v.valid_until.as_deref(), v.source),
+        (Some("2028-06-30"), Some("command"))
+    );
+    let v = until(&f, "school_admin", Some("2025/2026"), None);
+    assert_eq!(
+        (v.valid_until.as_deref(), v.source),
+        (Some("2027-06-30"), Some("classes"))
+    );
+    // Principal and Curriculum coordinator run until revoked; an explicit end always wins.
+    for template in [PRINCIPAL, CURRICULUM_COORDINATOR] {
+        let v = until(&f, template, None, None);
+        assert_eq!((v.valid_until, v.rule), (None, "until_revoked"));
+    }
+    let v = f.validity(PRINCIPAL, &school, None, None, Some("2026-12-31"));
+    assert_eq!(
+        (v.valid_until.as_deref(), v.rule),
+        (Some("2026-12-31"), "explicit")
+    );
+    // Without classes in a parseable year: the calendar year from 1 July.
+    for s in &mut f.sections {
+        s.year = "TA 26/27".into();
+    }
+    f.today = Some(date(2027, 3, 1));
+    let v = until(&f, "subject_lead", None, None);
+    assert_eq!(
+        (
+            v.valid_until.as_deref(),
+            v.academic_year.as_deref(),
+            v.source
+        ),
+        (Some("2027-06-30"), Some("2026/2027"), Some("calendar"))
+    );
+    let json = serde_json::to_value(&v).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"rule": "academic_year_end", "academicYear": "2026/2027", "source": "calendar"})
+    );
+}
