@@ -408,3 +408,114 @@ async fn school_classes_carry_grade_year_and_the_callers_taught_subjects() {
         .await
         .unwrap();
 }
+#[tokio::test]
+#[ignore = "requires dedicated disposable SCHOOL_PORTAL_TEST_BOLT=127.0.0.1:3223"]
+async fn student_history_lists_enrolments_across_schools_to_callers_who_see_the_student() {
+    assert_eq!(
+        std::env::var("SCHOOL_PORTAL_TEST_BOLT").unwrap(),
+        "127.0.0.1:3223"
+    );
+    let graph = neo4rs::Graph::new("127.0.0.1:3223", "neo4j", "parent-otp-fixture-password")
+        .await
+        .unwrap();
+    for statement in include_str!("../../../migrations/0001_learning_access.cypher")
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        graph.run(query(statement)).await.unwrap();
+    }
+    let key = uuid::Uuid::new_v4().to_string();
+    let (iiss, iihs, tenant) = (
+        format!("iiss-{key}"),
+        format!("iihs-{key}"),
+        format!("ten-{key}"),
+    );
+    // A Student placed in IISS Year 7 in 2025, now in 8A there (that enrolment ended), then placed in IIHS 10A.
+    graph.run(query("CREATE(:School {school_id:$iiss,tenant_id:$tenant,name:'IISS',test_key:$key}) CREATE(:School {school_id:$iihs,tenant_id:$tenant,name:'IIHS',test_key:$key}) CREATE(a8:Section {section_id:'8a-'+$key,name:'8A',year_group:'Year 8',academic_year:'2026/2027',school_id:$iiss,tenant_id:$tenant,status:'archived',test_key:$key}) CREATE(a10:Section {section_id:'10a-'+$key,name:'10A',year_group:'Year 10',academic_year:'2027/2028',school_id:$iihs,tenant_id:$tenant,status:'active',homeroom_staff_member_id:'home-'+$key,test_key:$key}) CREATE(:Section {section_id:'10b-'+$key,name:'10B',year_group:'Year 10',academic_year:'2027/2028',school_id:$iihs,tenant_id:$tenant,status:'active',homeroom_staff_member_id:'other-'+$key,test_key:$key}) CREATE(:StaffMember {id:'home-'+$key,membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:[$iihs],tenantIds:[$tenant],test_key:$key}) CREATE(:StaffMember {id:'other-'+$key,membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:[$iihs],tenantIds:[$tenant],test_key:$key}) CREATE(u:User {id:'parent-'+$key,role:'parent',email:$email,test_key:$key})-[:HAS_APPLICATION]->(:Lead {email:$email,status:'verified',test_key:$key})-[:HAS_STUDENT]->(s:Student {studentId:$key,fullName:'Moving Student',test_key:$key}) CREATE(s)-[:ENROLLED_AS]->(e1:EnrolledStudent {status:'inactive',school_id:$iiss,tenant_id:$tenant,entry_year:2025,year_group:'Year 7',graduation_year:2028,test_key:$key})-[:ENROLLED_IN]->(a8) CREATE(s)-[:ENROLLED_AS]->(e2:EnrolledStudent {status:'active',school_id:$iihs,tenant_id:$tenant,entry_year:2027,year_group:'Year 10',graduation_year:2030,test_key:$key})-[:ENROLLED_IN]->(a10) CREATE(s)-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:'foreign-'+$key,tenant_id:'foreign-'+$key,entry_year:2020,test_key:$key}) CREATE(:User {id:'student-'+$key,role:'student',test_key:$key}) CREATE(:LearningStudentBinding {user_id:'student-'+$key,student_id:$key,status:'ACTIVE',school_id:$iihs,tenant_id:$tenant,version:1,test_key:$key}) CREATE(other:Student {studentId:'peer-'+$key,fullName:'Peer',test_key:$key})-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:$iihs,tenant_id:$tenant,test_key:$key})-[:ENROLLED_IN]->(a10)")
+        .param("key",key.clone()).param("iiss",iiss.clone()).param("iihs",iihs.clone()).param("tenant",tenant.clone()).param("email",format!("parent-{key}@example.test"))).await.unwrap();
+    let s = AppState {
+        graph: graph.clone(),
+        config: crate::config::config::AppConfig {
+            server_port: 0,
+            neo4j_uri: "127.0.0.1:3223".into(),
+            neo4j_user: "neo4j".into(),
+            neo4j_password: "parent-otp-fixture-password".into(),
+            jwt_secret: "owner-contract-test-key-at-least-32-bytes".into(),
+        },
+        http_client: reqwest::Client::new(),
+    };
+    let scope = Scope {
+        school_id: iihs.clone(),
+        tenant_id: tenant.clone(),
+        class_id: None,
+        student_id: None,
+        access: None,
+    };
+    let actor = |id: String, role: &str| Actor {
+        id,
+        role: role.into(),
+    };
+    let expected = json!([
+        {"schoolId":iiss,"schoolName":"IISS","status":"inactive","entryYear":2025,"entryYearGroup":"Year 7","graduationYear":2028,
+         "class":{"id":format!("8a-{key}"),"name":"8A","yearGroup":"Year 8","academicYear":"2026/2027"}},
+        {"schoolId":iihs,"schoolName":"IIHS","status":"active","entryYear":2027,"entryYearGroup":"Year 10","graduationYear":2030,
+         "class":{"id":format!("10a-{key}"),"name":"10A","yearGroup":"Year 10","academicYear":"2027/2028"}},
+    ]);
+    for a in [
+        actor(format!("student-{key}"), "student"),
+        actor(format!("parent-{key}"), "parent"),
+        actor(format!("home-{key}"), "teacher"),
+    ] {
+        let enrolments = student_history::read(&s, &a, &scope, &key).await.unwrap();
+        assert_eq!(
+            json!(enrolments),
+            expected,
+            "{}: both schools of the tenant, the other tenant left out",
+            a.role
+        );
+    }
+    for (a, student) in [
+        (
+            actor(format!("student-{key}"), "student"),
+            format!("peer-{key}"),
+        ),
+        (actor(format!("other-{key}"), "teacher"), key.clone()),
+        (
+            actor(format!("parent-{key}"), "parent"),
+            format!("peer-{key}"),
+        ),
+        (actor(format!("home-{key}"), "parent"), key.clone()),
+    ] {
+        assert_eq!(
+            student_history::read(&s, &a, &scope, &student)
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::FORBIDDEN,
+            "{} {student}",
+            a.id
+        );
+    }
+    // Pinned to IISS, where the Student no longer studies, the homeroom of IIHS sees nothing.
+    let iiss_scope = Scope {
+        school_id: iiss.clone(),
+        ..scope
+    };
+    assert_eq!(
+        student_history::read(
+            &s,
+            &actor(format!("home-{key}"), "teacher"),
+            &iiss_scope,
+            &key
+        )
+        .await
+        .unwrap_err()
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    graph
+        .run(query("MATCH(n {test_key:$key}) DETACH DELETE n").param("key", key))
+        .await
+        .unwrap();
+}
