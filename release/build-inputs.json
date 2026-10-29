@@ -16,7 +16,7 @@
     "src/academic_nomenclature/repository.rs": "2aab63d7a1ed0309c53cd8cee5d419cee1890d51fc1557b46c93dce181a5768f",
     "src/academic_nomenclature/tests.rs": "46a591989bcc72782b405d0bc5e77a1e962eb122f7223ccf87648cafad95415a",
     "src/academic_staffing/database_tests.rs": "df9a9f733abf38ee4fbc948078569f077c10a645016c59aa88f2ab76e09c22e4",
-    "src/academic_staffing/mod.rs": "f16af003cf8387a33a1e92291f1bdae9424bf8c3745a87579299bbabe7757161",
+    "src/academic_staffing/mod.rs": "5488632048a45611350b8c388eeb489a524abe668614db5a007082bb2aa17ce9",
     "src/academic_staffing/model.rs": "d61edc115186a755ab22dc1c5f371eb349bbe219d07ab76a780a6d1b4dc9af91",
     "src/academic_staffing/repository.rs": "a94c116283ef8557d6ea7e63dee8d7c2a9be392a0296100e40100d100397bbc9",
     "src/academic_staffing/repository/weights.rs": "cfa05e475e4139e992cbcac0945ace7941fc5dee2b534fbbb320beb899d53ff2",

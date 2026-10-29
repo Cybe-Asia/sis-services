@@ -100,6 +100,13 @@ Grades with active classes this year, and any grade that already has a plan. The
 
 A class without a `year_group` has no grade and cannot get a plan.
 
+### `GET /api/v1/sis-service/learning/subject-plans?schoolId&tenantId&academicYear`
+
+The same answer for Learning's subject catalogue (ADR 0017 slice 6), read with a Learning bearer: a
+teacher of the school, or an administrator or Owner whose scope covers it (the gate of
+`/learning/grade-weights`). The Admin route above takes Admin portal sessions only, which Learning never
+holds. Read only.
+
 ### `PUT /api/v1/sis-service/academic/subject-plans`
 
 ```json

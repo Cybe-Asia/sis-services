@@ -343,6 +343,48 @@ struct WeightsFor {
     term: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PlansFor {
+    school_id: String,
+    tenant_id: String,
+    academic_year: String,
+}
+/// The subject plans Learning's subject catalogue reads (ADR 0017 slice 6): the same answer as the
+/// Admin read, for a Learning bearer. Teachers of the school read them as well as its administrators
+/// and Owners, as grade weights; the Admin route takes Admin portal sessions only, which Learning
+/// never holds. Nobody writes here.
+async fn learning_subject_plans(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    q: Result<Query<PlansFor>, QueryRejection>,
+) -> Result<Json<Value>, Failure> {
+    let Query(q) = q.map_err(|_| invalid())?;
+    if !(identifier(&q.school_id)
+        && identifier(&q.tenant_id)
+        && model::key_part(&q.academic_year, 32))
+    {
+        return Err(invalid());
+    }
+    match crate::school_portal::auth::teacher_in(&headers, &q.school_id, &q.tenant_id).await {
+        Ok(m) if m.school_ids.contains(&q.school_id) && m.tenant_ids.contains(&q.tenant_id) => {}
+        _ => {
+            crate::learning_access::administrator_actor(&headers, &q.tenant_id, &q.school_id)
+                .await?;
+        }
+    }
+    let mut data = tokio::time::timeout(
+        Duration::from_secs(8),
+        repository::plans(&state.graph, &q.school_id, &q.tenant_id, &q.academic_year),
+    )
+    .await
+    .map_err(unavailable)??;
+    data["schoolId"] = json!(q.school_id);
+    data["tenantId"] = json!(q.tenant_id);
+    data["academicYear"] = json!(q.academic_year);
+    Ok(Json(json!({ "data": data })))
+}
+
 /// The weights Learning applies to one class, subject and term. Teachers of the school read them
 /// as well as its administrators and Owners; nobody writes here.
 async fn learning_grade_weights(
@@ -414,6 +456,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/v1/sis-service/learning/grade-weights",
             get(learning_grade_weights),
+        )
+        .route(
+            "/api/v1/sis-service/learning/subject-plans",
+            get(learning_subject_plans),
         )
         .layer(axum::extract::DefaultBodyLimit::max(32 * 1024))
         .layer(axum::middleware::map_response(
