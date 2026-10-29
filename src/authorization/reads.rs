@@ -2,8 +2,9 @@
 //! `authorization.read` or `authorization.manage`; nothing about other schools is revealed.
 use super::facts::{self, get, Db};
 use super::model::{
-    decide, holds_tenant, readable_schools, reference, Assignment, CheckRequest, Facts, Holding,
-    Scope, CACHE_SECONDS, MANAGE, READ, TENANT,
+    covers, decide, grade_number, holds_tenant, readable_schools, reference, Assignment,
+    CheckRequest, Facts, Holding, Scope, CACHE_SECONDS, MANAGE, MASTERY_READ, READ, SCHOOL_SUBJECT,
+    SECTION_SUBJECT, TENANT,
 };
 use crate::academic_staffing::repository::{refuse, unavailable, Failure};
 use axum::http::StatusCode;
@@ -536,4 +537,148 @@ pub async fn learning_capabilities(
         .filter(|c| decide(&facts, &holdings, &c.code, &scope).is_some())
         .map(|c| c.code.clone())
         .collect())
+}
+
+/// Whether `staff` holds `capability` for the whole of `school` now, for services that moved
+/// from role checks (spec §7 slice 6). The decision is the same as `/authorization/check` at
+/// `SCHOOL`: Owners and school administrators pass on day one, and a school that is not one
+/// unique `School` of the tenant denies. Inside a write transaction the facts are read under the
+/// caller's locks.
+pub async fn permits(
+    db: &mut Db<'_>,
+    tenant: &str,
+    school: &str,
+    staff: &str,
+    capability: &str,
+) -> Result<bool, Failure> {
+    let facts = facts::load(db, tenant, &[staff.to_string()], &[]).await?;
+    let holdings = facts.holdings(staff);
+    Ok(decide(&facts, &holdings, capability, &Scope::school(school)).is_some())
+}
+
+/// One class of the mastery roster: the students the caller may read mastery for, and the
+/// subjects that holding covers (`None`: every subject of the class).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RosterClass {
+    pub id: String,
+    pub name: String,
+    pub grade: String,
+    pub academic_year: String,
+    pub subjects: Option<Vec<String>>,
+    pub students: Vec<RosterStudent>,
+}
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RosterStudent {
+    pub id: String,
+    pub name: String,
+}
+
+const SCHOOL_SECTIONS: &str = "MATCH(c:Section {tenant_id:$tenant,school_id:$school,status:'active'}) RETURN DISTINCT c.section_id AS id ORDER BY id LIMIT 5001";
+const ROSTER: &str = "MATCH(c:Section {tenant_id:$tenant,school_id:$school,status:'active'}) WHERE c.section_id IN $sections MATCH(s:Student)-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:$school,tenant_id:$tenant})-[:ENROLLED_IN]->(c) RETURN DISTINCT c.section_id AS class,s.studentId AS id,coalesce(s.fullName,s.studentId) AS name ORDER BY class,id LIMIT 20001";
+
+/// The active classes of `school`, with their students, for which `staff` holds
+/// `learning.mastery.read` (ADR 0018 remainder): through SCHOOL, SCHOOL_SUBJECT, SECTION or
+/// SECTION_SUBJECT holdings, explicit or derived. `subject` keeps classes where that subject is
+/// covered; `grade` keeps classes of that grade. `None` when the person is not one active Staff
+/// Member, as the capabilities read refuses.
+pub async fn mastery_roster(
+    graph: &Graph,
+    tenant: &str,
+    school: &str,
+    staff: &str,
+    subject: Option<&str>,
+    grade: Option<&str>,
+) -> Result<Option<(Vec<RosterClass>, i64)>, Failure> {
+    let mut db = Db::Graph(graph);
+    let mut sections = vec![];
+    for r in db
+        .rows(
+            query(SCHOOL_SECTIONS)
+                .param("tenant", tenant)
+                .param("school", school),
+            5000,
+        )
+        .await?
+    {
+        sections.push(get::<String>(&r, "id")?);
+    }
+    let facts = facts::load(&mut db, tenant, &[staff.to_string()], &sections).await?;
+    if !facts.person(staff).is_some_and(|p| p.active()) {
+        return Ok(None);
+    }
+    let holdings = facts.holdings(staff);
+    let wanted_grade = grade.and_then(grade_number);
+    let mut classes: Vec<RosterClass> = vec![];
+    for s in facts.sections.iter().filter(|s| s.school == school) {
+        if wanted_grade.is_some() && grade_number(&s.grade) != wanted_grade {
+            continue;
+        }
+        let whole = decide(
+            &facts,
+            &holdings,
+            MASTERY_READ,
+            &Scope::section(school, &s.id),
+        );
+        let subjects: Option<Vec<String>> = match (subject, whole) {
+            (Some(subject), _) => {
+                let scope = Scope::section_subject(school, &s.id, subject);
+                if decide(&facts, &holdings, MASTERY_READ, &scope).is_none() {
+                    continue;
+                }
+                Some(vec![subject.to_string()])
+            }
+            (None, Some(_)) => None,
+            (None, None) => {
+                // Subject holdings only: which subjects of this class they cover.
+                let mut covered: BTreeSet<String> = BTreeSet::new();
+                for h in holdings.iter().filter(|h| {
+                    h.capabilities.contains(MASTERY_READ)
+                        && (h.scope.kind == SCHOOL_SUBJECT || h.scope.kind == SECTION_SUBJECT)
+                }) {
+                    if let Some(code) = h.scope.subject.as_deref() {
+                        let scope = Scope::section_subject(school, &s.id, code);
+                        if covers(&h.scope, &scope, Some(&s.grade), false) {
+                            covered.insert(code.to_string());
+                        }
+                    }
+                }
+                if covered.is_empty() {
+                    continue;
+                }
+                Some(covered.into_iter().collect())
+            }
+        };
+        classes.push(RosterClass {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            grade: s.grade.clone(),
+            academic_year: s.year.clone(),
+            subjects,
+            students: vec![],
+        });
+    }
+    if !classes.is_empty() {
+        let ids: Vec<String> = classes.iter().map(|c| c.id.clone()).collect();
+        for r in db
+            .rows(
+                query(ROSTER)
+                    .param("tenant", tenant)
+                    .param("school", school)
+                    .param("sections", ids),
+                20000,
+            )
+            .await?
+        {
+            let class: String = get(&r, "class")?;
+            if let Some(c) = classes.iter_mut().find(|c| c.id == class) {
+                c.students.push(RosterStudent {
+                    id: get(&r, "id")?,
+                    name: get(&r, "name")?,
+                });
+            }
+        }
+    }
+    Ok(Some((classes, facts::version(&mut db, tenant).await?)))
 }

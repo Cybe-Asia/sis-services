@@ -1,11 +1,12 @@
 //! Graph reads and writes for subject plans and teaching assignments. Every write runs in one
-//! transaction: caller lock, school lock, authority in the graph, the session again, the
-//! idempotency receipt, then state, audit, grant sync and the receipt commit together.
+//! transaction: caller lock, school lock, the capability decision from the graph (ADR 0018), the
+//! session again, the idempotency receipt, then state, audit, grant sync and the receipt commit
+//! together.
 use super::model::{
     grade_order, next, plan_key, Command, Commands, Current, PlanChange, PlanCopy, PlanRow, ASSIGN,
     END,
 };
-use crate::academic_teachers::repository::authorized;
+use crate::authorization::facts::Db;
 use crate::learning_access::timetable::repository::{lock_school, one};
 use axum::{http::StatusCode, Json};
 use neo4rs::{query, Graph, Query, Row, Txn};
@@ -79,7 +80,14 @@ pub enum Session<'a> {
     #[cfg(test)]
     Unchecked,
 }
-/// Who writes, for which school, under which `Idempotency-Key`.
+/// The capabilities these routes check (ADR 0018 slice 6). Owners and school administrators
+/// hold all three on day one; Admin teachers read staffing.
+pub const STAFFING_READ: &str = "academic.staffing.read";
+pub const STAFFING_MANAGE: &str = "academic.staffing.manage";
+pub const SUBJECT_PLAN_MANAGE: &str = "academic.subject_plan.manage";
+
+/// Who writes, for which school, under which `Idempotency-Key`, and which capability the write
+/// needs at the school.
 pub struct Writer<'a> {
     pub session: Session<'a>,
     pub actor: &'a str,
@@ -87,6 +95,7 @@ pub struct Writer<'a> {
     pub school: &'a str,
     pub tenant: &'a str,
     pub command: &'a str,
+    pub capability: &'a str,
 }
 impl Writer<'_> {
     fn receipt(&self) -> String {
@@ -101,20 +110,17 @@ async fn guard(tx: &mut Txn, w: &Writer<'_>, fingerprint: &str) -> Result<Option
         .await?
         .ok_or_else(forbidden)?;
     lock_school(tx, w.school, w.tenant).await?;
-    let allowed = one(
-        tx,
-        query(&format!(
-            "{} RETURN count(a) AS count",
-            authorized("$school", "$tenant")
-        ))
-        .param("actor", w.actor)
-        .param("school", w.school)
-        .param("tenant", w.tenant),
+    // The capability decision reads the caller's holdings under the locks, so an assignment or
+    // template revoked meanwhile denies here.
+    if !crate::authorization::reads::permits(
+        &mut Db::Tx(tx),
+        w.tenant,
+        w.school,
+        w.actor,
+        w.capability,
     )
     .await?
-    .map(|r| get::<i64>(&r, "count"))
-    .transpose()?;
-    if allowed != Some(1) {
+    {
         return Err(forbidden());
     }
     // A role revoked while this request waited for the locks does not write.

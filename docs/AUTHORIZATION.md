@@ -44,6 +44,7 @@ The seeds are in `src/authorization/templates.json`. They are defaults the schoo
 | `subject_lead` | `SCHOOL_SUBJECT` | `learning.module.review`, `learning.module.manage_any`, `learning.plan.manage`, `learning.question_bank.manage` |
 | `curriculum_coordinator` | `SCHOOL` | `learning.curriculum.manage`, `learning.plan.manage`, `learning.module.review`, `learning.module.manage_any`, `learning.mastery.read` |
 | `school_admin` | `SCHOOL` | `academic.staffing.read`, `academic.staffing.manage`, `academic.subject_plan.manage`, `academic.calendar.manage`, `academic.class_access.manage`, `academic.extracurricular.manage`, `school.content.manage`, `staff.directory.manage`, `student.biodata.manage`, `authorization.read` |
+| `principal` | `SCHOOL` | `authorization.manage`, `authorization.read`, `academic.staffing.read`, `learning.curriculum.read`, `learning.mastery.read` |
 
 Two seeds go further than spec §3, so that day-one access equals today:
 
@@ -52,7 +53,13 @@ Two seeds go further than spec §3, so that day-one access equals today:
   Learning access, extracurricular, articles and student biodata. It also adds `authorization.read`, so a school
   admin can see access in their own schools.
 
-No seed carries `authorization.manage`. It stays with Owners (spec §8 #3).
+**Principal** (Kepala Sekolah, added 2026-10-29 for spec §10 #8.3) is the one seed that carries
+`authorization.manage`, at `SCHOOL` only, so one person per unit can manage access without waiting for the
+foundation. Only an Owner may give it (`PRINCIPAL_NEEDS_OWNER` below), whatever the template carries after a
+revision. The catalogue check refuses any other seed that carries `authorization.manage`, and a Principal seed
+with another scope. A Principal manages access in their school under the same guardrails as everyone else: they
+revoke and change validity, but grant only capabilities they hold themselves, so with this seed they cannot
+hand out the Learning templates (`CAPABILITY_NOT_HELD`). Widening the seed is a product decision.
 
 ## Scopes
 
@@ -140,6 +147,7 @@ session must cover the tenant: an unscoped Owner, or `tenantId` in its tenants. 
 | Nobody grants a capability they do not hold at the assignment's scope (or, for a template, across the tenant) | 403 `CAPABILITY_NOT_HELD` (`index`, `capability`) |
 | No scope wider than one's own: holding at a school never covers another school or `TENANT` | 403 `FORBIDDEN` |
 | A sensitive capability is granted only by an Owner of the scope (of the whole tenant for templates) | 403 `SENSITIVE_NEEDS_OWNER` |
+| The `principal` template is assigned (or its dates changed) by an Owner of the school only | 403 `PRINCIPAL_NEEDS_OWNER` (`index`) |
 | A school that had a holder of `authorization.manage` keeps one after the change | 409 `LAST_AUTHORIZATION_MANAGER` (`schoolId`) |
 | A school admin acts only in their schools | follows from the rows above |
 
@@ -368,6 +376,58 @@ The graph test `authorization_graph_learning_scopes_per_school` covers:
 - disabled and unknown people (refused);
 - a teacher who holds nothing (`{}`).
 
+## `GET /learning/owner/mastery-roster?school_id&tenant_id[&subject&grade]` (ADR 0018 remainder)
+
+The classes and students the caller may read mastery for, so Learning can show the Mastery panel to a
+curriculum coordinator or subject lead who teaches no class (`/learning/owner/context` lists taught classes only).
+
+- **Caller:** authenticated and pinned exactly as `/learning/owner/capabilities`: a Teacher or Owner session with
+  the school and tenant in its lists; Students and Parents get 403; the answer is always about the caller.
+- **Decision:** a class is listed when the caller holds `learning.mastery.read` for it, through any holding:
+  Owner, `SCHOOL` (a coordinator or Principal), `SCHOOL_SUBJECT` (a subject role, for the classes of its grades),
+  `SECTION` (a grant or homeroom) or `SECTION_SUBJECT` (a teaching assignment). Explicit and derived holdings count
+  alike; another school's holdings never do.
+- **`subjects`:** `null` when the caller reads every subject of the class; otherwise the subject codes the
+  holding covers. With `?subject=`, only classes where that subject is covered are listed, with `subjects:
+  [subject]`. `?grade=` keeps one grade, compared by its number ("Year 7" or "7").
+- **Students:** the class's active enrolments (`EnrolledStudent {status:'active'}`), id and name.
+- **Refusals:** a Staff Member who is not one active node gets 403. A subject lead whose seed carries no
+  `learning.mastery.read` gets `classes: []` until the school revises that template.
+- **Headers and logs:** `Cache-Control: no-store`; nothing personal is logged. Callers may keep the answer
+  `cacheSeconds`, or until `authorizationVersion` changes.
+
+```json
+{"data":{"contractVersion":1,"schoolId":"school","tenantId":"tenant","authorizationVersion":5,"cacheSeconds":60,
+ "classes":[{"id":"7B","name":"7B","grade":"Year 7","academicYear":"2026/2027","subjects":["mathematics"],
+             "students":[{"id":"st-1","name":"Aisha"},{"id":"st-2","name":"Bilal"}]}]}}
+```
+
+Bounds: 5000 active classes of the school and 20000 roster rows; past a bound the answer is 503.
+
+The graph test `authorization_graph_principal_and_mastery_roster` covers the Principal guardrails (school admin
+refused, `SCHOOL` only, Principal cannot name a Principal, hold-what-you-grant, revoke and reopen) and the roster
+for an Owner, a Principal, a teaching assignment (one subject), a grant (whole class), a revoked grant, another
+school's teacher, disabled and unknown people, a coordinator, a subject lead before and after a template revision,
+and the grade and subject filters.
+
+## Services that check capabilities (spec §7 slice 6)
+
+`authorization::reads::permits(db, tenant, school, staff, capability)` answers "does this person hold the
+capability for the whole school now" with the same decision as `/authorization/check` at `SCHOOL`; inside a write
+transaction it reads the facts under the caller's locks, so an assignment or template revoked meanwhile denies.
+
+| Routes (`academic_staffing`) | Capability |
+|---|---|
+| `GET /academic/subject-plans`, `GET /academic/teaching-assignments`, `GET /academic/grade-weights` | `academic.staffing.read` |
+| `PUT /academic/subject-plans`, `POST /academic/subject-plans/copy`, `PUT /academic/grade-weights` | `academic.subject_plan.manage` |
+| `POST /academic/teaching-assignments/commands` | `academic.staffing.manage` |
+
+The Auth session gate is unchanged: these routes still take only Owner and `school_admin` staff portal sessions
+pinned to the school, so on day one the people who pass are exactly those who passed the role fragment. What
+changes is that a revision of the School admin template, or an explicit assignment, now reaches these routes
+(graph test `staffing_routes_decide_by_capability`). `GET /learning/grade-weights` (teachers' read) keeps its role
+fragment.
+
 ## Schema
 
 Applied at start-up from `migrations/0007_authorization.cypher` (`authorization::init`). The statements are
@@ -409,6 +469,8 @@ Past a bound the answer is 503, never a partial decision.
 - **Graph tests** (disposable Neo4j only):
   `SCHOOL_PORTAL_TEST_BOLT=127.0.0.1:3223 cargo test --bin sis-service authorization_graph -- --ignored --test-threads=1`.
   - The day-one equality matrix above, and the Learning authorize capabilities.
+  - The Principal guardrails and the mastery roster (`authorization_graph_principal_and_mastery_roster`).
+  - The staffing routes deciding by capability (`academic_staffing::database_tests::staffing_routes_decide_by_capability`).
   - Replay, key reuse and stale revisions.
   - Every 422 with its index, and that nothing of a refused batch is written.
   - Each guardrail: school admin without manage, wider scope, capability not held, sensitive needs Owner, last

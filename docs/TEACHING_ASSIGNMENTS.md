@@ -14,14 +14,17 @@ The read model of slice 1 (`docs/TEACHER_LIST.md`) now adds planned periods and 
 
 ## Access
 
-The same rule as the teacher list. The caller is a staff portal session of an active `school_admin` of the
-school, or of an `owner` whose scope covers it (spec §7 #7). Teachers and other roles get 403.
+The caller is a staff portal session of an active `school_admin` of the school, or of an `owner` whose scope
+covers it (spec §7 #7). Teachers and other roles get 403. Since 2026-10-29 (ADR 0018 slice 6) the graph check is a
+capability decision, not a role fragment: reads need `academic.staffing.read`, plan and weight writes
+`academic.subject_plan.manage`, assignment commands `academic.staffing.manage`, all at the school. Owners and
+school administrators hold these on day one; see `docs/AUTHORIZATION.md`, "Services that check capabilities".
 
-- **Reads:** session, graph authority, the read, then the session again.
+- **Reads:** session, the capability decision from the graph, the read, then the session again.
 - **Writes:** in one transaction, in this order:
   1. a lock on the caller's `StaffMember`;
   2. the school lock (`EducationCalendarLock`, shared with rooms and the calendar);
-  3. the authority check in the graph;
+  3. the capability decision from the graph, under the locks;
   4. Auth introspection again;
   5. the idempotency receipt;
   6. the change, its audit, grant sync and the receipt.
