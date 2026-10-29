@@ -325,6 +325,49 @@ The contract is unchanged (`contractVersion` 1, `allowed`). For a `teacher` or `
 unknown fields, so the current learning-api still parses it. Nothing reads it until learning-api moves (spec §7
 slice 5).
 
+## `GET /learning/owner/capabilities?school_id&tenant_id` (ADR 0018 slice 5)
+
+This lets Learning check school and subject roles, for example a curriculum coordinator or subject lead who in Auth
+is an ordinary `teacher`. `/learning/owner/authorize` answers per class only, and `/authorization/check` takes only
+Admin sessions.
+
+- **Caller:** authenticated and pinned to the school and tenant exactly as for `/learning/owner/authorize`: the
+  Teacher or Owner session, with the school and tenant in its lists.
+  - Students and Parents get 403.
+  - There is no `actor` parameter: the answer is always about the caller.
+- **Content:** only `learning.*` codes, and only holdings in the pinned school. `TENANT` holdings count; another
+  school's holdings never appear.
+- **Sources:** the derived holdings count as everywhere else: Owner, `school_admin`, teaching assignments while the
+  grant is active, grants and homeroom.
+- **Holding nothing:** an active Staff Member who holds nothing gets `{"capabilities":{}}`.
+- **Refusals:** a Staff Member who is not one active node gets 403, as from authorize.
+- **Headers and logs:** the response is `Cache-Control: no-store`, and nothing personal is logged.
+
+For a subject lead at mathematics Year 7–9 who also has a teaching grant to 9A, the answer is:
+
+```json
+{"data":{"contractVersion":1,"authorizationVersion":1,"cacheSeconds":60,"capabilities":{
+  "learning.class.teach":[{"type":"SECTION","schoolId":"school","sectionId":"9A"}],
+  "learning.module.review":[{"type":"SCHOOL_SUBJECT","schoolId":"school","subject":"mathematics","gradeFrom":"Year 7","gradeTo":"Year 9"}],
+  "learning.plan.manage":[{"type":"SCHOOL_SUBJECT","schoolId":"school","subject":"mathematics","gradeFrom":"Year 7","gradeTo":"Year 9"}],
+  "…":[]}}}
+```
+
+Each code maps to the scopes where it is held, each scope once. Containment works as in "Scopes" above: a
+`SCHOOL_SUBJECT` holding covers that subject in each class of a grade in range, and a class-wide capability held at
+`SECTION_SUBJECT` covers the class. Callers may keep the answer for `cacheSeconds`, or until `authorizationVersion`
+changes.
+
+The graph test `authorization_graph_learning_scopes_per_school` covers:
+
+- an Owner (every `learning.*` at `TENANT`);
+- a coordinator at `SCHOOL`, next to their homeroom rows;
+- a subject lead at `SCHOOL_SUBJECT`;
+- a plain teacher (`SECTION_SUBJECT` only);
+- another school's coordinator (`{}` here, their own school answers);
+- disabled and unknown people (refused);
+- a teacher who holds nothing (`{}`).
+
 ## Schema
 
 Applied at start-up from `migrations/0007_authorization.cypher` (`authorization::init`). The statements are

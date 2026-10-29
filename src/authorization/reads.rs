@@ -482,6 +482,35 @@ pub async fn audit(graph: &Graph, reader: &Reader, tenant: &str) -> Result<Value
     Ok(v.envelope(json!({ "entries": entries })))
 }
 
+/// Every `learning.*` capability `staff` holds inside one school, by scope, with the tenant's
+/// authorization version. Tenant-wide holdings count; another school's never do. `None` when the
+/// person is not one active Staff Member (the caller then refuses as the authorize read does).
+pub async fn learning_scopes(
+    graph: &Graph,
+    tenant: &str,
+    school: &str,
+    staff: &str,
+) -> Result<Option<(BTreeMap<String, Vec<Scope>>, i64)>, Failure> {
+    let mut db = Db::Graph(graph);
+    let facts = facts::load(&mut db, tenant, &[staff.to_string()], &[]).await?;
+    if !facts.person(staff).is_some_and(|p| p.active()) {
+        return Ok(None);
+    }
+    let mut out: BTreeMap<String, Vec<Scope>> = BTreeMap::new();
+    for h in facts.holdings(staff) {
+        if !(h.scope.kind == TENANT || h.scope.school_id.as_deref() == Some(school)) {
+            continue;
+        }
+        for code in h.capabilities.iter().filter(|c| c.starts_with("learning.")) {
+            let scopes = out.entry(code.clone()).or_default();
+            if !scopes.contains(&h.scope) {
+                scopes.push(h.scope.clone());
+            }
+        }
+    }
+    Ok(Some((out, facts::version(&mut db, tenant).await?)))
+}
+
 /// The `learning.*` capabilities `staff` holds in one class, for the Learning authorize answer.
 pub async fn learning_capabilities(
     graph: &Graph,

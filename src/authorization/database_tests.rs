@@ -926,3 +926,108 @@ async fn authorization_graph_commands_guardrails_reads_and_audit() {
         .unwrap();
     assert_eq!(audit["entries"].as_array().unwrap().len(), 10);
 }
+
+/// Slice 5: what Learning reads for school and subject roles, pinned to one school.
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn authorization_graph_learning_scopes_per_school() {
+    let g = fixture().await;
+    let mut math_7_9 = subject_scope("mathematics");
+    math_7_9.grade_from = Some("Year 7".into());
+    math_7_9.grade_to = Some("Year 9".into());
+    commands::assignments(
+        &g,
+        &writer("owner", "owner", "scopes-assign-0001"),
+        &batch(vec![
+            assign(
+                "t-home",
+                "curriculum_coordinator",
+                Scope::school("school"),
+                0,
+            ),
+            assign("t-grant", "subject_lead", math_7_9.clone(), 0),
+            assign(
+                "t-other",
+                "curriculum_coordinator",
+                Scope::school("school-2"),
+                0,
+            ),
+        ]),
+    )
+    .await
+    .unwrap();
+    let scopes = |staff: &'static str| reads::learning_scopes(&g, "tenant", "school", staff);
+    let json = |s: &Option<(std::collections::BTreeMap<String, Vec<Scope>>, i64)>| {
+        serde_json::to_value(&s.as_ref().unwrap().0).unwrap()
+    };
+
+    // Owner: every learning capability, tenant-wide.
+    let owner = scopes("owner").await.unwrap();
+    let codes = reference()
+        .catalogue
+        .capabilities
+        .iter()
+        .filter(|c| c.code.starts_with("learning."))
+        .count();
+    assert_eq!(owner.as_ref().unwrap().0.len(), codes);
+    assert_eq!(
+        json(&owner)["learning.curriculum.manage"],
+        serde_json::json!([{"type": "TENANT"}])
+    );
+    assert_eq!(
+        owner.as_ref().unwrap().1,
+        1,
+        "the tenant version after one write"
+    );
+
+    // Coordinator at SCHOOL, beside their homeroom and teaching rows.
+    let coordinator = json(&scopes("t-home").await.unwrap());
+    assert_eq!(
+        coordinator["learning.curriculum.manage"],
+        serde_json::json!([{"type": "SCHOOL", "schoolId": "school"}])
+    );
+    assert_eq!(
+        coordinator["learning.plan.manage"],
+        serde_json::json!([{"type": "SCHOOL", "schoolId": "school"}])
+    );
+    assert_eq!(
+        coordinator["learning.class.homeroom"],
+        serde_json::json!([{"type": "SECTION", "schoolId": "school", "sectionId": "7A"}])
+    );
+    assert!(coordinator.get("learning.question_bank.manage").is_none());
+
+    // Subject lead at SCHOOL_SUBJECT mathematics, Year 7–9.
+    let lead = json(&scopes("t-grant").await.unwrap());
+    let lead_scope = serde_json::json!([{"type": "SCHOOL_SUBJECT", "schoolId": "school", "subject": "mathematics", "gradeFrom": "Year 7", "gradeTo": "Year 9"}]);
+    assert_eq!(lead["learning.module.manage_any"], lead_scope);
+    assert_eq!(lead["learning.question_bank.manage"], lead_scope);
+    assert!(lead.get("learning.curriculum.manage").is_none());
+
+    // Plain teacher: only the class rows of their assignment.
+    let plain = json(&scopes("t-assigned").await.unwrap());
+    let class = serde_json::json!([{"type": "SECTION_SUBJECT", "schoolId": "school", "sectionId": "7B", "subject": "mathematics"}]);
+    assert_eq!(plain["learning.class.teach"], class);
+    assert!(plain.as_object().unwrap().values().all(|v| v == &class));
+    assert!(plain.get("learning.curriculum.manage").is_none());
+
+    // Another school's coordinator holds nothing in this school; their own school answers.
+    assert_eq!(json(&scopes("t-other").await.unwrap()), serde_json::json!({}));
+    let theirs = reads::learning_scopes(&g, "tenant", "school-2", "t-other")
+        .await
+        .unwrap();
+    assert_eq!(
+        json(&theirs)["learning.curriculum.manage"],
+        serde_json::json!([{"type": "SCHOOL", "schoolId": "school-2"}])
+    );
+
+    // A disabled or unknown person is refused, not answered with nothing.
+    assert!(scopes("t-off").await.unwrap().is_none());
+    assert!(scopes("nobody").await.unwrap().is_none());
+    // A teacher who holds nothing gets an empty answer.
+    g.run(query("CREATE(:StaffMember {id:'t-new',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:['school'],tenantIds:['tenant']})")).await.unwrap();
+    assert_eq!(json(&scopes("t-new").await.unwrap()), serde_json::json!({}));
+    println!(
+        "example: {}",
+        serde_json::json!({"data": {"contractVersion": 1, "capabilities": lead, "authorizationVersion": 1, "cacheSeconds": 60}})
+    );
+}

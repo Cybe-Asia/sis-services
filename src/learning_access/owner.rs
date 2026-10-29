@@ -286,6 +286,40 @@ async fn authorize(
     }
     Ok(Json(json!({ "data": data })))
 }
+/// ADR 0018 slice 5: the caller's `learning.*` capabilities inside the pinned school, by scope, so
+/// Learning can check school and subject roles (curriculum, plans, review). The caller is
+/// authenticated and pinned exactly as for `authorize`; Students and Parents hold none here.
+async fn capabilities(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    Query(q): Query<Scope>,
+) -> Result<axum::response::Response, Failure> {
+    use axum::response::IntoResponse;
+    if !valid_id(&q.school_id)
+        || !valid_id(&q.tenant_id)
+        || q.class_id.is_some()
+        || q.student_id.is_some()
+        || q.access.is_some()
+    {
+        return Err(failure(StatusCode::BAD_REQUEST));
+    }
+    let a = actor(&h, &q).await?;
+    if !matches!(a.role.as_str(), "teacher" | "owner") {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    super::ensure_schema(&s.graph).await?;
+    let (capabilities, version) =
+        crate::authorization::reads::learning_scopes(&s.graph, &q.tenant_id, &q.school_id, &a.id)
+            .await
+            .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
+            .ok_or_else(|| failure(StatusCode::FORBIDDEN))?;
+    let mut response = Json(json!({"data":{"contractVersion":1,"capabilities":capabilities,"authorizationVersion":version,"cacheSeconds":crate::authorization::model::CACHE_SECONDS}})).into_response();
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    Ok(response)
+}
 pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -300,6 +334,10 @@ pub(super) fn router() -> Router<AppState> {
         .route(
             "/api/v1/sis-service/learning/owner/authorize",
             get(authorize),
+        )
+        .route(
+            "/api/v1/sis-service/learning/owner/capabilities",
+            get(capabilities),
         )
         .route("/api/v1/sis-service/learning/owner/health", get(health))
         .route(
