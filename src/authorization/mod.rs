@@ -1,7 +1,7 @@
 //! Capability-based access for school staff (ADR 0018, `docs/AUTHORIZATION.md`): the capability
 //! catalogue, role templates, assignments and the decisions built on them and on today's
-//! records. Only staff portal sessions of Owners and school administrators reach these routes;
-//! what each may read or change is then decided from their own holdings. No service enforces
+//! records. Any active staff portal session reaches these routes (a Principal may be a teacher in
+//! Auth); what each may read or change is then decided from their own holdings. No service enforces
 //! capabilities yet: their current role checks stay until each one moves.
 use crate::AppState;
 use axum::{
@@ -28,11 +28,12 @@ fn invalid() -> Failure {
     refuse(StatusCode::BAD_REQUEST, "INVALID_INPUT", json!({}))
 }
 
-/// The caller's session, which must cover the tenant.
+/// The caller's session, which must cover the tenant. Any active staff member passes; what they
+/// may read is decided from their own holdings.
 async fn reader(headers: &HeaderMap, tenant: &str) -> Result<Reader, Failure> {
-    let (actor, role, schools, tenants) = crate::learning_access::staff_session(headers)
+    let (actor, role, schools, tenants) = crate::learning_access::any_staff_session(headers)
         .await?
-        .scope();
+        .staff_scope();
     if role == "owner" && schools.is_empty() && tenants.is_empty() {
         return Ok(Reader {
             actor,
@@ -179,6 +180,31 @@ async fn assignments(
     .await
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExpiringQuery {
+    tenant_id: String,
+    days: Option<u32>,
+    school_id: Option<String>,
+}
+
+async fn expiring(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    q: Result<Query<ExpiringQuery>, QueryRejection>,
+) -> Result<Json<Value>, Failure> {
+    let Query(q) = q.map_err(|_| invalid())?;
+    let days = q.days.unwrap_or(30);
+    if !(1..=366).contains(&days) || !q.school_id.as_deref().is_none_or(identifier) {
+        return Err(invalid());
+    }
+    let tenant = q.tenant_id.clone();
+    guarded(&headers, &q.tenant_id, |r| async move {
+        reads::expiring(&state.graph, &r, &tenant, days, q.school_id.as_deref()).await
+    })
+    .await
+}
+
 async fn effective(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -190,7 +216,11 @@ async fn effective(
     }
     let (tenant, staff) = (q.tenant_id.clone(), q.staff_member_id.clone());
     guarded(&headers, &q.tenant_id, |r| async move {
-        reads::effective(&state.graph, &r, &tenant, &staff).await
+        if staff == r.actor {
+            reads::own(&state.graph, &r, &tenant).await
+        } else {
+            reads::effective(&state.graph, &r, &tenant, &staff).await
+        }
     })
     .await
 }
@@ -345,6 +375,7 @@ pub fn router() -> Router<AppState> {
             post(template_commands),
         )
         .route(&format!("{BASE}/assignments"), get(assignments))
+        .route(&format!("{BASE}/assignments/expiring"), get(expiring))
         .route(
             &format!("{BASE}/assignments/commands"),
             post(assignment_commands),

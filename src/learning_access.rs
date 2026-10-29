@@ -48,6 +48,12 @@ struct Membership {
     school_ids: Option<Vec<String>>,
 }
 async fn membership(headers: &HeaderMap) -> Result<Membership, Failure> {
+    verified(headers, true).await
+}
+/// The Auth portal session, verified. `administrators` keeps today's rule (an Owner or school
+/// administrator); without it any active staff member passes, for routes that then decide from
+/// the caller's own capabilities.
+async fn verified(headers: &HeaderMap, administrators: bool) -> Result<Membership, Failure> {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -89,9 +95,13 @@ async fn membership(headers: &HeaderMap) -> Result<Membership, Failure> {
     let member = read_membership(response).await?;
     if !member.active
         || !member.roles.as_ref().is_some_and(|roles| {
-            roles
-                .iter()
-                .any(|r| matches!(r.as_str(), "school_admin" | "owner"))
+            if administrators {
+                roles
+                    .iter()
+                    .any(|r| matches!(r.as_str(), "school_admin" | "owner"))
+            } else {
+                !roles.is_empty()
+            }
         })
         || !member
             .staff_member_id
@@ -181,7 +191,27 @@ pub(crate) struct StaffSession(Membership);
 pub(crate) async fn staff_session(headers: &HeaderMap) -> Result<StaffSession, Failure> {
     Ok(StaffSession(membership(headers).await?))
 }
+/// Any active staff member's session, whatever their Auth role (ADR 0018): only for routes that
+/// decide everything from the caller's capabilities, as the authorization routes do.
+pub(crate) async fn any_staff_session(headers: &HeaderMap) -> Result<StaffSession, Failure> {
+    Ok(StaffSession(verified(headers, false).await?))
+}
 impl StaffSession {
+    /// As `scope`, naming the role as Auth has it: `owner`, `school_admin` or `staff`.
+    pub(crate) fn staff_scope(self) -> (String, String, Vec<String>, Vec<String>) {
+        let admin = self
+            .0
+            .roles
+            .as_ref()
+            .is_some_and(|rs| rs.iter().any(|r| r == "school_admin"));
+        let (actor, role, schools, tenants) = self.scope();
+        let role = if role == "owner" || admin {
+            role
+        } else {
+            "staff".into()
+        };
+        (actor, role, schools, tenants)
+    }
     /// Actor, role (`owner` or `school_admin`) and the session's own school and tenant lists,
     /// for reads that list what the caller may administer. Both lists are empty only for an
     /// Owner without a school scope.

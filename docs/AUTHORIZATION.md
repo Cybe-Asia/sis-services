@@ -127,8 +127,11 @@ All 192 answers match.
 
 ## Access to these routes
 
-The caller is a staff portal session of an `owner` or a `school_admin`, as for the other Admin routes. The
-session must cover the tenant: an unscoped Owner, or `tenantId` in its tenants. Teacher sessions get 401/403.
+The caller is any active staff portal session (Auth `active`, a staff member id and at least one role), so that a
+Principal who is a `teacher` in Auth reaches these routes; every other SIS Admin route still needs an `owner` or a
+`school_admin`. The session must cover the tenant: an unscoped Owner, or `tenantId` in its tenants. What the caller
+reads or changes is then decided from their own holdings only, as below; a teacher without `authorization.read`
+or `.manage` gets 403 on every read but their own `effective`. Audit entries name a teacher's role `staff`.
 
 - **Reads:** only schools where the caller holds `authorization.read` or `authorization.manage`, and that their
   session covers. The caller needs at least one such school, or 403.
@@ -284,8 +287,30 @@ Errors besides the guardrails:
 | 422 | `SCOPE_NOT_FOUND` | no unique school, no active class of the school, or a class of another `academicYear` |
 | 422 | `TARGET_NOT_ELIGIBLE` | not one active Staff Member of that school (or tenant), or an Owner |
 
-Dates are `YYYY-MM-DD`, with `validFrom` ≤ `validUntil`. Whether assignments end with the academic year
-automatically is still open (spec §8 #4). Until it is decided, set `validUntil`.
+Dates are `YYYY-MM-DD`, with `validFrom` ≤ `validUntil`.
+
+**Default end (spec §10 #8.4).** An `assign` or `change_validity` without `validUntil` ends with the academic
+year, except templates `principal` and `curriculum_coordinator`, which run until revoked. The academic year is the
+one the command names (`academicYear`, when it is `YYYY/YYYY` and not already over); otherwise the year of the
+school's active classes (`Section.academic_year`, `YYYY/YYYY` or `YYYY-YYYY`) that holds `validFrom` (or today,
+UTC+7); otherwise the calendar year from 1 July. An academic year runs 1 July to 30 June; a per-school setting
+may replace this later. A tenant-wide assignment looks at the classes of every school. Every `assign` and
+`change_validity` row in the answer says which rule applied:
+
+```json
+"validity":{"rule":"academic_year_end","academicYear":"2026/2027","source":"classes"}
+```
+
+`rule` is `explicit` (the command named the end), `until_revoked` or `academic_year_end`; `source` is
+`command`, `classes` or `calendar`. The saved record carries only the dates.
+
+### `GET /assignments/expiring?tenantId[&days&schoolId]`
+
+Active explicit assignments in the readable schools that are in force today and end within `days` (1–366,
+default 30), soonest first: the rows of `GET /assignments` plus `daysLeft`, `renewUntil` and
+`renewAcademicYear` (the end of the academic year that follows, by the rule above) and `canRenew` (the reader
+manages access in that school; a tenant-wide row needs `authorization.manage` across the tenant). Also `today`
+and `days`. Same session and read rules as the other reads; renewing is a `change_validity` command.
 
 ### `POST /check`
 
@@ -319,7 +344,9 @@ automatically is still open (spec §8 #4). Until it is decided, set `validUntil`
  "capabilities":{"learning.class.teach":[{scope},…]},"authorizationVersion","cacheSeconds"}
 ```
 
-This is for the Admin Access tab, and later for menus.
+This is for the Admin Access tab. When `staffMemberId` is the caller, the answer needs no read capability: it
+lists the caller's own holdings in the schools their session covers (tenant-wide ones as `TENANT`), and a disabled
+or unknown caller gets 403. Admin builds its gate and menus from this self-read.
 
 ### `GET /audit?tenantId`
 
@@ -482,6 +509,10 @@ Past a bound the answer is 503, never a partial decision.
   - Each guardrail: school admin without manage, wider scope, capability not held, sensitive needs Owner, last
     manager.
   - Validity change, revoke and reopen.
+  - The default end per academic year and the expiring read
+    (`authorization_graph_validity_default_and_expiring`).
+  - The self-read behind Admin's gate, for a teacher who becomes Principal of one school
+    (`authorization_graph_own_holdings_for_admin_gate`).
   - Template revise of a seed with history, the impact read, every template 409/422, and archive.
   - Reads limited to the reader's schools.
   - Audit counts with before, after and `authorized_by`, and the tenant version.
