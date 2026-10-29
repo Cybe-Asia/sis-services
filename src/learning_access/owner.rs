@@ -4,6 +4,7 @@ use axum::routing::get;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use std::collections::{BTreeMap, BTreeSet};
 mod school_classes;
+mod student_history;
 mod student_profile;
 mod student_school;
 
@@ -416,6 +417,10 @@ pub(super) fn router() -> Router<AppState> {
         .route(
             "/api/v1/sis-service/learning/owner/student/profile",
             get(student_profile::handler),
+        )
+        .route(
+            "/api/v1/sis-service/learning/owner/students/:student_id/history",
+            get(student_history::handler),
         )
 }
 #[cfg(test)]
