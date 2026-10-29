@@ -1031,3 +1031,21 @@ async fn authorization_graph_learning_scopes_per_school() {
         serde_json::json!({"data": {"contractVersion": 1, "capabilities": lead, "authorizationVersion": 1, "cacheSeconds": 60}})
     );
 }
+
+/// The School nodes store `school_name`; older fixtures and nodes used `name`. The school list
+/// shows `school_name`, then `name`, then the id, so Admin never shows a bare id for a named school.
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn authorization_graph_school_list_names() {
+    let g = fixture().await;
+    g.run(query("MATCH(s:School) DETACH DELETE s")).await.unwrap();
+    g.run(query("CREATE(:School {school_id:'SCH-IIHS',tenant_id:'tenant',school_code:'IIHS',school_name:'International Islamic High School'}) CREATE(:School {school_id:'SCH-OLD',tenant_id:'tenant',name:'Legacy name'}) CREATE(:School {school_id:'SCH-BOTH',tenant_id:'tenant',school_name:'Preferred',name:'Ignored'}) CREATE(:School {school_id:'SCH-BARE',tenant_id:'tenant'})")).await.unwrap();
+    let f = facts::load(&mut Db::Graph(&g), "tenant", &[], &[])
+        .await
+        .unwrap();
+    let name = |id: &str| f.schools.get(id).map(String::as_str);
+    assert_eq!(name("SCH-IIHS"), Some("International Islamic High School"));
+    assert_eq!(name("SCH-OLD"), Some("Legacy name"));
+    assert_eq!(name("SCH-BOTH"), Some("Preferred"));
+    assert_eq!(name("SCH-BARE"), Some("SCH-BARE"));
+}
