@@ -37,6 +37,8 @@
      "description": {"id": "Mengatur kalender, ruang dan jadwal pelajaran", "en": "Manage the calendar, rooms and timetable"}},
     {"code": "academic.class_access.manage", "service": "sis", "area": "academic", "sensitivity": "normal",
      "description": {"id": "Mengatur akses Learning kelas dan aturan prework", "en": "Manage class Learning access and the prework rule"}},
+    {"code": "academic.nomenclature.manage", "service": "sis", "area": "academic", "sensitivity": "normal",
+     "description": {"id": "Mengatur istilah sekolah: jenjang, mapel, semester dan jabatan", "en": "Manage school terms: grades, subjects, terms and titles"}},
     {"code": "academic.extracurricular.manage", "service": "sis", "area": "academic", "sensitivity": "normal",
      "description": {"id": "Mengatur ekstrakurikuler", "en": "Manage extracurricular activities"}},
     {"code": "school.content.manage", "service": "sis", "area": "school", "sensitivity": "normal",

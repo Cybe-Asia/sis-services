@@ -43,7 +43,7 @@ The seeds are in `src/authorization/templates.json`. They are defaults the schoo
 | `admin_teacher` | `SCHOOL`, `SCHOOL_SUBJECT`, `SECTION` | Regular teacher + `learning.module.review`, `learning.module.manage_any`, `academic.staffing.read` |
 | `subject_lead` | `SCHOOL_SUBJECT` | `learning.module.review`, `learning.module.manage_any`, `learning.plan.manage`, `learning.question_bank.manage` |
 | `curriculum_coordinator` | `SCHOOL` | `learning.curriculum.manage`, `learning.plan.manage`, `learning.module.review`, `learning.module.manage_any`, `learning.mastery.read` |
-| `school_admin` | `SCHOOL` | `academic.staffing.read`, `academic.staffing.manage`, `academic.subject_plan.manage`, `academic.calendar.manage`, `academic.class_access.manage`, `academic.extracurricular.manage`, `school.content.manage`, `staff.directory.manage`, `student.biodata.manage`, `authorization.read` |
+| `school_admin` | `SCHOOL` | `academic.staffing.read`, `academic.staffing.manage`, `academic.subject_plan.manage`, `academic.calendar.manage`, `academic.class_access.manage`, `academic.extracurricular.manage`, `academic.nomenclature.manage`, `school.content.manage`, `staff.directory.manage`, `student.biodata.manage`, `authorization.read` |
 | `principal` | `SCHOOL` | `authorization.manage`, `authorization.read`, `academic.staffing.read`, `learning.curriculum.read`, `learning.mastery.read` |
 
 Two seeds go further than spec §3, so that day-one access equals today:
@@ -421,12 +421,18 @@ transaction it reads the facts under the caller's locks, so an assignment or tem
 | `GET /academic/subject-plans`, `GET /academic/teaching-assignments`, `GET /academic/grade-weights` | `academic.staffing.read` |
 | `PUT /academic/subject-plans`, `POST /academic/subject-plans/copy`, `PUT /academic/grade-weights` | `academic.subject_plan.manage` |
 | `POST /academic/teaching-assignments/commands` | `academic.staffing.manage` |
+| `PUT /academic/nomenclature/{kind}` (`academic_nomenclature`, 2026-10-29) | `academic.nomenclature.manage` |
 
 The Auth session gate is unchanged: these routes still take only Owner and `school_admin` staff portal sessions
 pinned to the school, so on day one the people who pass are exactly those who passed the role fragment. What
 changes is that a revision of the School admin template, or an explicit assignment, now reaches these routes
 (graph test `staffing_routes_decide_by_capability`). `GET /learning/grade-weights` (teachers' read) keeps its role
 fragment.
+
+`academic.nomenclature.manage` (school nomenclature, `docs/ACADEMIC_NOMENCLATURE.md`) was added to the catalogue and
+to the `school_admin` seed on 2026-10-29. A tenant that has already **saved** its own `school_admin` revision keeps
+that revision, so its school administrators get 403 on nomenclature saves until an Owner adds the capability to the
+template in Admin → Akses staf → Role. Owners hold every capability and are not affected.
 
 ## Schema
 
