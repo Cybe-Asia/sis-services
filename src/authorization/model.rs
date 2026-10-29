@@ -21,6 +21,10 @@ pub const HOMEROOM: &str = "learning.class.homeroom";
 /// Templates that derived sources use: they cannot be archived.
 pub const REGULAR_TEACHER: &str = "regular_teacher";
 pub const SCHOOL_ADMIN: &str = "school_admin";
+/// Kepala Sekolah per unit (spec §10 #8.3): the one seed that carries `authorization.manage`, at
+/// `SCHOOL` only, and only an Owner may give it.
+pub const PRINCIPAL: &str = "principal";
+pub const MASTERY_READ: &str = "learning.mastery.read";
 /// Owner, Student and Parent are system roles; `homeroom` names a derived source.
 const RESERVED: [&str; 4] = ["owner", "student", "parent", "homeroom"];
 pub const MAX_COMMANDS: usize = 20;
@@ -129,14 +133,17 @@ fn parse_seeds(text: &str, catalogue: &Catalogue) -> Result<Vec<Seed>, String> {
             || !s.name.valid(80)
             || caps.len() != s.capabilities.len()
             || !s.capabilities.iter().all(|c| known.contains(c.as_str()))
-            // `authorization.manage` stays with Owners until the school decides otherwise.
-            || s.capabilities.iter().any(|c| c == MANAGE)
+            // `authorization.manage` stays with Owners and the Principal (spec §10 #8.3); the
+            // Principal seed is given per school only.
+            || (s.code != PRINCIPAL && s.capabilities.iter().any(|c| c == MANAGE))
+            || (s.code == PRINCIPAL
+                && (s.allowed_scopes != [SCHOOL] || !s.capabilities.iter().any(|c| c == MANAGE)))
             || !valid_scope_types(&s.allowed_scopes)
         {
             return Err(format!("invalid seed template {}", s.code));
         }
     }
-    for required in [REGULAR_TEACHER, SCHOOL_ADMIN] {
+    for required in [REGULAR_TEACHER, SCHOOL_ADMIN, PRINCIPAL] {
         if !seen.contains(required) {
             return Err(format!("missing seed template {required}"));
         }

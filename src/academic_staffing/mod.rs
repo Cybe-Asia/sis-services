@@ -1,6 +1,8 @@
 //! Subject plans per grade and teaching assignments (slice 2 of the teacher assignments spec,
-//! `docs/TEACHING_ASSIGNMENTS.md`). School administrators and Owners of the school read and
-//! change them; an assignment grants its teacher Learning access to the class.
+//! `docs/TEACHING_ASSIGNMENTS.md`). Reads need `academic.staffing.read`, plan and weight writes
+//! `academic.subject_plan.manage`, assignment commands `academic.staffing.manage`, all at the
+//! school (ADR 0018 slice 6); school administrators and Owners hold them on day one. An
+//! assignment grants its teacher Learning access to the class.
 use crate::AppState;
 use axum::{
     extract::{rejection::JsonRejection, rejection::QueryRejection, Query, State},
@@ -17,7 +19,10 @@ pub mod repository;
 pub mod weights;
 
 use crate::school_portal::model::identifier;
-use repository::{refuse, unavailable, Failure, Session, Writer};
+use repository::{
+    refuse, unavailable, Failure, Session, Writer, STAFFING_MANAGE, STAFFING_READ,
+    SUBJECT_PLAN_MANAGE,
+};
 
 fn invalid() -> Failure {
     refuse(StatusCode::BAD_REQUEST, "INVALID_INPUT", json!({}))
@@ -43,11 +48,13 @@ impl Lookup {
     }
 }
 
-/// Session, graph authority, the read, then the session again, as the teacher list reads.
+/// Session, the capability decision from the graph, the read, then the session again, as the
+/// teacher list reads.
 async fn guarded_read<F, Fut>(
     state: &AppState,
     headers: &HeaderMap,
     q: &Lookup,
+    capability: &str,
     read: F,
 ) -> Result<Json<Value>, Failure>
 where
@@ -60,14 +67,14 @@ where
     let session =
         crate::learning_access::administrator_actor(headers, &q.tenant_id, &q.school_id).await?;
     let data = tokio::time::timeout(Duration::from_secs(8), async {
-        if !crate::academic_teachers::repository::authorize(
-            &state.graph,
-            &session.0,
-            &q.school_id,
+        if !crate::authorization::reads::permits(
+            &mut crate::authorization::facts::Db::Graph(&state.graph),
             &q.tenant_id,
+            &q.school_id,
+            &session.0,
+            capability,
         )
-        .await
-        .map_err(unavailable)?
+        .await?
         {
             return Err(refuse(StatusCode::FORBIDDEN, "FORBIDDEN", json!({})));
         }
@@ -101,7 +108,7 @@ async fn plans(
         q.tenant_id.clone(),
         q.academic_year.clone(),
     );
-    guarded_read(&state, &headers, &q, |g| async move {
+    guarded_read(&state, &headers, &q, STAFFING_READ, |g| async move {
         repository::plans(&g, &school, &tenant, &year).await
     })
     .await
@@ -122,7 +129,7 @@ async fn assignments(
         q.section_id.clone().unwrap_or_default(),
         q.staff_member_id.clone().unwrap_or_default(),
     );
-    guarded_read(&state, &headers, &q, |g| async move {
+    guarded_read(&state, &headers, &q, STAFFING_READ, |g| async move {
         repository::overview(&g, &school, &tenant, &year, &section, &staff).await
     })
     .await
@@ -202,6 +209,7 @@ async fn save_plan(
                 school: &school,
                 tenant: &tenant,
                 command: &command,
+                capability: SUBJECT_PLAN_MANAGE,
             };
             repository::save_plan(&g, &w, &change).await
         },
@@ -233,6 +241,7 @@ async fn copy_plan(
                 school: &school,
                 tenant: &tenant,
                 command: &command,
+                capability: SUBJECT_PLAN_MANAGE,
             };
             repository::copy_plan(&g, &w, &copy).await
         },
@@ -264,6 +273,7 @@ async fn commands(
                 school: &school,
                 tenant: &tenant,
                 command: &command,
+                capability: STAFFING_MANAGE,
             };
             repository::run_commands(&g, &w, &batch).await
         },
@@ -285,7 +295,7 @@ async fn grade_weights(
         q.tenant_id.clone(),
         q.academic_year.clone(),
     );
-    guarded_read(&state, &headers, &q, |g| async move {
+    guarded_read(&state, &headers, &q, STAFFING_READ, |g| async move {
         repository::weights::list(&g, &school, &tenant, &year).await
     })
     .await
@@ -315,6 +325,7 @@ async fn save_grade_weights(
                 school: &school,
                 tenant: &tenant,
                 command: &command,
+                capability: SUBJECT_PLAN_MANAGE,
             };
             repository::weights::save(&g, &w, &change).await
         },

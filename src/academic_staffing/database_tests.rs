@@ -1,9 +1,16 @@
 use super::model::{Command, Commands, PlanChange, PlanCopy, PlanRow};
-use super::repository::{self as repo, Failure, Session, Writer};
+use super::repository::{
+    self as repo, Failure, Session, Writer, STAFFING_MANAGE, STAFFING_READ, SUBJECT_PLAN_MANAGE,
+};
 use neo4rs::{query, Graph};
 use serde_json::Value;
 
+/// The command key names the write, and so the capability it needs: plans, copies and weights
+/// need `academic.subject_plan.manage`; assignment commands need `academic.staffing.manage`.
 fn writer<'a>(actor: &'a str, role: &'a str, command: &'a str) -> Writer<'a> {
+    let plan = ["plan-", "copy-", "weights-"]
+        .iter()
+        .any(|p| command.starts_with(p));
     Writer {
         session: Session::Unchecked,
         actor,
@@ -11,6 +18,11 @@ fn writer<'a>(actor: &'a str, role: &'a str, command: &'a str) -> Writer<'a> {
         school: "school",
         tenant: "tenant",
         command,
+        capability: if plan {
+            SUBJECT_PLAN_MANAGE
+        } else {
+            STAFFING_MANAGE
+        },
     }
 }
 fn code(result: Result<Value, Failure>) -> String {
@@ -625,6 +637,203 @@ async fn grade_weights_resolve_subject_then_school_then_default_and_are_audited(
     );
     assert_eq!(
         count(&g, "MATCH(a:AcademicStaffingAudit {kind:'grade_weights',action:'clear'}) WHERE a.after='null' RETURN count(a) AS n").await,
+        1
+    );
+}
+
+/// ADR 0018 slice 6: these routes decide by capability, not role. Day one is unchanged (the
+/// Owner and the school's administrator pass, another school's administrator and a teacher do
+/// not); an explicit assignment opens the read to an Admin teacher, and revising the School
+/// admin template closes the plan write for the administrator while the assignment write stays.
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn staffing_routes_decide_by_capability() {
+    use crate::authorization::commands::{
+        self as authz, Session as AuthzSession, Writer as AuthzWriter,
+    };
+    use crate::authorization::facts::Db;
+    use crate::authorization::model::{
+        AssignmentCommand, AssignmentCommands, Scope, TemplateCommand, TemplateCommands, Text,
+        ASSIGN, REVISE,
+    };
+    use crate::authorization::reads::permits;
+    let uri = std::env::var("SCHOOL_PORTAL_TEST_BOLT").unwrap();
+    assert_eq!(uri, "127.0.0.1:3223");
+    let g = Graph::new(uri, "neo4j", "parent-otp-fixture-password")
+        .await
+        .unwrap();
+    g.run(query("MATCH(n) DETACH DELETE n")).await.unwrap();
+    repo::init(&g).await.unwrap();
+    crate::authorization::init(&g).await.unwrap();
+    for statement in [
+        "CREATE(:School {school_id:'school',tenant_id:'tenant'}) CREATE(:School {school_id:'school-2',tenant_id:'tenant'})",
+        "CREATE(:StaffMember {id:'admin',membershipStatus:'ACTIVE',roles:['school_admin'],schoolIds:['school'],tenantIds:['tenant']}) CREATE(:StaffMember {id:'owner',membershipStatus:'ACTIVE',roles:['owner'],schoolIds:[],tenantIds:[]}) CREATE(:StaffMember {id:'elsewhere',membershipStatus:'ACTIVE',roles:['school_admin'],schoolIds:['school-2'],tenantIds:['tenant']})",
+        "CREATE(:StaffMember {id:'t1',displayName:'Siti Rahmawati',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:['school'],tenantIds:['tenant']})",
+        "CREATE(:Section {section_id:'7A',name:'7A',year_group:'Year 7',academic_year:'2026/2027',school_id:'school',tenant_id:'tenant',status:'active'})",
+    ] {
+        g.run(query(statement)).await.unwrap();
+    }
+    let graph = &g;
+    let allowed = |actor: &'static str, capability: &'static str| async move {
+        permits(&mut Db::Graph(graph), "tenant", "school", actor, capability)
+            .await
+            .unwrap()
+    };
+    // Day one equals today: Owner and the school's administrator, nobody else.
+    for capability in [STAFFING_READ, STAFFING_MANAGE, SUBJECT_PLAN_MANAGE] {
+        assert!(allowed("owner", capability).await, "{capability}");
+        assert!(allowed("admin", capability).await, "{capability}");
+        assert!(!allowed("elsewhere", capability).await, "{capability}");
+        assert!(!allowed("t1", capability).await, "{capability}");
+    }
+    assert!(
+        !permits(
+            &mut Db::Graph(&g),
+            "tenant",
+            "school-2",
+            "admin",
+            STAFFING_READ
+        )
+        .await
+        .unwrap(),
+        "an administrator reads only their school"
+    );
+    let year7 = plan(
+        "Year 7",
+        0,
+        vec![row("mathematics", "Matematika", "merdeka", 4, true)],
+    );
+    assert_eq!(
+        repo::save_plan(
+            &g,
+            &writer("admin", "school_admin", "plan-cap-0001"),
+            &year7
+        )
+        .await
+        .unwrap()["version"],
+        1
+    );
+    for actor in ["elsewhere", "t1"] {
+        assert_eq!(
+            code(
+                repo::save_plan(
+                    &g,
+                    &writer(actor, "school_admin", "plan-cap-0002"),
+                    &plan("Year 7", 1, vec![])
+                )
+                .await
+            ),
+            "FORBIDDEN"
+        );
+    }
+
+    // An explicit Admin teacher assignment opens the staffing read to a teacher; the writes stay
+    // closed to them.
+    let owner = AuthzWriter {
+        session: AuthzSession::Unchecked,
+        actor: "owner",
+        role: "owner",
+        tenant: "tenant",
+        command: "staffing-cap-assign-01",
+    };
+    authz::assignments(
+        &g,
+        &owner,
+        &AssignmentCommands {
+            tenant_id: "tenant".into(),
+            commands: vec![AssignmentCommand {
+                action: ASSIGN.into(),
+                assignment_id: None,
+                staff_member_id: Some("t1".into()),
+                template_code: Some("admin_teacher".into()),
+                scope: Some(Scope::school("school")),
+                academic_year: None,
+                valid_from: None,
+                valid_until: None,
+                expected_version: 0,
+            }],
+        },
+    )
+    .await
+    .unwrap();
+    assert!(allowed("t1", STAFFING_READ).await);
+    assert!(!allowed("t1", STAFFING_MANAGE).await);
+    assert!(!allowed("t1", SUBJECT_PLAN_MANAGE).await);
+    assert_eq!(
+        code(
+            repo::save_plan(
+                &g,
+                &writer("t1", "school_admin", "plan-cap-0003"),
+                &plan("Year 7", 1, vec![])
+            )
+            .await
+        ),
+        "FORBIDDEN"
+    );
+
+    // The School admin template loses the plan write: the administrator keeps assignments and
+    // loses plans, under the same locks the write takes.
+    let school_admin = crate::authorization::model::reference()
+        .seeds
+        .iter()
+        .find(|s| s.code == "school_admin")
+        .unwrap()
+        .clone();
+    authz::templates(
+        &g,
+        &AuthzWriter {
+            command: "staffing-cap-revise-01",
+            ..owner
+        },
+        &TemplateCommands {
+            tenant_id: "tenant".into(),
+            commands: vec![TemplateCommand {
+                action: REVISE.into(),
+                code: "school_admin".into(),
+                name: Some(Text {
+                    id: school_admin.name.id.clone(),
+                    en: school_admin.name.en.clone(),
+                }),
+                capabilities: Some(
+                    school_admin
+                        .capabilities
+                        .iter()
+                        .filter(|c| c.as_str() != SUBJECT_PLAN_MANAGE)
+                        .cloned()
+                        .collect(),
+                ),
+                allowed_scopes: Some(school_admin.allowed_scopes.clone()),
+                expected_version: 1,
+            }],
+        },
+    )
+    .await
+    .unwrap();
+    assert!(allowed("admin", STAFFING_MANAGE).await);
+    assert!(!allowed("admin", SUBJECT_PLAN_MANAGE).await);
+    assert_eq!(
+        code(
+            repo::save_plan(
+                &g,
+                &writer("admin", "school_admin", "plan-cap-0004"),
+                &plan("Year 7", 1, vec![])
+            )
+            .await
+        ),
+        "FORBIDDEN"
+    );
+    assert_eq!(
+        repo::save_plan(
+            &g,
+            &writer("owner", "owner", "plan-cap-0005"),
+            &plan("Year 7", 1, vec![])
+        )
+        .await
+        .unwrap()["version"],
+        2
+    );
+    assert_eq!(
+        count(&g, "MATCH(p:AcademicSubjectPlan) RETURN count(p) AS n").await,
         1
     );
 }

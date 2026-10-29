@@ -6,7 +6,8 @@ use super::facts::{self, get, Db};
 use super::model::{
     decide, holds_tenant, owner_at, reference, Assignment, AssignmentCommand, AssignmentCommands,
     Facts, Holding, Scope, Template, TemplateCommand, TemplateCommands, ARCHIVE, ASSIGN,
-    CHANGE_VALIDITY, CREATE, MANAGE, REGULAR_TEACHER, REVISE, REVOKE, SCHOOL_ADMIN, TENANT,
+    CHANGE_VALIDITY, CREATE, MANAGE, PRINCIPAL, REGULAR_TEACHER, REVISE, REVOKE, SCHOOL_ADMIN,
+    TENANT,
 };
 use crate::academic_staffing::repository::{refuse, unavailable, Failure};
 use axum::http::StatusCode;
@@ -420,7 +421,8 @@ async fn by_key(tx: &mut Txn, key: &str) -> Result<Option<Assignment>, Failure> 
 }
 
 /// The caller may hand out `template` at `scope`: they manage access there, hold every one of its
-/// capabilities there, and are an Owner there when one of them is sensitive.
+/// capabilities there, and are an Owner there when one of them is sensitive. The Principal
+/// template is given by an Owner only (spec §10 #8.3), whatever it carries.
 fn may_grant(
     facts: &Facts,
     mine: &[Holding],
@@ -430,6 +432,9 @@ fn may_grant(
 ) -> Result<Value, Failure> {
     let authorized =
         manager(facts, mine, scope).ok_or_else(|| forbidden(json!({ "index": index })))?;
+    if template.code == PRINCIPAL && !owner_at(facts, mine, scope) {
+        return Err(at(StatusCode::FORBIDDEN, "PRINCIPAL_NEEDS_OWNER", index));
+    }
     if let Some(missing) = template
         .capabilities
         .iter()

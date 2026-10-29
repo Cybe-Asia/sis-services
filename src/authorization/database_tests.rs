@@ -1011,7 +1011,10 @@ async fn authorization_graph_learning_scopes_per_school() {
     assert!(plain.get("learning.curriculum.manage").is_none());
 
     // Another school's coordinator holds nothing in this school; their own school answers.
-    assert_eq!(json(&scopes("t-other").await.unwrap()), serde_json::json!({}));
+    assert_eq!(
+        json(&scopes("t-other").await.unwrap()),
+        serde_json::json!({})
+    );
     let theirs = reads::learning_scopes(&g, "tenant", "school-2", "t-other")
         .await
         .unwrap();
@@ -1048,4 +1051,259 @@ async fn authorization_graph_school_list_names() {
     assert_eq!(name("SCH-OLD"), Some("Legacy name"));
     assert_eq!(name("SCH-BOTH"), Some("Preferred"));
     assert_eq!(name("SCH-BARE"), Some("SCH-BARE"));
+}
+
+/// ADR 0018 remainder: the Principal seed is given by an Owner alone, and the mastery roster lists
+/// the classes and students a holder of `learning.mastery.read` may read, by SCHOOL,
+/// SCHOOL_SUBJECT, SECTION and SECTION_SUBJECT holdings.
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn authorization_graph_principal_and_mastery_roster() {
+    let g = fixture().await;
+    for statement in [
+        "MATCH(c:Section {section_id:'7B'}) CREATE(s:Student {studentId:'st-1',fullName:'Aisha'})-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:'school',tenant_id:'tenant'})-[:ENROLLED_IN]->(c)",
+        "MATCH(c:Section {section_id:'7B'}) CREATE(s:Student {studentId:'st-2',fullName:'Bilal'})-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:'school',tenant_id:'tenant'})-[:ENROLLED_IN]->(c)",
+        "MATCH(c:Section {section_id:'9A'}) CREATE(s:Student {studentId:'st-3',fullName:'Citra'})-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:'school',tenant_id:'tenant'})-[:ENROLLED_IN]->(c)",
+        // Left the school: not on any roster.
+        "MATCH(c:Section {section_id:'9A'}) CREATE(s:Student {studentId:'st-4',fullName:'Dian'})-[:ENROLLED_AS]->(:EnrolledStudent {status:'withdrawn',school_id:'school',tenant_id:'tenant'})-[:ENROLLED_IN]->(c)",
+    ] {
+        g.run(query(statement)).await.unwrap();
+    }
+    let principal = |staff: &str| assign(staff, PRINCIPAL, Scope::school("school"), 0);
+
+    // The school administrator reads access but does not manage it.
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &writer("admin", "school_admin", "principal-admin-01"),
+                &batch(vec![principal("t-home")]),
+            )
+            .await
+        ),
+        "FORBIDDEN"
+    );
+    // Only at SCHOOL.
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &writer("owner", "owner", "principal-owner-00"),
+                &batch(vec![assign(
+                    "t-home",
+                    PRINCIPAL,
+                    subject_scope("mathematics"),
+                    0
+                )]),
+            )
+            .await
+        ),
+        "SCOPE_NOT_ALLOWED"
+    );
+    // The Owner names the Principal of the school.
+    let given = commands::assignments(
+        &g,
+        &writer("owner", "owner", "principal-owner-01"),
+        &batch(vec![principal("t-home")]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(given["assignments"][0]["templateCode"], PRINCIPAL);
+    assert!(new(&g, "t-home", MANAGE, &Scope::school("school")).await);
+    assert!(!new(&g, "t-home", MANAGE, &Scope::school("school-2")).await);
+    // The Principal manages access, but may not name another Principal: an Owner does.
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &writer("t-home", "school_admin", "principal-by-principal"),
+                &batch(vec![principal("t-grant")]),
+            )
+            .await
+        ),
+        "PRINCIPAL_NEEDS_OWNER"
+    );
+    // Nor a capability they do not hold themselves (the hold-what-you-grant rule).
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &writer("t-home", "school_admin", "coordinator-by-principal"),
+                &batch(vec![assign(
+                    "t-grant",
+                    "curriculum_coordinator",
+                    Scope::school("school"),
+                    0
+                )]),
+            )
+            .await
+        ),
+        "CAPABILITY_NOT_HELD"
+    );
+    // They do revoke, and the school keeps a manager: the Owner.
+    let id = given["assignments"][0]["id"].as_str().unwrap().to_string();
+    commands::assignments(
+        &g,
+        &writer("owner", "owner", "principal-revoke-01"),
+        &batch(vec![by_id(REVOKE, &id, 1)]),
+    )
+    .await
+    .unwrap();
+    assert!(!new(&g, "t-home", MANAGE, &Scope::school("school")).await);
+    commands::assignments(
+        &g,
+        &writer("owner", "owner", "principal-owner-02"),
+        // Reopened at the revoked record's version.
+        &batch(vec![assign(
+            "t-home",
+            PRINCIPAL,
+            Scope::school("school"),
+            2,
+        )]),
+    )
+    .await
+    .unwrap();
+
+    // Mastery roster.
+    let roster =
+        |staff: &'static str, subject: Option<&'static str>, grade: Option<&'static str>| {
+            reads::mastery_roster(&g, "tenant", "school", staff, subject, grade)
+        };
+    let classes = |r: &Option<(Vec<reads::RosterClass>, i64)>| -> Vec<(String, Option<Vec<String>>, Vec<String>)> {
+        r.as_ref()
+            .unwrap()
+            .0
+            .iter()
+            .map(|c| (c.id.clone(), c.subjects.clone(), c.students.iter().map(|s| s.id.clone()).collect()))
+            .collect()
+    };
+    let all = |ids: &[&str]| -> Vec<(String, Option<Vec<String>>, Vec<String>)> {
+        ids.iter()
+            .map(|id| {
+                (
+                    id.to_string(),
+                    None,
+                    match *id {
+                        "7B" => vec!["st-1".into(), "st-2".into()],
+                        "9A" => vec!["st-3".into()],
+                        _ => vec![],
+                    },
+                )
+            })
+            .collect()
+    };
+    // Owner and Principal (mastery.read at SCHOOL): every active class, every subject.
+    assert_eq!(
+        classes(&roster("owner", None, None).await.unwrap()),
+        all(&["7A", "7B", "9A"])
+    );
+    assert_eq!(
+        classes(&roster("t-home", None, None).await.unwrap()),
+        all(&["7A", "7B", "9A"])
+    );
+    assert_eq!(
+        classes(&roster("owner", None, Some("Year 7")).await.unwrap()),
+        all(&["7A", "7B"])
+    );
+    assert_eq!(
+        classes(&roster("owner", None, Some("9")).await.unwrap()),
+        all(&["9A"])
+    );
+    assert_eq!(
+        classes(&roster("owner", Some("science"), Some("9")).await.unwrap()),
+        vec![(
+            "9A".to_string(),
+            Some(vec!["science".to_string()]),
+            vec!["st-3".to_string()]
+        )]
+    );
+    // A teaching assignment: that class, that subject.
+    assert_eq!(
+        classes(&roster("t-assigned", None, None).await.unwrap()),
+        vec![(
+            "7B".to_string(),
+            Some(vec!["mathematics".to_string()]),
+            vec!["st-1".to_string(), "st-2".to_string()]
+        )]
+    );
+    assert!(classes(&roster("t-assigned", Some("science"), None).await.unwrap()).is_empty());
+    // A grant to the class: the whole class.
+    assert_eq!(
+        classes(&roster("t-grant", None, None).await.unwrap()),
+        all(&["9A"])
+    );
+    // A revoked grant: nothing.
+    assert!(classes(&roster("t-revoked", None, None).await.unwrap()).is_empty());
+    // Another school's teacher: nothing here; disabled or unknown: refused.
+    assert!(classes(&roster("t-other", None, None).await.unwrap()).is_empty());
+    assert!(roster("t-off", None, None).await.unwrap().is_none());
+    assert!(roster("nobody", None, None).await.unwrap().is_none());
+
+    // A coordinator who teaches no class reads every class; a subject lead (whose seed carries no
+    // mastery read) none, until the school revises that template.
+    let mut math_7_9 = subject_scope("mathematics");
+    math_7_9.grade_from = Some("Year 7".into());
+    math_7_9.grade_to = Some("Year 9".into());
+    g.run(query("CREATE(:StaffMember {id:'t-new',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:['school'],tenantIds:['tenant']}) CREATE(:StaffMember {id:'t-lead',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:['school'],tenantIds:['tenant']})")).await.unwrap();
+    commands::assignments(
+        &g,
+        &writer("owner", "owner", "roster-assign-01"),
+        &batch(vec![
+            assign(
+                "t-new",
+                "curriculum_coordinator",
+                Scope::school("school"),
+                0,
+            ),
+            assign("t-lead", "subject_lead", math_7_9.clone(), 0),
+        ]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        classes(&roster("t-new", None, None).await.unwrap()),
+        all(&["7A", "7B", "9A"])
+    );
+    assert!(classes(&roster("t-lead", None, None).await.unwrap()).is_empty());
+    // A subject role that does carry the read covers that subject in the classes of its grades.
+    commands::templates(
+        &g,
+        &writer("owner", "owner", "roster-revise-lead"),
+        &template(
+            REVISE,
+            "subject_lead",
+            &["learning.module.review", MASTERY_READ],
+            &[SCHOOL_SUBJECT],
+            1,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        classes(&roster("t-lead", None, None).await.unwrap()),
+        vec![
+            (
+                "7A".to_string(),
+                Some(vec!["mathematics".to_string()]),
+                vec![]
+            ),
+            (
+                "7B".to_string(),
+                Some(vec!["mathematics".to_string()]),
+                vec!["st-1".to_string(), "st-2".to_string()]
+            ),
+            (
+                "9A".to_string(),
+                Some(vec!["mathematics".to_string()]),
+                vec!["st-3".to_string()]
+            ),
+        ]
+    );
+    assert!(classes(&roster("t-lead", Some("science"), None).await.unwrap()).is_empty());
+    let (_, version) = roster("owner", None, None).await.unwrap().unwrap();
+    assert_eq!(version, 5, "the tenant version after five writes");
+    println!(
+        "example: {}",
+        serde_json::json!({"data": {"contractVersion": 1, "schoolId": "school", "tenantId": "tenant", "classes": roster("t-assigned", None, None).await.unwrap().unwrap().0, "authorizationVersion": version, "cacheSeconds": 60}})
+    );
 }

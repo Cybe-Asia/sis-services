@@ -100,16 +100,39 @@ fn authorization_catalogue_and_seeds_load_and_keep_manage_with_owners() {
             "admin_teacher",
             "subject_lead",
             "curriculum_coordinator",
-            "school_admin"
+            "school_admin",
+            "principal"
         ]
     );
+    // `authorization.manage` is carried by the Principal seed alone, at `SCHOOL` only (spec §10
+    // #8.3); the school administrator reads access in their schools.
     for seed in &r.seeds {
-        assert!(
-            !seed.capabilities.iter().any(|c| c == MANAGE),
+        assert_eq!(
+            seed.capabilities.iter().any(|c| c == MANAGE),
+            seed.code == PRINCIPAL,
             "{}",
             seed.code
         );
     }
+    let principal = r.seeds.iter().find(|s| s.code == PRINCIPAL).unwrap();
+    assert_eq!(principal.allowed_scopes, [SCHOOL]);
+    for code in [
+        MANAGE,
+        READ,
+        "academic.staffing.read",
+        "learning.curriculum.read",
+        MASTERY_READ,
+    ] {
+        assert!(principal.capabilities.iter().any(|c| c == code), "{code}");
+    }
+    assert!(r
+        .seeds
+        .iter()
+        .find(|s| s.code == SCHOOL_ADMIN)
+        .unwrap()
+        .capabilities
+        .iter()
+        .any(|c| c == READ));
     // Admin teacher is Regular teacher plus review, manage-any and the staffing read (spec §3).
     let regular: Vec<&String> = r.seeds[0].capabilities.iter().collect();
     let admin = &r.seeds[1].capabilities;

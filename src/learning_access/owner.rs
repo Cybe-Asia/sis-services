@@ -320,6 +320,71 @@ async fn capabilities(
     );
     Ok(response)
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RosterQuery {
+    school_id: String,
+    tenant_id: String,
+    subject: Option<String>,
+    grade: Option<String>,
+}
+/// ADR 0018 remainder: the active classes and students of the pinned school for which the caller
+/// holds `learning.mastery.read`, so Learning can show Mastery to a curriculum coordinator or
+/// subject lead who teaches no class. Authenticated and pinned as `capabilities`; the answer is
+/// always about the caller. `subject` keeps classes where that subject is covered, `grade` keeps
+/// one grade ("Year 7" or "7").
+async fn mastery_roster(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    q: Query<RosterQuery>,
+) -> Result<axum::response::Response, Failure> {
+    use axum::response::IntoResponse;
+    let Query(q) = q;
+    let grade_ok = |g: &str| {
+        crate::academic_staffing::model::key_part(g, 64)
+            && !g.contains('#')
+            && crate::authorization::model::grade_number(g).is_some()
+    };
+    if !valid_id(&q.school_id)
+        || !valid_id(&q.tenant_id)
+        || !q
+            .subject
+            .as_deref()
+            .is_none_or(crate::academic_staffing::model::subject_code)
+        || !q.grade.as_deref().is_none_or(grade_ok)
+    {
+        return Err(failure(StatusCode::BAD_REQUEST));
+    }
+    let scope = Scope {
+        school_id: q.school_id.clone(),
+        tenant_id: q.tenant_id.clone(),
+        class_id: None,
+        student_id: None,
+        access: None,
+    };
+    let a = actor(&h, &scope).await?;
+    if !matches!(a.role.as_str(), "teacher" | "owner") {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    super::ensure_schema(&s.graph).await?;
+    let (classes, version) = crate::authorization::reads::mastery_roster(
+        &s.graph,
+        &q.tenant_id,
+        &q.school_id,
+        &a.id,
+        q.subject.as_deref(),
+        q.grade.as_deref(),
+    )
+    .await
+    .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
+    .ok_or_else(|| failure(StatusCode::FORBIDDEN))?;
+    let mut response = Json(json!({"data":{"contractVersion":1,"schoolId":q.school_id,"tenantId":q.tenant_id,"classes":classes,"authorizationVersion":version,"cacheSeconds":crate::authorization::model::CACHE_SECONDS}})).into_response();
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    Ok(response)
+}
 pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -338,6 +403,10 @@ pub(super) fn router() -> Router<AppState> {
         .route(
             "/api/v1/sis-service/learning/owner/capabilities",
             get(capabilities),
+        )
+        .route(
+            "/api/v1/sis-service/learning/owner/mastery-roster",
+            get(mastery_roster),
         )
         .route("/api/v1/sis-service/learning/owner/health", get(health))
         .route(
