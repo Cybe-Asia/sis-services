@@ -34,6 +34,12 @@ pub struct Section {
     pub yearGroup: String,
     /// "2026", "2026/2027" — matches Offer.academic_year.
     pub academicYear: String,
+    /// Nomenclature codes beside the stored text (slice 5): `Y7` and `2026/2027`; `None` while the text is not
+    /// recognised. Readers prefer them and fall back to `yearGroup` and `academicYear`.
+    #[serde(default)]
+    pub gradeCode: Option<String>,
+    #[serde(default)]
+    pub academicYearCode: Option<String>,
     pub status: String,
     #[serde(default)]
     pub enrolledCount: i64,

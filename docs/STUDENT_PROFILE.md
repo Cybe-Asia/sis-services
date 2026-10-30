@@ -10,7 +10,7 @@ Student bearer only (same actor resolution and `STUDENT` binding query as `stude
 {"data":{"contractVersion":1,"actor":{"id":"…","role":"student"},"schoolId":"…","tenantId":"…","studentId":"…",
  "profile":{"fullName":"…","email":null,"nisn":null,"birthPlace":null,"dateOfBirth":null,"gender":null,"emergencyContact":null},
  "school":{"id":"…","name":null},
- "classes":[{"id":"…","name":"…","grade":null,"academicYear":null}],
+ "classes":[{"id":"…","name":"…","grade":null,"academicYear":null,"gradeCode":null,"academicYearCode":null}],
  "guardians":[{"name":"…","relationship":null,"phones":[],"email":null}]}}
 ```
 
@@ -26,6 +26,7 @@ Sources and null rule (null means "not recorded", the client shows a dash):
 | `emergencyContact` | `Student.emergencyContact` | 6–15 digits, `+` only first |
 | `school.name` | `School.name` | ≤256 |
 | `classes[].grade` / `academicYear` | `Section.year_group` / `Section.academic_year` | ≤64 / ≤32 |
+| `classes[].gradeCode` / `academicYearCode` | `Section.grade_code` / `Section.academic_year_code` (nomenclature slice 5; null until coded) | ≤8 / ≤16 |
 | `guardians[]` | the admissions `Lead` (`parent_name`, `relationship`, `mobile`, `whatsapp`, `email`), then `(Student)-[:HAS_GUARDIAN]->(Guardian {full_name, relationship, phone_primary, phone_secondary, email})` | max 4; a row without a name is dropped; `relationship` ∈ `father`/`mother`/`guardian` (also `ayah`/`ibu`/`wali`); duplicate phone dropped |
 
 `nisn`, `birthPlace`, `gender`, `emergencyContact`, `Lead.relationship` and `Guardian` have no writer yet; Admin entry is separate work.

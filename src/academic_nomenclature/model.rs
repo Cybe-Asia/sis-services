@@ -66,6 +66,24 @@ pub fn academic_year(value: &str) -> bool {
     };
     matches!((year(a), year(b)), (Some(a), Some(b)) if (1990..=2200).contains(&a) && b == a + 1)
 }
+/// The `academic_year` code of a stored academic year (slice 5): `2026/2027` as it is; `2026-2027` and a bare
+/// `2026` (the school year that starts on 1 July 2026, as the RBAC 30 June default assumes) as `2026/2027`. Anything
+/// else is `None` and goes to the normalisation report, never a guess.
+pub fn academic_year_code(value: &str) -> Option<String> {
+    let v = value.trim();
+    if academic_year(v) {
+        return Some(v.to_string());
+    }
+    if let Some((a, b)) = v.split_once('-') {
+        let joined = format!("{a}/{b}");
+        return academic_year(&joined).then_some(joined);
+    }
+    let start = (v.len() == 4 && v.bytes().all(|c| c.is_ascii_digit()))
+        .then(|| v.parse::<u32>().ok())
+        .flatten()
+        .filter(|y| (1990..=2199).contains(y))?;
+    Some(format!("{start}/{}", start + 1))
+}
 /// The code rule of each kind. Closed kinds also have to exist already, which the repository checks.
 pub fn code(kind: &str, value: &str) -> bool {
     let bytes = value.as_bytes();
@@ -219,7 +237,6 @@ pub fn stage_of(grade: u32) -> &'static str {
 /// The grade code of a free-text year group, for the forms SIS and admissions store today:
 /// "Year 7", "Grade 7", "Kelas 7", "Kelas VII", "VII", "Y7", "7". `None` for anything else.
 /// The normalisation Job of spec §5 slice 5 uses it; Admin carries the same rule.
-#[allow(dead_code)]
 pub fn grade_code(value: &str) -> Option<&'static str> {
     let text = value.trim().to_ascii_lowercase();
     let rest = ["year", "grade", "kelas", "y"]

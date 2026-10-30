@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 pub mod model;
+pub mod normalise;
 pub mod repository;
 
 use crate::academic_staffing::repository::{refuse, unavailable, Failure, Session, Writer};

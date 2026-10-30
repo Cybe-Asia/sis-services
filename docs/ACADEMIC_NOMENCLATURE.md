@@ -140,8 +140,39 @@ changed.
   - Each falls back to today's string when a label is missing or SIS does not answer.
 - **Slice 4:** Learning API reads `/learning/nomenclature` (cached five minutes per school), names the pathway's
   grades from it and serves it to learning-web and the Student/Parent client.
-- **Slice 5** (not built): normalising `Section.yearGroup` and `academicYear` to codes. `model::grade_code` is the
-  parser that normalisation will use.
+- **Slice 5:** codes beside the stored text (below). Admin, the Student Profile, learning-web and the client prefer
+  them.
+
+## Normalisation (slice 5)
+
+`grade_code` (`Y7`) and `academic_year_code` (`2026/2027`) are stored **beside** the free text on `Section`,
+`AcademicSubjectPlan` and `AcademicGradeWeights`. The text is never changed or removed; matching that used the text
+keeps working (the `SUBJECT_IN_USE` check also matches a Section by `grade_code`).
+
+- **Rules** (`model.rs`):
+  - `grade_code`: `year7`, `Year 7`, `Grade 7`, `Kelas 7`, `Kelas VII`, `VII`, `Y7` and `7` are `Y7` (Y7–Y12).
+  - `academic_year_code`: `2026/2027` stays; `2026-2027` becomes `2026/2027`; a bare `2026` is the school year that
+    starts on 1 July 2026, `2026/2027` (the rule of the RBAC 30 June default).
+  - Anything else gets no code and is reported, never guessed.
+- **On every write:** creating a Section, saving a subject plan and saving grade weights set the codes; a code
+  already stored is kept.
+- **Backfill:** `sis-service normalise-nomenclature [--apply]`.
+  - **Dry run:** without `--apply` it writes nothing and prints one JSON line. Its fields:
+    - `counts` per label: `rows`, `coded` (codes to write), `already`;
+    - `unrecognised`: label, key, field, value;
+    - `conflicts`: a stored code that differs from the rule; it is left as it is.
+  - **Apply:** writes only missing codes, and writes `nomenclature_grade_run` / `nomenclature_year_run` (the run id)
+    beside each code it adds. It also creates one `AcademicNomenclatureNormalisation {run, report}` record.
+  - **Idempotent:** a second run codes nothing.
+  - **Rollback:**
+    `MATCH(n) WHERE n.nomenclature_grade_run=$run REMOVE n.grade_code,n.nomenclature_grade_run`, then the same for
+    `nomenclature_year_run` / `academic_year_code`. This removes exactly what that run added.
+  - **Gitops:** the Jobs are `lab/staging-web-release-preparation/nomenclature-codes-job-20261030.yaml` (report,
+    apply, rollback; all suspended).
+- **Answers:**
+  - Section JSON carries `gradeCode` and `academicYearCode` (null when unrecognised).
+  - The Student Profile classes carry `gradeCode` and `academicYearCode`.
+  - The nomenclature seed takes academic years from `academic_year_code` first.
 
 ## Tests
 
@@ -155,5 +186,7 @@ changed.
   - open kinds;
   - who may save;
   - a save as the school's first touch;
-  - the Learning read: defaults before any seed without writing, then the staff answer and a 304.
+  - the Learning read: defaults before any seed without writing, then the staff answer and a 304;
+  - normalisation: a dry run writes nothing; apply codes Sections, plans and weights beside the text; unknown text and
+    a conflicting stored code are reported; a second run is idempotent; the rollback removes only that run's codes.
 - The local browser check against this build is in `digital-school/docs/qa/academic-nomenclature/`.

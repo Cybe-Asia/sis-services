@@ -82,6 +82,7 @@ pub async fn create_section(
         "CREATE (s:Section { \
             section_id: $id, tenant_id: $tenant, school_id: $school, \
             name: $name, year_group: $year_group, academic_year: $academic_year, \
+            grade_code: $grade_code, academic_year_code: $academic_year_code, \
             status: $status, \
             created_at: datetime($now), updated_at: datetime($now) \
          }) RETURN s",
@@ -92,6 +93,15 @@ pub async fn create_section(
     .param("name", input.name.clone())
     .param("year_group", input.year_group.clone())
     .param("academic_year", input.academic_year.clone())
+    // Nomenclature codes beside the text (slice 5); null when the text is not recognised.
+    .param(
+        "grade_code",
+        crate::academic_nomenclature::model::grade_code(&input.year_group).map(str::to_string),
+    )
+    .param(
+        "academic_year_code",
+        crate::academic_nomenclature::model::academic_year_code(&input.academic_year),
+    )
     .param("status", SECTION_STATUS_ACTIVE.to_string())
     .param("now", now.to_rfc3339());
     let rs = execute(
@@ -905,6 +915,11 @@ fn map_node_to_section(node: Node, enrolled_count: i64) -> Section {
         name: node.get::<String>("name").unwrap_or_default(),
         yearGroup: node.get::<String>("year_group").unwrap_or_default(),
         academicYear: node.get::<String>("academic_year").unwrap_or_default(),
+        gradeCode: node.get::<String>("grade_code").ok().filter(|s| !s.is_empty()),
+        academicYearCode: node
+            .get::<String>("academic_year_code")
+            .ok()
+            .filter(|s| !s.is_empty()),
         status: node
             .get::<String>("status")
             .unwrap_or_else(|_| SECTION_STATUS_ACTIVE.to_string()),

@@ -136,6 +136,11 @@ async fn subject_plans_and_assignments_are_revisioned_audited_and_grant_learning
     .unwrap();
     assert_eq!(saved["version"], 1);
     assert_eq!(saved["rows"][1]["framework"], "cambridge");
+    // Nomenclature slice 5: the codes are written beside the free text on every save.
+    assert_eq!(
+        count(&g, "MATCH(p:AcademicSubjectPlan) WHERE p.grade_code='Y7' AND p.academic_year_code IS NOT NULL RETURN count(p) AS n").await,
+        1
+    );
     let replay = repo::save_plan(
         &g,
         &writer("admin", "school_admin", "plan-year7-0001"),

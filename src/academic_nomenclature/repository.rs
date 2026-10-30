@@ -58,7 +58,7 @@ async fn rows(graph: &Graph, q: Query, max: usize) -> Result<Vec<GraphRow>, Fail
 
 const KIND_VERSIONS: &str = "MATCH(k:AcademicNomenclatureKind {tenant_id:$tenant,school_id:$school}) RETURN k.kind AS kind,k.version AS version ORDER BY kind LIMIT 64";
 const SCHOOL: &str = "MATCH(sc:School {school_id:$school,tenant_id:$tenant}) WITH collect(sc) AS ss WHERE size(ss)=1 RETURN coalesce(ss[0].school_name,ss[0].name,$school) AS name";
-const YEARS: &str = "MATCH(s:Section {tenant_id:$tenant,school_id:$school}) WHERE s.academic_year IS NOT NULL RETURN DISTINCT toString(s.academic_year) AS year LIMIT 201";
+const YEARS: &str = "MATCH(s:Section {tenant_id:$tenant,school_id:$school}) WHERE s.academic_year IS NOT NULL RETURN DISTINCT coalesce(s.academic_year_code,toString(s.academic_year)) AS year LIMIT 201";
 const PLANS: &str = "MATCH(p:AcademicSubjectPlan {tenant_id:$tenant,school_id:$school}) RETURN p.payload AS payload ORDER BY p.academic_year DESC,p.grade LIMIT 201";
 const ROWS: &str = "MATCH(n:AcademicNomenclature {tenant_id:$tenant,school_id:$school}) WHERE $kind IS NULL OR n.kind=$kind RETURN n.kind AS kind,n.code AS code,n.label_id AS label_id,n.label_en AS label_en,n.short_id AS short_id,n.short_en AS short_en,n.order AS order,n.status AS status,n.version AS version ORDER BY kind,n.order,code LIMIT 1101";
 

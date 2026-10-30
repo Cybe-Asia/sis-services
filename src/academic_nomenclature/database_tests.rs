@@ -441,3 +441,124 @@ async fn nomenclature_seeds_per_school_and_saves_are_revisioned_audited_and_capa
             .is_none()
     );
 }
+
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn normalisation_codes_once_reports_unknown_text_and_rolls_back_by_run() {
+    let uri = std::env::var("SCHOOL_PORTAL_TEST_BOLT").unwrap();
+    assert_eq!(uri, "127.0.0.1:3223");
+    let g = Graph::new(uri, "neo4j", "parent-otp-fixture-password")
+        .await
+        .unwrap();
+    g.run(query("MATCH(n) DETACH DELETE n")).await.unwrap();
+    // Staging-shaped: bare years, codes and words as grades, one value nobody can read, one code set by hand.
+    g.run(query("CREATE(:Section {section_id:'7A',year_group:'year7',academic_year:'2026',school_id:'S',tenant_id:'t'}) \
+                 CREATE(:Section {section_id:'8A',year_group:'Kelas VIII',academic_year:'2026/2027',school_id:'S',tenant_id:'t'}) \
+                 CREATE(:Section {section_id:'7X',year_group:'Year 7 Bilingual',academic_year:'TA 26',school_id:'S',tenant_id:'t'}) \
+                 CREATE(:Section {section_id:'9A',year_group:'year9',academic_year:'2026',grade_code:'Y8',school_id:'S',tenant_id:'t'}) \
+                 CREATE(:AcademicSubjectPlan {key:'t|S|2026|Year 7',grade:'Year 7',academic_year:'2026'}) \
+                 CREATE(:AcademicGradeWeights {key:'t|S|2026|school',grade:'',academic_year:'2026'})"))
+        .await
+        .unwrap();
+    let codes = |g: Graph| async move {
+        let mut rows = g
+            .execute(query("MATCH(n) WHERE n:Section OR n:AcademicSubjectPlan OR n:AcademicGradeWeights RETURN coalesce(n.section_id,n.key) AS k,n.grade_code AS g,n.academic_year_code AS y ORDER BY k"))
+            .await
+            .unwrap();
+        let mut out = vec![];
+        while let Some(r) = rows.next().await.unwrap() {
+            out.push((
+                r.get::<String>("k").unwrap(),
+                r.get::<Option<String>>("g").unwrap(),
+                r.get::<Option<String>>("y").unwrap(),
+            ));
+        }
+        out
+    };
+    let before = codes(g.clone()).await;
+
+    let dry = super::normalise::run(&g, false).await.unwrap();
+    assert!(!dry.applied);
+    assert_eq!(codes(g.clone()).await, before, "a dry run writes nothing");
+    assert_eq!(dry.counts["Section"].coded, 5);
+    assert_eq!(dry.counts["AcademicSubjectPlan"].coded, 2);
+    assert_eq!(
+        dry.counts["AcademicGradeWeights"].coded, 1,
+        "the school-wide row has no grade"
+    );
+    let unknown: Vec<_> = dry
+        .unrecognised
+        .iter()
+        .map(|u| (u.key.as_str(), u.field.as_str(), u.value.as_str()))
+        .collect();
+    assert_eq!(
+        unknown,
+        [
+            ("7X", "year_group", "Year 7 Bilingual"),
+            ("7X", "academic_year", "TA 26")
+        ]
+    );
+    assert_eq!(dry.conflicts.len(), 1);
+    assert_eq!(dry.conflicts[0].key, "9A");
+
+    let applied = super::normalise::run(&g, true).await.unwrap();
+    assert_eq!(applied.counts, dry.counts);
+    let s = |k: &str, gc: Option<&str>, yc: Option<&str>| {
+        (k.to_string(), gc.map(String::from), yc.map(String::from))
+    };
+    assert_eq!(
+        codes(g.clone()).await,
+        [
+            s("7A", Some("Y7"), Some("2026/2027")),
+            s("7X", None, None),
+            s("8A", Some("Y8"), Some("2026/2027")),
+            s("9A", Some("Y8"), Some("2026/2027")),
+            s("t|S|2026|Year 7", Some("Y7"), Some("2026/2027")),
+            s("t|S|2026|school", None, Some("2026/2027")),
+        ],
+        "codes written beside the text; the hand-set Y8 stays"
+    );
+    let mut text = g
+        .execute(query(
+            "MATCH(s:Section {section_id:'7A'}) RETURN s.year_group AS g,s.academic_year AS y",
+        ))
+        .await
+        .unwrap();
+    let row = text.next().await.unwrap().unwrap();
+    assert_eq!(
+        (
+            row.get::<String>("g").unwrap(),
+            row.get::<String>("y").unwrap()
+        ),
+        ("year7".into(), "2026".into())
+    );
+
+    let again = super::normalise::run(&g, true).await.unwrap();
+    assert_eq!(again.counts["Section"].coded, 0, "idempotent");
+    assert_eq!(again.counts["Section"].already, 5);
+    let mut runs = g
+        .execute(query(
+            "MATCH(r:AcademicNomenclatureNormalisation) RETURN count(r) AS n",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        runs.next().await.unwrap().unwrap().get::<i64>("n").unwrap(),
+        2
+    );
+
+    // Rollback (the Job's rollback step): removes what the first run added, nothing else.
+    for rollback in [
+        "MATCH(n) WHERE n.nomenclature_grade_run=$run REMOVE n.grade_code,n.nomenclature_grade_run",
+        "MATCH(n) WHERE n.nomenclature_year_run=$run REMOVE n.academic_year_code,n.nomenclature_year_run",
+    ] {
+        g.run(query(rollback).param("run", applied.run.clone())).await.unwrap();
+    }
+    let after = codes(g.clone()).await;
+    assert_eq!(
+        after[3],
+        s("9A", Some("Y8"), None),
+        "the hand-set code stays"
+    );
+    assert_eq!(after[0], s("7A", None, None));
+}

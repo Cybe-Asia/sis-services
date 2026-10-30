@@ -57,14 +57,14 @@ async fn read(s: &AppState, h: &HeaderMap, q: &Scope) -> Result<Value, Failure> 
     let school = json!({"id": q.school_id, "name": bounded(field("school_name"), 256)});
 
     let mut classes = vec![];
-    let mut rows = s.graph.execute(query_for("RETURN DISTINCT c.section_id AS id,c.name AS name,c.year_group AS grade,c.academic_year AS year ORDER BY id LIMIT 51")).await.map_err(unavailable)?;
+    let mut rows = s.graph.execute(query_for("RETURN DISTINCT c.section_id AS id,c.name AS name,c.year_group AS grade,c.academic_year AS year,c.grade_code AS grade_code,c.academic_year_code AS year_code ORDER BY id LIMIT 51")).await.map_err(unavailable)?;
     while let Some(row) = rows.next().await.map_err(unavailable)? {
         let id: String = row.get("id").map_err(unavailable)?;
         let name = bounded(row.get::<Option<String>>("name").ok().flatten(), 256);
         if !valid_id(&id) || name.is_none() || classes.len() == 50 {
             return Err(failure(StatusCode::SERVICE_UNAVAILABLE));
         }
-        classes.push(json!({"id":id,"name":name,"grade":bounded(row.get::<Option<String>>("grade").ok().flatten(),64),"academicYear":bounded(row.get::<Option<String>>("year").ok().flatten(),32)}));
+        classes.push(json!({"id":id,"name":name,"grade":bounded(row.get::<Option<String>>("grade").ok().flatten(),64),"academicYear":bounded(row.get::<Option<String>>("year").ok().flatten(),32),"gradeCode":bounded(row.get::<Option<String>>("grade_code").ok().flatten(),8),"academicYearCode":bounded(row.get::<Option<String>>("year_code").ok().flatten(),16)}));
     }
 
     // The admissions account holder is the first guardian; guardians the school records later

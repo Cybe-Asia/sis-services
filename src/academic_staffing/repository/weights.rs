@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 pub(crate) const LIST: &str = "MATCH(w:AcademicGradeWeights {school_id:$school,tenant_id:$tenant,academic_year:$year}) RETURN w.scope AS scope,coalesce(w.grade,'') AS grade,coalesce(w.subject,'') AS subject,coalesce(w.term,'') AS term,w.version AS version,w.status AS status,w.payload AS payload,toString(w.updated_at) AS updated ORDER BY scope,grade,subject,term LIMIT 4001";
 pub(crate) const CURRENT: &str = "MATCH(w:AcademicGradeWeights {key:$key}) RETURN w.version AS version,w.status AS status,w.payload AS payload";
 pub(crate) const IN_PLAN: &str = "OPTIONAL MATCH(p:AcademicSubjectPlan {key:$plan}) RETURN coalesce($subject IN p.active_subjects,false) AS ok";
-pub(crate) const SAVE: &str = "MERGE(w:AcademicGradeWeights {key:$key}) ON CREATE SET w.tenant_id=$tenant,w.school_id=$school,w.academic_year=$year,w.scope=$scope,w.grade=$grade,w.subject=$subject,w.term=$term,w.version=0,w.created_at=datetime() SET w.version=w.version+1,w.status=$status,w.payload=$payload,w.updated_by=$actor,w.updated_at=datetime() RETURN w.version AS version,toString(w.updated_at) AS updated";
+pub(crate) const SAVE: &str = "MERGE(w:AcademicGradeWeights {key:$key}) ON CREATE SET w.tenant_id=$tenant,w.school_id=$school,w.academic_year=$year,w.scope=$scope,w.grade=$grade,w.subject=$subject,w.term=$term,w.version=0,w.created_at=datetime() SET w.version=w.version+1,w.grade_code=coalesce(w.grade_code,$grade_code),w.academic_year_code=coalesce(w.academic_year_code,$year_code),w.status=$status,w.payload=$payload,w.updated_by=$actor,w.updated_at=datetime() RETURN w.version AS version,toString(w.updated_at) AS updated";
 pub(crate) const SECTION: &str = "MATCH(sec:Section {section_id:$section,school_id:$school,tenant_id:$tenant}) WITH collect(sec) AS found WHERE size(found)=1 RETURN coalesce(found[0].academic_year,'') AS year,coalesce(found[0].year_group,'') AS grade";
 pub(crate) const ACTIVE_SETS: &str = "MATCH(w:AcademicGradeWeights {status:'active'}) WHERE w.key IN [$subject_key,$school_key] RETURN w.key AS key,w.version AS version,w.payload AS payload";
 
@@ -140,6 +140,14 @@ pub async fn save(graph: &Graph, w: &Writer<'_>, change: &Change) -> Result<Valu
                 .param("grade", grade)
                 .param("subject", subject)
                 .param("term", term)
+                .param(
+                    "grade_code",
+                    grade.and_then(crate::academic_nomenclature::model::grade_code),
+                )
+                .param(
+                    "year_code",
+                    crate::academic_nomenclature::model::academic_year_code(year),
+                )
                 .param("status", if change.clear { CLEARED } else { ACTIVE })
                 .param(
                     "payload",

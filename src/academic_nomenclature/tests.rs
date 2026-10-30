@@ -271,3 +271,20 @@ fn changes_are_checked_whole() {
     assert!(!kind("teacher"));
     assert!(closed("grade") && !closed("subject") && !closed("term"));
 }
+
+#[test]
+fn academic_years_read_as_the_school_year_starting_in_july() {
+    use super::model::academic_year_code;
+    assert_eq!(academic_year_code("2026").as_deref(), Some("2026/2027"));
+    assert_eq!(
+        academic_year_code(" 2026-2027 ").as_deref(),
+        Some("2026/2027")
+    );
+    assert_eq!(
+        academic_year_code("2026/2027").as_deref(),
+        Some("2026/2027")
+    );
+    for unknown in ["2026/2028", "TA 26", "26/27", "2026-27", "", "1989"] {
+        assert_eq!(academic_year_code(unknown), None, "{unknown}");
+    }
+}

@@ -115,6 +115,16 @@ async fn main() {
         learning_access::migrate(&graph).await.expect("failed to initialize governed learning access schema");
         return;
     }
+    // Nomenclature slice 5: codes beside the stored grade and academic year. A dry run unless `--apply`; the
+    // report is one JSON line on stdout (docs/ACADEMIC_NOMENCLATURE.md).
+    if std::env::args().nth(1).as_deref() == Some("normalise-nomenclature") {
+        let apply = std::env::args().nth(2).as_deref() == Some("--apply");
+        let report = academic_nomenclature::normalise::run(&graph, apply)
+            .await
+            .expect("nomenclature normalisation failed");
+        println!("{}", serde_json::to_string(&report).expect("report"));
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("--migrate-enrollment-handover") {
         enrollment_handover::migrate(&graph)
             .await

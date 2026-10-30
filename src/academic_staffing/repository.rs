@@ -237,8 +237,8 @@ async fn store_plan(
         .filter(|r| r.active())
         .map(|r| r.subject.clone())
         .collect();
-    let in_use = rows_in(tx, query("MATCH(a:TeachingAssignment {school_id:$school,tenant_id:$tenant,academic_year:$year,status:'active'}) WHERE NOT a.subject IN $codes MATCH(sec:Section {section_id:a.section_id,school_id:$school,tenant_id:$tenant,academic_year:$year}) WHERE coalesce(sec.year_group,'')=$grade RETURN DISTINCT a.subject AS subject ORDER BY subject LIMIT 41")
-        .param("school", w.school).param("tenant", w.tenant).param("year", year).param("grade", grade).param("codes", codes.clone()), 41).await?;
+    let in_use = rows_in(tx, query("MATCH(a:TeachingAssignment {school_id:$school,tenant_id:$tenant,academic_year:$year,status:'active'}) WHERE NOT a.subject IN $codes MATCH(sec:Section {section_id:a.section_id,school_id:$school,tenant_id:$tenant,academic_year:$year}) WHERE coalesce(sec.year_group,'')=$grade OR (sec.grade_code IS NOT NULL AND sec.grade_code=$grade_code) RETURN DISTINCT a.subject AS subject ORDER BY subject LIMIT 41")
+        .param("school", w.school).param("tenant", w.tenant).param("year", year).param("grade", grade).param("grade_code", crate::academic_nomenclature::model::grade_code(grade)).param("codes", codes.clone()), 41).await?;
     if !in_use.is_empty() {
         let subjects = in_use
             .iter()
@@ -247,9 +247,11 @@ async fn store_plan(
         return Err(conflict("SUBJECT_IN_USE", json!({ "subjects": subjects })));
     }
     let after = serde_json::to_value(rows).map_err(unavailable)?;
-    let saved = one(tx, query("MERGE(p:AcademicSubjectPlan {key:$key}) ON CREATE SET p.tenant_id=$tenant,p.school_id=$school,p.academic_year=$year,p.grade=$grade,p.version=0,p.created_at=datetime() SET p.version=p.version+1,p.payload=$payload,p.subjects=$codes,p.active_subjects=$active,p.updated_by=$actor,p.updated_at=datetime() RETURN p.version AS version,toString(p.updated_at) AS updated")
+    let saved = one(tx, query("MERGE(p:AcademicSubjectPlan {key:$key}) ON CREATE SET p.tenant_id=$tenant,p.school_id=$school,p.academic_year=$year,p.grade=$grade,p.version=0,p.created_at=datetime() SET p.version=p.version+1,p.grade_code=coalesce(p.grade_code,$grade_code),p.academic_year_code=coalesce(p.academic_year_code,$year_code),p.payload=$payload,p.subjects=$codes,p.active_subjects=$active,p.updated_by=$actor,p.updated_at=datetime() RETURN p.version AS version,toString(p.updated_at) AS updated")
         .param("key", key.clone()).param("tenant", w.tenant).param("school", w.school).param("year", year).param("grade", grade)
-        .param("payload", after.to_string()).param("codes", codes).param("active", active).param("actor", w.actor)).await?
+        .param("payload", after.to_string()).param("codes", codes).param("active", active).param("actor", w.actor)
+        // Nomenclature codes beside the text (slice 5); kept once set, null while the text is not recognised.
+        .param("grade_code", crate::academic_nomenclature::model::grade_code(grade)).param("year_code", crate::academic_nomenclature::model::academic_year_code(year))).await?
         .ok_or_else(|| unavailable("No plan"))?;
     tx.run(audit(
         w,
