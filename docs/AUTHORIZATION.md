@@ -342,6 +342,38 @@ tenant) and a `change_validity` to `renewUntil` would pass: either the grant rul
 Guardrails. Also `today` and `days`. Same session and read rules as the other reads; renewing is a
 `change_validity` command.
 
+### `GET /held?capabilities=a,b` (services, ADR 0018 slice 6)
+
+For Admission and Payment, which receive Auth's `staff-api+jwt` from Admin, not a portal session. The bearer is
+verified as for the enrollment handover (`STAFF_DOWNSTREAM_JWT_SECRET`, `STAFF_DOWNSTREAM_JWT_ISSUER`, audience
+`digital-school-admin-api`, scope `staff_downstream`, at most 15 minutes), and the answer covers only the Staff
+Member it names. 1–20 catalogue codes, comma-separated, no repeats; an unknown code is 400.
+
+```json
+{"data":{"staffMemberId":"staff-1","cacheSeconds":60,"capabilities":{
+  "admissions.application.read":{"tenants":["TENANT-001"],"schools":[{"tenantId":"TENANT-001","schoolId":"SCH-IISS"}]},
+  "billing.payment.read":{"tenants":[],"schools":[]}}}}
+```
+
+`tenants` lists the tenants where the capability is held for the whole tenant (`TENANT` scope, or every school);
+`schools` lists each school where it is held. Both come from explicit and derived holdings over the Staff Member's
+own `tenantIds`. An unscoped Owner names no tenant, so the answer is empty; Admission and Payment pass Owners by
+role. A Staff Member who is not one active node holds nothing. 401 for a missing or invalid bearer, 503 when the
+verifier is not configured. Callers may keep an answer for `cacheSeconds`.
+
+**Catalogue additions (version 2, 2026-10-30).** For Admission (`service: admission`, area `admissions`):
+
+- normal: `admissions.lead.assist`, `.visit.manage`, `.application.read`, `.step_link.issue`, `.test.decide`,
+  `.placement.manage`;
+- sensitive: `admissions.document.upload_on_behalf`, `.document.read`, `.document.review`, `.offer.manage`,
+  `.status.override`.
+
+For Payment: `billing.payment.read` and `billing.school_invoice.manage` (both sensitive, beside
+`billing.payment.manage`).
+
+No seed template carries them. School admins and teachers hold none on day one, and Owners hold all through
+derivation. Graph test: `authorization_graph_service_held_read`.
+
 ### `POST /check`
 
 ```json

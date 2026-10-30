@@ -363,6 +363,49 @@ pub async fn init(graph: &neo4rs::Graph) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HeldQuery {
+    capabilities: String,
+}
+/// `GET /held?capabilities=a,b` for Admission and Payment (ADR 0018 slice 6): the caller is the
+/// Staff Member named by Auth's `staff-api+jwt` (the credential those services receive from
+/// Admin), and the answer covers only them.
+async fn held(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    q: Result<Query<HeldQuery>, QueryRejection>,
+) -> Result<Json<Value>, Failure> {
+    let Query(q) = q.map_err(|_| invalid())?;
+    let codes: Vec<String> = q.capabilities.split(',').map(str::to_string).collect();
+    let r = model::reference();
+    let unique: std::collections::BTreeSet<&String> = codes.iter().collect();
+    if codes.len() > 20
+        || unique.len() != codes.len()
+        || codes.iter().any(|c| r.capability(c).is_none())
+    {
+        return Err(invalid());
+    }
+    let actor = crate::enrollment_handover::auth::actor(&headers, &state.config.jwt_secret)
+        .map_err(|e| match e {
+            crate::enrollment_handover::auth::Error::Unavailable => refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "DEPENDENCY_UNAVAILABLE",
+                json!({}),
+            ),
+            crate::enrollment_handover::auth::Error::Unauthorized => {
+                refuse(StatusCode::UNAUTHORIZED, "UNAUTHORIZED", json!({}))
+            }
+        })?;
+    let data = tokio::time::timeout(
+        Duration::from_secs(8),
+        reads::held(&state.graph, &actor.staff, &codes),
+    )
+    .await
+    .map_err(unavailable)??;
+    Ok(Json(json!({ "data": data })))
+}
+
 pub fn router() -> Router<AppState> {
     const BASE: &str = "/api/v1/sis-service/authorization";
     Router::new()
@@ -382,6 +425,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(&format!("{BASE}/check"), post(check))
         .route(&format!("{BASE}/effective"), get(effective))
+        .route(&format!("{BASE}/held"), get(held))
         .route(&format!("{BASE}/audit"), get(audit))
         .layer(axum::extract::DefaultBodyLimit::max(32 * 1024))
         .layer(axum::middleware::map_response(

@@ -698,6 +698,55 @@ pub async fn permitted_schools(
         .collect())
 }
 
+/// What a service may ask about its own caller (ADR 0018 slice 6): for each capability, the tenants
+/// where the caller holds it for the whole tenant and the schools where they hold it, from their
+/// explicit and derived holdings. Admission and Payment call it with the caller's Auth
+/// `staff-api+jwt`, so it answers for that Staff Member only. A Staff Member who is not one active
+/// node holds nothing here.
+pub async fn held(graph: &Graph, staff: &str, codes: &[String]) -> Result<Value, Failure> {
+    let rows = Db::Graph(graph)
+        .rows(
+            query("MATCH(s:StaffMember {id:$staff}) RETURN coalesce(s.membershipStatus,'') AS status,coalesce(s.tenantIds,[]) AS tenants LIMIT 2")
+                .param("staff", staff),
+            2,
+        )
+        .await?;
+    let tenants: Vec<String> = match rows.as_slice() {
+        [r] if get::<String>(r, "status")? == "ACTIVE" => get(r, "tenants")?,
+        _ => vec![],
+    };
+    if tenants.len() > 16 {
+        return Err(unavailable("Bound exceeded"));
+    }
+    let mut out: BTreeMap<&str, Value> = codes
+        .iter()
+        .map(|c| (c.as_str(), json!({"tenants": [], "schools": []})))
+        .collect();
+    for tenant in &tenants {
+        let facts = facts::load(&mut Db::Graph(graph), tenant, &[staff.to_string()], &[]).await?;
+        let holdings = facts.holdings(staff);
+        for code in codes {
+            let entry = out.get_mut(code.as_str()).expect("every code has an entry");
+            if holds_tenant(&facts, &holdings, code) {
+                entry["tenants"].as_array_mut().unwrap().push(json!(tenant));
+            }
+            for school in facts.schools.keys() {
+                if decide(&facts, &holdings, code, &Scope::school(school)).is_some() {
+                    entry["schools"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!({"tenantId": tenant, "schoolId": school}));
+                }
+            }
+        }
+    }
+    Ok(json!({
+        "staffMemberId": staff,
+        "capabilities": out,
+        "cacheSeconds": CACHE_SECONDS,
+    }))
+}
+
 /// One class of the mastery roster: the students the caller may read mastery for, and the
 /// subjects that holding covers (`None`: every subject of the class).
 #[derive(Debug, serde::Serialize)]

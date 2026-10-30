@@ -2132,3 +2132,92 @@ async fn authorization_graph_principal_renewal() {
         "CAPABILITY_NOT_HELD"
     );
 }
+
+/// The service self-read behind Admission's and Payment's capability gates (ADR 0018 slice 6).
+/// Day one: school administrators and teachers hold no `admissions.*` or `billing.*`; Owners hold
+/// all (and pass those services by role anyway). A tenant-wide grant answers in `tenants`, a school
+/// grant in `schools` only; an inactive Staff Member holds nothing.
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn authorization_graph_service_held_read() {
+    let g = fixture().await;
+    let owner = |command: &'static str| writer("owner", "owner", command);
+    let codes: Vec<String> = [
+        "admissions.application.read",
+        "admissions.document.read",
+        "billing.payment.read",
+        "billing.school_invoice.manage",
+    ]
+    .iter()
+    .map(|c| c.to_string())
+    .collect();
+    let held = |who: &'static str| {
+        let (g, codes) = (g.clone(), codes.clone());
+        async move { reads::held(&g, who, &codes).await.unwrap() }
+    };
+    let empty = serde_json::json!({"tenants": [], "schools": []});
+    for who in ["admin", "admin-2", "t-home", "t-assigned", "t-grant"] {
+        let answer = held(who).await;
+        for code in &codes {
+            assert_eq!(answer["capabilities"][code], empty, "{who} {code}");
+        }
+    }
+    let unscoped = held("owner").await;
+    assert_eq!(
+        unscoped["capabilities"]["billing.payment.read"], empty,
+        "an unscoped Owner names no tenant"
+    );
+    let scoped = held("owner-a").await;
+    assert_eq!(
+        scoped["capabilities"]["admissions.document.read"]["schools"],
+        serde_json::json!([{"tenantId": "tenant", "schoolId": "school"}])
+    );
+
+    commands::templates(
+        &g,
+        &owner("held-template-01"),
+        &template(
+            CREATE,
+            "admissions_reader",
+            &["admissions.application.read", "billing.payment.read"],
+            &[TENANT, SCHOOL],
+            0,
+        ),
+    )
+    .await
+    .unwrap();
+    commands::assignments(
+        &g,
+        &owner("held-assign-01"),
+        &batch(vec![
+            assign("t-home", "admissions_reader", Scope::tenant(), 0),
+            assign("t-grant", "admissions_reader", Scope::school("school"), 0),
+        ]),
+    )
+    .await
+    .unwrap();
+    let wide = held("t-home").await;
+    assert_eq!(
+        wide["capabilities"]["admissions.application.read"]["tenants"],
+        serde_json::json!(["tenant"])
+    );
+    assert_eq!(wide["capabilities"]["admissions.document.read"], empty);
+    let one = held("t-grant").await;
+    assert_eq!(
+        one["capabilities"]["billing.payment.read"]["tenants"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        one["capabilities"]["billing.payment.read"]["schools"],
+        serde_json::json!([{"tenantId": "tenant", "schoolId": "school"}])
+    );
+    // A disabled Staff Member, and an unknown id, hold nothing.
+    assert_eq!(
+        held("t-off").await["capabilities"]["admissions.application.read"],
+        empty
+    );
+    assert_eq!(
+        held("nobody").await["capabilities"]["admissions.application.read"],
+        empty
+    );
+}

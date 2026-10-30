@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "capabilities": [
     {"code": "learning.class.teach", "service": "learning-api", "area": "learning", "sensitivity": "normal", "classWide": true,
      "description": {"id": "Mengajar di kelas: materi, tugas dan siswa kelas", "en": "Teach a class: its lessons, assignments and students"}},
@@ -52,6 +52,32 @@
     {"code": "authorization.read", "service": "sis", "area": "authorization", "sensitivity": "normal",
      "description": {"id": "Melihat akses staf dan cek akses", "en": "Read staff access and check access"}},
     {"code": "authorization.manage", "service": "sis", "area": "authorization", "sensitivity": "sensitive",
-     "description": {"id": "Mengatur role dan penugasan akses", "en": "Manage roles and access assignments"}}
+     "description": {"id": "Mengatur role dan penugasan akses", "en": "Manage roles and access assignments"}},
+    {"code": "admissions.lead.assist", "service": "admission", "area": "admissions", "sensitivity": "normal",
+     "description": {"id": "Membantu calon keluarga: leads & EOI, catatan dan klaim", "en": "Assist prospective families: leads and EOI, notes and claims"}},
+    {"code": "admissions.visit.manage", "service": "admission", "area": "admissions", "sensitivity": "normal",
+     "description": {"id": "Mengatur kunjungan dan tur sekolah", "en": "Manage school visits and tours"}},
+    {"code": "admissions.application.read", "service": "admission", "area": "admissions", "sensitivity": "normal",
+     "description": {"id": "Melihat pendaftaran dan ringkasan calon siswa", "en": "Read applications and applicant overviews"}},
+    {"code": "admissions.step_link.issue", "service": "admission", "area": "admissions", "sensitivity": "normal",
+     "description": {"id": "Mengirim tautan langkah pendaftaran ke orang tua", "en": "Send parents a link to an admissions step"}},
+    {"code": "admissions.document.upload_on_behalf", "service": "admission", "area": "admissions", "sensitivity": "sensitive",
+     "description": {"id": "Mengunggah dokumen atau bukti bayar atas nama orang tua", "en": "Upload documents or payment proof on a parent's behalf"}},
+    {"code": "admissions.test.decide", "service": "admission", "area": "admissions", "sensitivity": "normal",
+     "description": {"id": "Mengatur jadwal tes dan memutuskan hasilnya", "en": "Run test schedules and decide results"}},
+    {"code": "admissions.document.read", "service": "admission", "area": "admissions", "sensitivity": "sensitive",
+     "description": {"id": "Melihat dokumen calon siswa", "en": "Read applicant documents"}},
+    {"code": "admissions.document.review", "service": "admission", "area": "admissions", "sensitivity": "sensitive",
+     "description": {"id": "Memeriksa dan memutuskan dokumen calon siswa", "en": "Review and decide applicant documents"}},
+    {"code": "admissions.offer.manage", "service": "admission", "area": "admissions", "sensitivity": "sensitive",
+     "description": {"id": "Mengatur penawaran dan biayanya", "en": "Manage offers and their fees"}},
+    {"code": "admissions.status.override", "service": "admission", "area": "admissions", "sensitivity": "sensitive",
+     "description": {"id": "Mengubah status pendaftaran secara manual", "en": "Override an application's status by hand"}},
+    {"code": "admissions.placement.manage", "service": "admission", "area": "admissions", "sensitivity": "normal",
+     "description": {"id": "Menempatkan siswa diterima ke kelas di SIS", "en": "Place admitted students into SIS classes"}},
+    {"code": "billing.payment.read", "service": "payment", "area": "billing", "sensitivity": "sensitive",
+     "description": {"id": "Melihat antrean pembayaran dan bukti transfer", "en": "Read the payment review queue and transfer proofs"}},
+    {"code": "billing.school_invoice.manage", "service": "payment", "area": "billing", "sensitivity": "sensitive",
+     "description": {"id": "Mengatur tagihan sekolah dan biaya", "en": "Manage school invoices and fees"}}
   ]
 }
