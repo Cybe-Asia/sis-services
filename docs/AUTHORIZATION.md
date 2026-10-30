@@ -273,7 +273,7 @@ defaults to `true`.
 
 | Action | Applies when | Result |
 |---|---|---|
-| `assign` | no record for this person, template, scope and year (`expectedVersion` 0), or a revoked one at its version (reopens it) | `active` |
+| `assign` | no record for this person, template, scope and year (`expectedVersion` 0), or a revoked one at its version or at 0 (reopens it; the grant and validity rules run as for a new one, and the audit `before` is the revoked record) | `active` |
 | `change_validity` | an `active` record at `expectedVersion` | new dates; the grant checks run again |
 | `revoke` | an `active` record at `expectedVersion` | `revoked`, kept for audit |
 
