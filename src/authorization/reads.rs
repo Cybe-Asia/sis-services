@@ -544,8 +544,9 @@ pub async fn expiring(
         .collect();
     soon.sort_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.id.cmp(&y.1.id)));
     let mine = v.facts.holdings(&reader.actor);
-    // Renewing is a `change_validity`, which runs the grant rules again: the hint asks them too.
-    let renewable = |a: &Assignment| {
+    // Renewing is a `change_validity` to the suggested end: the grant rules, or the renewal rule
+    // for an access manager of the school (`commands::renewal`). The hint asks the same.
+    let renewable = |a: &Assignment, until: &str| {
         let session = match a.scope.school_id.as_deref() {
             Some(s) => v.managed.contains(s),
             None => v.edits_templates,
@@ -555,7 +556,16 @@ pub async fn expiring(
                 .template(&a.template_code)
                 .filter(|t| t.status == "active")
                 .is_some_and(|t| {
-                    super::commands::may_grant(&v.facts, &mine, t, &a.scope, 0).is_ok()
+                    super::commands::renewal(
+                        &v.facts,
+                        &mine,
+                        t,
+                        a,
+                        a.valid_from.as_deref(),
+                        Some(until),
+                    )
+                    .is_some()
+                        || super::commands::may_grant(&v.facts, &mine, t, &a.scope, 0).is_ok()
                 })
     };
     let rows: Vec<Value> = soon
@@ -565,9 +575,10 @@ pub async fn expiring(
             let next = *end + chrono::Duration::days(1);
             let (year, renew, _) = v.facts.academic_year_on(a.scope.school_id.as_deref(), next);
             row["daysLeft"] = json!((*end - today).num_days());
-            row["renewUntil"] = json!(renew.format("%Y-%m-%d").to_string());
+            let until = renew.format("%Y-%m-%d").to_string();
+            row["canRenew"] = json!(renewable(a, &until));
+            row["renewUntil"] = json!(until);
             row["renewAcademicYear"] = json!(year);
-            row["canRenew"] = json!(renewable(a));
             row
         })
         .collect();

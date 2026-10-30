@@ -66,9 +66,10 @@ hand out the Learning templates (`CAPABILITY_NOT_HELD`). Widening the seed is a 
 
 Version 2 (2026-10-30, master thread's Principal change) adds `learning.module.review`, so a Principal can review
 modules in their school. `learning.curriculum.read` and `learning.mastery.read` were already in version 1. A
-Principal still cannot give or renew **Admin teacher**: that template also carries `learning.class.teach`,
+Principal still cannot **give** Admin teacher: that template also carries `learning.class.teach`,
 `learning.module.write`, `.publish`, `.manage_any`, `learning.objective_tag.write` and `learning.gradebook.read`,
-which the Principal does not hold (graph test `authorization_graph_reassign_revoked_key_from_add`).
+which the Principal does not hold (graph test `authorization_graph_reassign_revoked_key_from_add`). They can
+**renew** it through the renewal rule below.
 
 ## Scopes
 
@@ -162,6 +163,24 @@ or `.manage` gets 403 on every read but their own `effective`. Audit entries nam
 | The `principal` template is assigned (or its dates changed) by an Owner of the school only | 403 `PRINCIPAL_NEEDS_OWNER` (`index`) |
 | A school that had a holder of `authorization.manage` keeps one after the change | 409 `LAST_AUTHORIZATION_MANAGER` (`schoolId`) |
 | A school admin acts only in their schools | follows from the rows above |
+
+**Renewal (2026-10-30).** This is a master-thread default, made under the user's approval for "Principal can renew";
+the school may revisit it. A `change_validity` is let through without the "grant only what you hold" rule when all
+of these hold (`commands::renewal`):
+
+1. The assignment is `active` and in force today. Revoked or expired ones are re-assigned through `assign`.
+2. Only the end moves, and later. Template, scope and person cannot change in this command. `validFrom` is the
+   current start or a later one (leaving it out clears a start, which counts as earlier).
+3. The new end is after the current one and no later than the end of the academic year that follows it: the same
+   date as `renewUntil` in the expiring read.
+4. The caller holds `authorization.manage` over the assignment's scope (their own school).
+5. The template carries no sensitive capability. Those stay with Owners.
+
+The audit row is `change_validity` with `authorized_by` `{"rule":"renewal","source",…,"previousEnd","newEnd"}`
+and the actor. Every other `change_validity`, every `assign` and `revoke`, and template commands keep the
+grant rules above. The Principal template itself carries `authorization.manage`, which is sensitive, so a
+Principal is never renewed this way (`PRINCIPAL_NEEDS_OWNER` still applies). Graph test:
+`authorization_graph_principal_renewal`.
 
 ## Writes: revisions, `Idempotency-Key`, audit
 
@@ -317,9 +336,11 @@ may replace this later. A tenant-wide assignment looks at the classes of every s
 
 Active explicit assignments in the readable schools that are in force today and end within `days` (1–366,
 default 30), soonest first: the rows of `GET /assignments` plus `daysLeft`, `renewUntil` and
-`renewAcademicYear` (the end of the academic year that follows, by the rule above) and `canRenew` (the reader
-manages access in that school; a tenant-wide row needs `authorization.manage` across the tenant). Also `today`
-and `days`. Same session and read rules as the other reads; renewing is a `change_validity` command.
+`renewAcademicYear` (the end of the academic year that follows, by the rule above) and `canRenew`. `canRenew`
+is true when the reader manages access in that school (a tenant-wide row needs `authorization.manage` across the
+tenant) and a `change_validity` to `renewUntil` would pass: either the grant rules or the renewal rule under
+Guardrails. Also `today` and `days`. Same session and read rules as the other reads; renewing is a
+`change_validity` command.
 
 ### `POST /check`
 
@@ -545,6 +566,7 @@ Past a bound the answer is 503, never a partial decision.
   - Validity change, revoke and reopen.
   - The default end per academic year and the expiring read
     (`authorization_graph_validity_default_and_expiring`).
+  - Renewal by an access manager, one case per condition (`authorization_graph_principal_renewal`).
   - The self-read behind Admin's gate, for a teacher who becomes Principal of one school
     (`authorization_graph_own_holdings_for_admin_gate`).
   - Template revise of a seed with history, the impact read, every template 409/422, and archive.

@@ -4,10 +4,10 @@
 //! the tenant version and the receipt.
 use super::facts::{self, get, Db};
 use super::model::{
-    decide, holds_tenant, owner_at, reference, Assignment, AssignmentCommand, AssignmentCommands,
-    Facts, Holding, Scope, Template, TemplateCommand, TemplateCommands, ARCHIVE, ASSIGN,
-    CHANGE_VALIDITY, CREATE, MANAGE, PRINCIPAL, REGULAR_TEACHER, REVISE, REVOKE, SCHOOL_ADMIN,
-    TENANT,
+    decide, holds_tenant, owner_at, parse_date, reference, Assignment, AssignmentCommand,
+    AssignmentCommands, Facts, Holding, Scope, Template, TemplateCommand, TemplateCommands,
+    ARCHIVE, ASSIGN, CHANGE_VALIDITY, CREATE, MANAGE, PRINCIPAL, REGULAR_TEACHER, REVISE, REVOKE,
+    SCHOOL_ADMIN, TENANT,
 };
 use crate::academic_staffing::repository::{refuse, unavailable, Failure};
 use axum::http::StatusCode;
@@ -449,6 +449,57 @@ pub(super) fn may_grant(
     Ok(authorized)
 }
 
+/// A renewal (master-thread default 2026-10-30, under the user's "Principal can renew"; the school
+/// may revisit it): a holder of `authorization.manage` over the assignment's scope extends its end
+/// without holding the template's capabilities, when all of these hold:
+/// - the assignment is active and current today (revoked or expired ones go through `assign`);
+/// - only the end moves, and later: `from` is not earlier than today's start, `until` is after the
+///   current end and no later than the end of the academic year after it (the Perpanjang suggestion);
+/// - the template carries no sensitive capability (those stay with Owners).
+///
+/// `Some` is the audit's `authorized_by`; `None` leaves the ordinary grant rules to decide.
+pub(super) fn renewal(
+    facts: &Facts,
+    mine: &[Holding],
+    template: &Template,
+    current: &Assignment,
+    from: Option<&str>,
+    until: Option<&str>,
+) -> Option<Value> {
+    let today = facts.today();
+    if !current.current(today)
+        || template
+            .capabilities
+            .iter()
+            .any(|c| reference().sensitive(c))
+    {
+        return None;
+    }
+    let end = parse_date(current.valid_until.as_deref()?)?;
+    let next = parse_date(until?)?;
+    let (_, limit, _) = facts.academic_year_on(
+        current.scope.school_id.as_deref(),
+        end + chrono::Duration::days(1),
+    );
+    let start_kept = match (current.valid_from.as_deref(), from) {
+        (_, None) => current.valid_from.is_none(),
+        (None, Some(f)) => parse_date(f).is_some(),
+        (Some(old), Some(f)) => {
+            matches!((parse_date(old), parse_date(f)), (Some(o), Some(n)) if n >= o)
+        }
+    };
+    if !start_kept || next <= end || next > limit {
+        return None;
+    }
+    let source = manager(facts, mine, &current.scope)?;
+    Some(json!({
+        "rule": "renewal",
+        "source": source,
+        "previousEnd": current.valid_until,
+        "newEnd": until,
+    }))
+}
+
 /// `assign` creates or reopens by key; every other command changes the record it named by id.
 async fn save(
     tx: &mut Txn,
@@ -557,7 +608,22 @@ async fn assignment_command(
         if !eligible {
             return Err(unprocessable("TARGET_NOT_ELIGIBLE"));
         }
-        let authorized = may_grant(facts, mine, &template, &next.scope, index)?;
+        let renewed = (c.action == CHANGE_VALIDITY)
+            .then(|| {
+                renewal(
+                    facts,
+                    mine,
+                    &template,
+                    &next,
+                    c.valid_from.as_deref(),
+                    c.valid_until.as_deref(),
+                )
+            })
+            .flatten();
+        let authorized = match renewed {
+            Some(by) => by,
+            None => may_grant(facts, mine, &template, &next.scope, index)?,
+        };
         next.status = "active".into();
         // Without an end, the assignment ends with the academic year (spec §10 #8.4).
         let validity = facts.validity(
