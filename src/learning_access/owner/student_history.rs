@@ -2,10 +2,11 @@ use super::*;
 use axum::extract::Path;
 
 /// One Student's enrolments across the schools of the tenant, for the Learning pathway (Learning ADR 0017 §7): the
-/// years a pathway shows come from SIS identity, never from a shared Learning scope. SIS keeps no record per school
-/// year yet, so each enrolment carries what is stored: its entry year and grade, and the class it is in now (or was
-/// last in). The caller is pinned to one school as for `authorize` and may read only a Student they already see
-/// there: their own record, their child, a class roster, or a `learning.mastery.read` roster.
+/// years a pathway shows come from SIS identity, never from a shared Learning scope. Each enrolment carries its entry
+/// year and grade and the class it is in now (or was in last); `years` adds the class of each academic year recorded
+/// since roster moves keep one (`enrolment_history`). The caller is pinned to one school as for `authorize` and may
+/// read only a Student they already see there: their own record, their child, a class roster, or a
+/// `learning.mastery.read` roster.
 const ENROLMENTS: &str = "MATCH (s:Student {studentId:$student})-[:ENROLLED_AS]->(e:EnrolledStudent {tenant_id:$tenant}) WHERE coalesce(e.school_id,'')<>'' OPTIONAL MATCH (e)-[:ENROLLED_IN]->(sec:Section {tenant_id:$tenant}) WHERE sec.school_id=e.school_id OPTIONAL MATCH (school:School {school_id:e.school_id,tenant_id:$tenant}) WITH e,school,collect(DISTINCT sec) AS sections RETURN e.school_id AS school_id,coalesce(school.school_name,school.name) AS school_name,e.status AS status,e.entry_year AS entry_year,e.year_group AS entry_grade,e.graduation_year AS graduation_year,size(sections) AS classes,head(sections).section_id AS class_id,head(sections).name AS class_name,head(sections).year_group AS class_grade,head(sections).academic_year AS class_year ORDER BY entry_year,school_id LIMIT 9";
 const MAX_ENROLMENTS: usize = 8;
 
@@ -70,7 +71,7 @@ pub(super) async fn read(
     a: &Actor,
     scope: &Scope,
     student: &str,
-) -> Result<Vec<Value>, Failure> {
+) -> Result<(Vec<Value>, Vec<Value>), Failure> {
     visible(s, a, scope, student).await?;
     let mut rows = s
         .graph
@@ -105,9 +106,45 @@ pub(super) async fn read(
             "class": class,
         }));
     }
+    // The exact years recorded on roster moves, handovers and the backfill (`enrolment_history`).
+    let mut rows = s
+        .graph
+        .execute(
+            query(crate::enrolment_history::READ)
+                .param("student", student)
+                .param("tenant", scope.tenant_id.clone()),
+        )
+        .await
+        .map_err(unavailable)?;
+    let mut years = vec![];
+    while let Some(row) = rows.next().await.map_err(unavailable)? {
+        let school: String = row.get("school_id").map_err(unavailable)?;
+        let Some(code) = text(&row, "year_code", 16) else {
+            continue;
+        };
+        if years.len() == crate::enrolment_history::MAX_YEARS || !valid_id(&school) {
+            return Err(failure(StatusCode::SERVICE_UNAVAILABLE));
+        }
+        let class = match text(&row, "class_id", 128).filter(|id| valid_id(id)) {
+            Some(id) => {
+                json!({"id":id,"name":text(&row,"class_name",256).unwrap_or_else(|| id.clone())})
+            }
+            None => Value::Null,
+        };
+        years.push(json!({
+            "schoolId": school,
+            "schoolName": text(&row, "school_name", 256),
+            "academicYearCode": code,
+            "academicYear": text(&row, "year", 32),
+            "gradeCode": text(&row, "grade_code", 16),
+            "yearGroup": text(&row, "year_group", 64),
+            "class": class,
+            "source": text(&row, "source", 32).unwrap_or_else(|| "roster".into()),
+        }));
+    }
     // A grant or binding removed while reading answers nothing, as Learning's own reads do.
     visible(s, a, scope, student).await?;
-    Ok(enrolments)
+    Ok((enrolments, years))
 }
 
 pub(super) async fn handler(
@@ -128,11 +165,11 @@ pub(super) async fn handler(
     }
     let a = actor(&h, &q).await?;
     super::super::ensure_schema(&s.graph).await?;
-    let enrolments = read(&s, &a, &q, &student).await?;
+    let (enrolments, years) = read(&s, &a, &q, &student).await?;
     let mut response = Json(
         json!({"data":{"contractVersion":1,"databaseId":identity(&s.graph).await?,
         "actor":{"id":a.id,"role":a.role},"schoolId":q.school_id,"tenantId":q.tenant_id,
-        "studentId":student,"enrolments":enrolments}}),
+        "studentId":student,"enrolments":enrolments,"years":years}}),
     )
     .into_response();
     response.headers_mut().insert(
