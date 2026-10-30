@@ -82,6 +82,31 @@ async fn nomenclature_seeds_per_school_and_saves_are_revisioned_audited_and_capa
         g.run(query(statement)).await.unwrap();
     }
 
+    // The Learning read of an unseeded school answers the defaults and writes nothing.
+    let (early_tag, early) = repo::learning_read(&g, "tenant", "SCH-IISS", None)
+        .await
+        .unwrap();
+    let early = early.unwrap();
+    assert!(early_tag.ends_with("d\""), "{early_tag}");
+    assert_eq!(kind(&early, "grade")["version"], 0);
+    assert_eq!(kind(&early, "grade")["rows"][0]["code"], "Y7");
+    assert_eq!(kind(&early, "grade")["rows"][0]["version"], 0);
+    assert_eq!(
+        count(&g, "MATCH(k:AcademicNomenclatureKind) RETURN count(k) AS n").await,
+        0
+    );
+    assert!(
+        repo::learning_read(&g, "tenant", "SCH-IISS", Some(&early_tag))
+            .await
+            .unwrap()
+            .1
+            .is_some(),
+        "defaults are never a 304"
+    );
+    assert!(repo::learning_read(&g, "tenant", "SCH-NONE", None)
+        .await
+        .is_err());
+
     // First reads of the two schools at once seed each school once.
     let (a, b, c) = tokio::join!(
         repo::read(
@@ -398,4 +423,21 @@ async fn nomenclature_seeds_per_school_and_saves_are_revisioned_audited_and_capa
         .unwrap();
     assert_eq!(kind(&fresh, "unit")["rows"][0]["labelEn"], "Sekolah Baru");
     assert_eq!(kind(&fresh, "grade")["rows"].as_array().unwrap().len(), 6);
+
+    // Once stored, the Learning read is the staff read without archived rows, and revalidates.
+    let (staff_tag, staff) = repo::read(&g, "tenant", "SCH-IISS", "owner", "owner", false, None)
+        .await
+        .unwrap();
+    let (learning_tag, learning) = repo::learning_read(&g, "tenant", "SCH-IISS", None)
+        .await
+        .unwrap();
+    assert_eq!(learning_tag, staff_tag);
+    assert_eq!(learning, staff);
+    assert!(
+        repo::learning_read(&g, "tenant", "SCH-IISS", Some(&learning_tag))
+            .await
+            .unwrap()
+            .1
+            .is_none()
+    );
 }

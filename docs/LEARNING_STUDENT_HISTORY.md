@@ -18,6 +18,8 @@ bearer, pinned to one school exactly as `/learning/owner/authorize`.
 
 - Every `EnrolledStudent` of the Student in the tenant, any status, ordered by entry year; other tenants are left out.
   At most 8 (more is 503).
+- `schoolName`: the School's `school_name`, else its legacy `name` (until 2026-10-30 only `name` was read, which the
+  current School nodes do not carry, so it was `null`).
 - `entryYear`, `entryYearGroup`, `graduationYear`: what was stored at placement (`school_years.rs`); `null` when not
   recorded.
 - `class`: the class the enrolment is in now, or was in last when the enrolment ended, whatever the class status;

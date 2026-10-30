@@ -116,6 +116,18 @@ async fn list(
     } else {
         format!("private, max-age={}", model::CACHE_SECONDS)
     };
+    respond(data, &q, &tag, manage, &cache)
+}
+
+/// The answer of a read: 304 when the caller's ETag still matches, else the data with the
+/// contract fields. Both carry the cache policy and the ETag.
+fn respond(
+    data: Option<Value>,
+    q: &Lookup,
+    tag: &str,
+    manage: bool,
+    cache: &str,
+) -> Result<Response, Failure> {
     let mut response = match data {
         None => StatusCode::NOT_MODIFIED.into_response(),
         Some(mut data) => {
@@ -131,14 +143,41 @@ async fn list(
     let headers = response.headers_mut();
     headers.insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_str(&cache).map_err(unavailable)?,
+        HeaderValue::from_str(cache).map_err(unavailable)?,
     );
     headers.insert(
         header::ETAG,
-        HeaderValue::from_str(&tag).map_err(unavailable)?,
+        HeaderValue::from_str(tag).map_err(unavailable)?,
     );
     headers.insert(header::VARY, HeaderValue::from_static("Authorization"));
     Ok(response)
+}
+
+/// The Learning read (slice 4), with the caller's Learning bearer: a Teacher or Owner of the
+/// school, or a Student or Parent with an active class there. Active rows only, never written;
+/// `canManage` is always false here.
+async fn learning_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    q: Result<Query<Lookup>, QueryRejection>,
+) -> Result<Response, Failure> {
+    let Query(q) = q.map_err(|_| invalid())?;
+    if !(identifier(&q.school_id) && identifier(&q.tenant_id)) || q.include_archived {
+        return Err(invalid());
+    }
+    let known = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_string);
+    let (tag, data) = tokio::time::timeout(Duration::from_secs(8), async {
+        crate::learning_access::owner::school_reader(&state, &headers, &q.school_id, &q.tenant_id)
+            .await?;
+        repository::learning_read(&state.graph, &q.tenant_id, &q.school_id, known.as_deref()).await
+    })
+    .await
+    .map_err(unavailable)??;
+    let cache = format!("private, max-age={}", model::CACHE_SECONDS);
+    respond(data, &q, &tag, false, &cache)
 }
 
 /// Saves run detached so a client disconnect cannot cancel a commit whose answer it missed; a
@@ -192,6 +231,10 @@ pub use repository::init;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/sis-service/academic/nomenclature", get(list))
+        .route(
+            "/api/v1/sis-service/learning/nomenclature",
+            get(learning_list),
+        )
         .route("/api/v1/sis-service/academic/nomenclature/:kind", put(save))
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
 }

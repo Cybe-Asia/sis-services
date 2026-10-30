@@ -113,6 +113,29 @@ pub(super) async fn class_actor(
     }
     Ok((a.id, a.role))
 }
+/// A Learning caller of the school (nomenclature slice 4): a Teacher or Owner with the school in
+/// scope, or a Student or Parent with an active class there.
+pub(crate) async fn school_reader(
+    state: &AppState,
+    headers: &HeaderMap,
+    school: &str,
+    tenant: &str,
+) -> Result<(String, String), Failure> {
+    let scope = Scope {
+        school_id: school.into(),
+        tenant_id: tenant.into(),
+        class_id: None,
+        student_id: None,
+        access: None,
+    };
+    let a = actor(headers, &scope).await?;
+    if matches!(a.role.as_str(), "student" | "parent")
+        && projection(state, &a, &scope).await?.is_empty()
+    {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    Ok((a.id, a.role))
+}
 async fn identity(graph: &neo4rs::Graph) -> Result<String, Failure> {
     let mut rows = graph
         .execute(query("CALL db.info() YIELD id RETURN id"))

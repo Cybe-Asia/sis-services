@@ -54,7 +54,7 @@ The fixed grade mappings of spec §4 (grade to unit, phase and stage) are code, 
 ## Access
 
 - **Read:** a staff portal session of an Owner or school administrator of the school, or a teacher session of the
-  school. Student/Parent BFF reads come with slice 4.
+  school. Learning (Teacher, Owner, Student, Parent) reads through `GET /learning/nomenclature` below.
 - **Save:** a staff portal session of an Owner or school administrator. It also needs the capability decision
   `academic.nomenclature.manage` at the school (ADR 0018). Owners and the `school_admin` seed hold it; see
   `AUTHORIZATION.md` for tenants with a saved `school_admin` revision.
@@ -84,6 +84,21 @@ The fixed grade mappings of spec §4 (grade to unit, phase and stage) are code, 
   - `If-None-Match` with the current ETag answers 304 without reading the rows.
   - The ETag is `"n1-<kinds>-<sum of kind versions>"`, and every save raises the sum.
   - `includeArchived` reads are `no-store`.
+
+## `GET /api/v1/sis-service/learning/nomenclature?schoolId&tenantId` (slice 4)
+
+The read Learning API makes with the caller's Learning bearer. SIS reads under `/academic/*` take Admin portal
+sessions, so Learning reads live under `/learning/*`.
+
+- **Callers:** a Teacher or Owner with the school in scope (RS256 broker token), or a Student or Parent (HS256) with an
+  active class at the school. Anyone else gets 403; `includeArchived` is refused with 400.
+- **Answer:** the shape of the staff read, active rows only, with `canManage: false`.
+- **Nothing is written.** A kind the school has not stored yet (nobody has opened the school in Admin) answers its
+  seed defaults with `version: 0`. The ETag then ends in `d` (`"n1-0-0d"`) and is never answered with a 304, so the
+  stored lists show at the next read once a school is seeded.
+- **Caching:** as the staff read: `private, max-age=300`, `ETag`, `Vary: Authorization`, and 304 on a matching
+  `If-None-Match` once every kind is stored.
+- 404 `NOT_FOUND` when the School does not exist once for the tenant and a default is needed.
 
 ## `PUT /api/v1/sis-service/academic/nomenclature/{kind}`
 
@@ -123,8 +138,10 @@ changed.
   - The class list, class detail, create-class form, master mapel (grade tabs, subject names, semester tabs) and
     Akses staf (role titles, subject and grade names in scopes) read the labels.
   - Each falls back to today's string when a label is missing or SIS does not answer.
-- **Slices 4–5** (not built): learning-web and the Student/Parent client through their BFFs, and normalising
-  `Section.yearGroup` and `academicYear` to codes. `model::grade_code` is the parser that normalisation will use.
+- **Slice 4:** Learning API reads `/learning/nomenclature` (cached five minutes per school), names the pathway's
+  grades from it and serves it to learning-web and the Student/Parent client.
+- **Slice 5** (not built): normalising `Section.yearGroup` and `academicYear` to codes. `model::grade_code` is the
+  parser that normalisation will use.
 
 ## Tests
 
@@ -137,5 +154,6 @@ changed.
   - archive;
   - open kinds;
   - who may save;
-  - a save as the school's first touch.
+  - a save as the school's first touch;
+  - the Learning read: defaults before any seed without writing, then the staff answer and a 304.
 - The local browser check against this build is in `digital-school/docs/qa/academic-nomenclature/`.

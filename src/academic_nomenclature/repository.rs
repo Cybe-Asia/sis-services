@@ -129,8 +129,17 @@ pub async fn read(
         1100,
     )
     .await?;
+    let by_kind = stored_rows(&stored, archived)?;
+    Ok((tag, Some(answer(&current, by_kind))))
+}
+
+/// Stored rows by kind, archived ones only when asked for.
+fn stored_rows(
+    stored: &[GraphRow],
+    archived: bool,
+) -> Result<BTreeMap<String, Vec<Value>>, Failure> {
     let mut by_kind: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    for r in &stored {
+    for r in stored {
         let status = get::<String>(r, "status")?;
         if !archived && status != model::ACTIVE {
             continue;
@@ -140,6 +149,9 @@ pub async fn read(
             .or_default()
             .push(row_json(r)?);
     }
+    Ok(by_kind)
+}
+fn answer(current: &BTreeMap<String, i64>, mut by_kind: BTreeMap<String, Vec<Value>>) -> Value {
     let kinds: Vec<Value> = KINDS
         .iter()
         .map(|k| {
@@ -151,10 +163,55 @@ pub async fn read(
             })
         })
         .collect();
-    Ok((
-        tag,
-        Some(json!({ "kinds": kinds, "mappings": { "grade": model::mappings() } })),
-    ))
+    json!({ "kinds": kinds, "mappings": { "grade": model::mappings() } })
+}
+
+/// The read Learning callers get (slice 4): active rows only, and nothing is written. A kind the
+/// school has not stored yet answers its defaults at version 0; such an answer is never a 304, so
+/// a later seed or a new subject plan shows at the next read.
+pub async fn learning_read(
+    graph: &Graph,
+    tenant: &str,
+    school: &str,
+    known: Option<&str>,
+) -> Result<(String, Option<Value>), Failure> {
+    let current = versions(graph, tenant, school).await?;
+    let complete = KINDS.iter().all(|k| current.contains_key(*k));
+    let mut tag = etag(&current, false);
+    if !complete {
+        tag.insert(tag.len() - 1, 'd');
+    } else if known == Some(tag.as_str()) {
+        return Ok((tag, None));
+    }
+    let stored = rows(
+        graph,
+        query(ROWS)
+            .param("tenant", tenant)
+            .param("school", school)
+            .param("kind", Option::<String>::None),
+        1100,
+    )
+    .await?;
+    let mut by_kind = stored_rows(&stored, false)?;
+    if !complete {
+        let mut tx = graph.start_txn().await.map_err(unavailable)?;
+        let found = facts(&mut tx, tenant, school).await;
+        let _ = tx.rollback().await;
+        let found = found?;
+        for kind in KINDS.iter().filter(|k| !current.contains_key(**k)) {
+            let rows = model::defaults(kind, &found)
+                .into_iter()
+                .filter(|r| r.status == model::ACTIVE)
+                .map(|r| {
+                    let mut v = serde_json::to_value(&r).map_err(unavailable)?;
+                    v["version"] = json!(0);
+                    Ok(v)
+                })
+                .collect::<Result<Vec<_>, Failure>>()?;
+            by_kind.insert((*kind).to_string(), rows);
+        }
+    }
+    Ok((tag, Some(answer(&current, by_kind))))
 }
 
 /// One stored row as reads and saves answer it, with the version at which it last changed.
