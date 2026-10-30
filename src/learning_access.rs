@@ -196,6 +196,27 @@ pub(crate) async fn staff_session(headers: &HeaderMap) -> Result<StaffSession, F
 pub(crate) async fn any_staff_session(headers: &HeaderMap) -> Result<StaffSession, Failure> {
     Ok(StaffSession(verified(headers, false).await?))
 }
+/// Any active staff member whose session covers the school (ADR 0018 slice 6): actor and role as
+/// Auth has it (`owner`, `school_admin` or `staff`). The route then decides from the caller's
+/// capabilities at the school, which Owners and school administrators hold on day one; this check
+/// alone lets nobody read or write.
+pub(crate) async fn school_staff_actor(
+    headers: &HeaderMap,
+    tenant_id: &String,
+    school_id: &String,
+) -> Result<(String, String), Failure> {
+    let (actor, role, schools, tenants) = any_staff_session(headers).await?.staff_scope();
+    if !crate::school_portal::staff_capability::live_scope(
+        role == "owner",
+        &schools,
+        &tenants,
+        school_id,
+        tenant_id,
+    ) {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    Ok((actor, role))
+}
 impl StaffSession {
     /// As `scope`, naming the role as Auth has it: `owner`, `school_admin` or `staff`.
     pub(crate) fn staff_scope(self) -> (String, String, Vec<String>, Vec<String>) {

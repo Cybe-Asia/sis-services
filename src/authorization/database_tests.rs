@@ -208,9 +208,12 @@ async fn authorization_graph_day_one_equals_todays_checks() {
         for school in ["school", "school-2"] {
             let scope = Scope::school(school);
             let administers = today(&g, &admin, person, school, "").await;
+            // Every capability an Admin section now opens by (ADR 0018 slice 6), and biodata.
             for capability in [
+                "academic.staffing.read",
                 "academic.staffing.manage",
                 "academic.subject_plan.manage",
+                "school.content.manage",
                 "student.biodata.manage",
             ] {
                 assert_eq!(
@@ -222,7 +225,7 @@ async fn authorization_graph_day_one_equals_todays_checks() {
             }
         }
     }
-    assert_eq!(compared, 12 * 5 * 2 + 12 * 2 * 3);
+    assert_eq!(compared, 12 * 5 * 2 + 12 * 2 * 5);
     // The personas the ADR names, spelled out.
     assert!(new(&g, "owner", MANAGE, &Scope::school("school-2")).await);
     assert!(
@@ -1481,8 +1484,9 @@ async fn authorization_graph_validity_default_and_expiring() {
         .unwrap();
     assert_eq!(ends(&theirs), [("t-revoked".to_string(), 10)]);
     assert_eq!(theirs["assignments"][0]["canRenew"], false);
-    // A Principal of the school manages access there, but renewing runs the grant rules again: they
-    // do not hold the Admin teacher's Learning capabilities, so the hint says no, as the write would.
+    // A Principal of the school manages access there: renewing an Admin teacher whose Learning
+    // capabilities they do not hold is allowed by the renewal rule (2026-10-30, master-thread
+    // default), up to the end of the next academic year; past it, the grant rules refuse.
     let principal = reads::expiring(
         &g,
         &scoped_reader("t-grant", &["school"]),
@@ -1492,12 +1496,12 @@ async fn authorization_graph_validity_default_and_expiring() {
     )
     .await
     .unwrap();
-    assert_eq!(principal["assignments"][0]["canRenew"], false);
+    assert_eq!(principal["assignments"][0]["canRenew"], true);
     let refused = commands::assignments(
         &g,
         &writer("t-grant", "staff", "validity-principal-renew"),
         &batch(vec![AssignmentCommand {
-            valid_until: Some(day(200)),
+            valid_until: Some(day(800)),
             ..by_id(
                 CHANGE_VALIDITY,
                 principal["assignments"][0]["id"].as_str().unwrap(),
@@ -1784,5 +1788,436 @@ async fn authorization_graph_reassign_revoked_key_from_add() {
         )
         .await,
         1
+    );
+}
+
+/// ADR 0018 slice 6: the teacher list, its school context and the article audience picker open by
+/// capability. Nobody gains a section without an assignment that carries its capability, and a
+/// revoke takes it away again.
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn authorization_graph_slice6_sections_by_capability() {
+    let g = fixture().await;
+    let owner = |command: &'static str| writer("owner", "owner", command);
+    let teachers = crate::academic_teachers::repository::authorize;
+    let content = |who: &'static str| {
+        let g = g.clone();
+        async move {
+            reads::permitted_schools(
+                &mut Db::Graph(&g),
+                "tenant",
+                &["school".to_string(), "school-2".to_string()],
+                who,
+                "school.content.manage",
+            )
+            .await
+            .unwrap()
+        }
+    };
+    // Before any assignment: administrators and Owners only.
+    for (who, school, allowed) in [
+        ("admin", "school", true),
+        ("admin", "school-2", false),
+        ("owner", "school-2", true),
+        ("t-assigned", "school", false),
+        ("t-home", "school", false),
+        ("t-grant", "school", false),
+    ] {
+        assert_eq!(
+            teachers(&g, who, school, "tenant").await.unwrap(),
+            allowed,
+            "{who} {school}"
+        );
+    }
+    assert!(content("t-grant").await.is_empty());
+    assert_eq!(content("admin").await, ["school"]);
+
+    // The Principal seed is version 2 and carries module review; staffing reads come with it.
+    let loaded = facts::load(&mut Db::Graph(&g), "tenant", &[], &[])
+        .await
+        .unwrap();
+    let principal = loaded
+        .templates
+        .iter()
+        .find(|t| t.code == PRINCIPAL)
+        .unwrap();
+    assert_eq!(principal.version, 2);
+    assert!(principal
+        .capabilities
+        .iter()
+        .any(|c| c == "learning.module.review"));
+    let given = commands::assignments(
+        &g,
+        &owner("slice6-assign-01"),
+        &batch(vec![
+            assign("t-assigned", "admin_teacher", Scope::school("school"), 0),
+            assign("t-home", PRINCIPAL, Scope::school("school"), 0),
+        ]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        count(
+            &g,
+            "MATCH(e:AuthorizationAudit {template_code:'principal',template_version:2,action:'assign'}) RETURN count(e) AS n",
+        )
+        .await,
+        1
+    );
+    let teacher_id = given["assignments"][0]["id"].as_str().unwrap().to_string();
+    for (who, school, allowed) in [
+        ("t-assigned", "school", true),
+        ("t-assigned", "school-2", false),
+        ("t-home", "school", true),
+        ("t-home", "school-2", false),
+        ("t-grant", "school", false),
+    ] {
+        assert_eq!(
+            teachers(&g, who, school, "tenant").await.unwrap(),
+            allowed,
+            "{who} {school}"
+        );
+    }
+    // Neither template carries article writing.
+    assert!(content("t-assigned").await.is_empty());
+    assert!(content("t-home").await.is_empty());
+
+    // A school-made template with `school.content.manage` opens articles at its school only.
+    commands::templates(
+        &g,
+        &owner("slice6-template-01"),
+        &template(
+            CREATE,
+            "content_editor",
+            &["school.content.manage"],
+            &[SCHOOL],
+            0,
+        ),
+    )
+    .await
+    .unwrap();
+    commands::assignments(
+        &g,
+        &owner("slice6-assign-02"),
+        &batch(vec![assign(
+            "t-grant",
+            "content_editor",
+            Scope::school("school"),
+            0,
+        )]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(content("t-grant").await, ["school"]);
+    assert!(!teachers(&g, "t-grant", "school", "tenant").await.unwrap());
+    let schools = ["school".to_string(), "school-2".to_string()];
+    let tenants = ["tenant".to_string()];
+    let picker = crate::education_calendar::repository::context(
+        &g,
+        "t-grant",
+        &schools,
+        &tenants,
+        "",
+        &["school|tenant".to_string()],
+    )
+    .await
+    .unwrap();
+    let classes = picker["classes"].as_array().unwrap();
+    assert!(!classes.is_empty());
+    assert!(classes.iter().all(|c| c["schoolId"] == "school"));
+    let today_rule =
+        crate::education_calendar::repository::context(&g, "t-grant", &schools, &tenants, "", &[])
+            .await
+            .unwrap();
+    assert!(today_rule["classes"].as_array().unwrap().is_empty());
+
+    // A revoke closes the teacher list again.
+    commands::assignments(
+        &g,
+        &owner("slice6-revoke-01"),
+        &batch(vec![by_id(REVOKE, &teacher_id, 1)]),
+    )
+    .await
+    .unwrap();
+    assert!(!teachers(&g, "t-assigned", "school", "tenant")
+        .await
+        .unwrap());
+}
+
+/// Renewal by an access manager (master-thread default 2026-10-30): a Principal extends an Admin
+/// teacher's end without holding its capabilities, only to the end of the next academic year, only
+/// forward, only in their school, never a sensitive template, never a revoked or expired one; the
+/// audit names the rule and both ends, and the expiring read's `canRenew` agrees.
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn authorization_graph_principal_renewal() {
+    let g = fixture().await;
+    let owner = |command: &'static str| writer("owner", "owner", command);
+    let principal = |command: &'static str| writer("t-home", "staff", command);
+    let today = super::model::today();
+    let day = |n: i64| {
+        (today + chrono::Duration::days(n))
+            .format("%Y-%m-%d")
+            .to_string()
+    };
+    let soon = day(10);
+    let with_dates =
+        |staff: &str, template: &str, scope: Scope, from: Option<String>| AssignmentCommand {
+            valid_from: from,
+            valid_until: Some(soon.clone()),
+            ..assign(staff, template, scope, 0)
+        };
+    let given = commands::assignments(
+        &g,
+        &owner("renew-setup-01"),
+        &batch(vec![
+            assign("t-home", PRINCIPAL, Scope::school("school"), 0),
+            with_dates(
+                "t-assigned",
+                "admin_teacher",
+                Scope::school("school"),
+                Some(day(-5)),
+            ),
+            with_dates("t-grant", SCHOOL_ADMIN, Scope::school("school"), None),
+            with_dates("t-other", "admin_teacher", Scope::school("school-2"), None),
+            with_dates("t-revoked", "admin_teacher", Scope::school("school"), None),
+        ]),
+    )
+    .await
+    .unwrap();
+    let id = |i: usize| given["assignments"][i]["id"].as_str().unwrap().to_string();
+    let (teacher, admin, elsewhere, expired) = (id(1), id(2), id(3), id(4));
+    let loaded = facts::load(&mut Db::Graph(&g), "tenant", &[], &[])
+        .await
+        .unwrap();
+    let (_, limit, _) = loaded.academic_year_on(
+        Some("school"),
+        super::model::parse_date(&soon).unwrap() + chrono::Duration::days(1),
+    );
+    let limit = limit.format("%Y-%m-%d").to_string();
+    let later = |d: &str| {
+        (super::model::parse_date(d).unwrap() + chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string()
+    };
+    let renew = |id: &str, from: Option<String>, until: &str, version: u32| AssignmentCommand {
+        valid_from: from,
+        valid_until: Some(until.to_string()),
+        ..by_id(CHANGE_VALIDITY, id, version)
+    };
+
+    // The expiring read offers renewal for the Admin teacher, not the school admin template.
+    let expiring = reads::expiring(
+        &g,
+        &scoped_reader("t-home", &["school"]),
+        "tenant",
+        400,
+        None,
+    )
+    .await
+    .unwrap();
+    let rows = expiring["assignments"].as_array().unwrap().clone();
+    let can = |id: &str| {
+        rows.iter()
+            .find(|r| r["id"] == id)
+            .map(|r| (r["canRenew"].clone(), r["renewUntil"].clone()))
+            .unwrap()
+    };
+    assert_eq!(can(&teacher), (true.into(), limit.clone().into()));
+    assert_eq!(can(&admin).0, false);
+    assert!(
+        rows.iter().all(|r| r["id"] != elsewhere),
+        "other school is not read"
+    );
+
+    // Over-long, moving the start earlier, clearing it, or shortening: the grant rules decide.
+    for (command, key) in [
+        (
+            renew(&teacher, Some(day(-5)), &later(&limit), 1),
+            "renew-too-long",
+        ),
+        (
+            renew(&teacher, Some(day(-6)), &limit, 1),
+            "renew-earlier-start",
+        ),
+        (renew(&teacher, None, &limit, 1), "renew-cleared-start"),
+        (renew(&teacher, Some(day(-5)), &day(9), 1), "renew-shorter"),
+    ] {
+        assert_eq!(
+            code(commands::assignments(&g, &principal(key), &batch(vec![command])).await),
+            "CAPABILITY_NOT_HELD",
+            "{key}"
+        );
+    }
+    // A sensitive template stays with Owners; another school is outside the Principal's scope.
+    assert_ne!(
+        commands::assignments(
+            &g,
+            &principal("renew-sensitive"),
+            &batch(vec![renew(&admin, None, &limit, 1)])
+        )
+        .await
+        .is_ok(),
+        true
+    );
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &principal("renew-elsewhere"),
+                &batch(vec![renew(&elsewhere, None, &limit, 1)])
+            )
+            .await
+        ),
+        "FORBIDDEN"
+    );
+    // An expired assignment is renewed through `assign`, not here.
+    g.run(
+        query("MATCH(a:AuthorizationAssignment {id:$id}) SET a.valid_until=$end")
+            .param("id", expired.clone())
+            .param("end", day(-1)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &principal("renew-expired"),
+                &batch(vec![renew(&expired, None, &limit, 1)])
+            )
+            .await
+        ),
+        "CAPABILITY_NOT_HELD"
+    );
+
+    // The renewal itself, audited with the rule and both ends.
+    let renewed = commands::assignments(
+        &g,
+        &principal("renew-ok-01"),
+        &batch(vec![renew(&teacher, Some(day(-5)), &limit, 1)]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(renewed["assignments"][0]["validUntil"], limit.as_str());
+    assert_eq!(renewed["assignments"][0]["version"], 2);
+    let mut rows = g
+        .execute(
+            query("MATCH(e:AuthorizationAudit {record_key:$id,action:'change_validity'}) RETURN e.authorized_by AS by,e.actor_id AS actor")
+                .param("id", teacher.clone()),
+        )
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    let by: Value = serde_json::from_str(&row.get::<String>("by").unwrap()).unwrap();
+    assert_eq!(row.get::<String>("actor").unwrap(), "t-home");
+    assert_eq!(by["rule"], "renewal");
+    assert_eq!(by["previousEnd"], soon.as_str());
+    assert_eq!(by["newEnd"], limit.as_str());
+    // Assigning or revoking still needs the grant rules or access management as before.
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &principal("renew-not-assign"),
+                &batch(vec![assign(
+                    "t-grant",
+                    "admin_teacher",
+                    Scope::school("school"),
+                    0
+                )])
+            )
+            .await
+        ),
+        "CAPABILITY_NOT_HELD"
+    );
+}
+
+/// The service self-read behind Admission's and Payment's capability gates (ADR 0018 slice 6).
+/// Day one: school administrators and teachers hold no `admissions.*` or `billing.*`; Owners hold
+/// all (and pass those services by role anyway). A tenant-wide grant answers in `tenants`, a school
+/// grant in `schools` only; an inactive Staff Member holds nothing.
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn authorization_graph_service_held_read() {
+    let g = fixture().await;
+    let owner = |command: &'static str| writer("owner", "owner", command);
+    let codes: Vec<String> = [
+        "admissions.application.read",
+        "admissions.document.read",
+        "billing.payment.read",
+        "billing.school_invoice.manage",
+    ]
+    .iter()
+    .map(|c| c.to_string())
+    .collect();
+    let held = |who: &'static str| {
+        let (g, codes) = (g.clone(), codes.clone());
+        async move { reads::held(&g, who, &codes).await.unwrap() }
+    };
+    let empty = serde_json::json!({"tenants": [], "schools": []});
+    for who in ["admin", "admin-2", "t-home", "t-assigned", "t-grant"] {
+        let answer = held(who).await;
+        for code in &codes {
+            assert_eq!(answer["capabilities"][code], empty, "{who} {code}");
+        }
+    }
+    let unscoped = held("owner").await;
+    assert_eq!(
+        unscoped["capabilities"]["billing.payment.read"], empty,
+        "an unscoped Owner names no tenant"
+    );
+    let scoped = held("owner-a").await;
+    assert_eq!(
+        scoped["capabilities"]["admissions.document.read"]["schools"],
+        serde_json::json!([{"tenantId": "tenant", "schoolId": "school"}])
+    );
+
+    commands::templates(
+        &g,
+        &owner("held-template-01"),
+        &template(
+            CREATE,
+            "admissions_reader",
+            &["admissions.application.read", "billing.payment.read"],
+            &[TENANT, SCHOOL],
+            0,
+        ),
+    )
+    .await
+    .unwrap();
+    commands::assignments(
+        &g,
+        &owner("held-assign-01"),
+        &batch(vec![
+            assign("t-home", "admissions_reader", Scope::tenant(), 0),
+            assign("t-grant", "admissions_reader", Scope::school("school"), 0),
+        ]),
+    )
+    .await
+    .unwrap();
+    let wide = held("t-home").await;
+    assert_eq!(
+        wide["capabilities"]["admissions.application.read"]["tenants"],
+        serde_json::json!(["tenant"])
+    );
+    assert_eq!(wide["capabilities"]["admissions.document.read"], empty);
+    let one = held("t-grant").await;
+    assert_eq!(
+        one["capabilities"]["billing.payment.read"]["tenants"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        one["capabilities"]["billing.payment.read"]["schools"],
+        serde_json::json!([{"tenantId": "tenant", "schoolId": "school"}])
+    );
+    // A disabled Staff Member, and an unknown id, hold nothing.
+    assert_eq!(
+        held("t-off").await["capabilities"]["admissions.application.read"],
+        empty
+    );
+    assert_eq!(
+        held("nobody").await["capabilities"]["admissions.application.read"],
+        empty
     );
 }

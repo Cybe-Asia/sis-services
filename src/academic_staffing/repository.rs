@@ -126,7 +126,7 @@ async fn guard(tx: &mut Txn, w: &Writer<'_>, fingerprint: &str) -> Result<Option
     // A role revoked while this request waited for the locks does not write.
     match w.session {
         Session::Headers(headers) => {
-            let (actor, role) = crate::learning_access::administrator_actor(
+            let (actor, role) = crate::learning_access::school_staff_actor(
                 headers,
                 &w.tenant.to_string(),
                 &w.school.to_string(),

@@ -364,7 +364,7 @@ pub async fn history(
     }
     if versions.is_empty() && template.seeded {
         versions.push(json!({
-            "version": 1, "name": template.name, "capabilities": template.capabilities,
+            "version": template.version, "name": template.name, "capabilities": template.capabilities,
             "allowedScopes": template.allowed_scopes, "status": template.status,
             "seed": true, "actorName": null, "at": null,
         }));
@@ -544,8 +544,9 @@ pub async fn expiring(
         .collect();
     soon.sort_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.id.cmp(&y.1.id)));
     let mine = v.facts.holdings(&reader.actor);
-    // Renewing is a `change_validity`, which runs the grant rules again: the hint asks them too.
-    let renewable = |a: &Assignment| {
+    // Renewing is a `change_validity` to the suggested end: the grant rules, or the renewal rule
+    // for an access manager of the school (`commands::renewal`). The hint asks the same.
+    let renewable = |a: &Assignment, until: &str| {
         let session = match a.scope.school_id.as_deref() {
             Some(s) => v.managed.contains(s),
             None => v.edits_templates,
@@ -555,7 +556,16 @@ pub async fn expiring(
                 .template(&a.template_code)
                 .filter(|t| t.status == "active")
                 .is_some_and(|t| {
-                    super::commands::may_grant(&v.facts, &mine, t, &a.scope, 0).is_ok()
+                    super::commands::renewal(
+                        &v.facts,
+                        &mine,
+                        t,
+                        a,
+                        a.valid_from.as_deref(),
+                        Some(until),
+                    )
+                    .is_some()
+                        || super::commands::may_grant(&v.facts, &mine, t, &a.scope, 0).is_ok()
                 })
     };
     let rows: Vec<Value> = soon
@@ -565,9 +575,10 @@ pub async fn expiring(
             let next = *end + chrono::Duration::days(1);
             let (year, renew, _) = v.facts.academic_year_on(a.scope.school_id.as_deref(), next);
             row["daysLeft"] = json!((*end - today).num_days());
-            row["renewUntil"] = json!(renew.format("%Y-%m-%d").to_string());
+            let until = renew.format("%Y-%m-%d").to_string();
+            row["canRenew"] = json!(renewable(a, &until));
+            row["renewUntil"] = json!(until);
             row["renewAcademicYear"] = json!(year);
-            row["canRenew"] = json!(renewable(a));
             row
         })
         .collect();
@@ -668,6 +679,72 @@ pub async fn permits(
     let facts = facts::load(db, tenant, &[staff.to_string()], &[]).await?;
     let holdings = facts.holdings(staff);
     Ok(decide(&facts, &holdings, capability, &Scope::school(school)).is_some())
+}
+
+/// The schools among `schools` where `staff` holds `capability`, from one read of the tenant.
+pub async fn permitted_schools(
+    db: &mut Db<'_>,
+    tenant: &str,
+    schools: &[String],
+    staff: &str,
+    capability: &str,
+) -> Result<Vec<String>, Failure> {
+    let facts = facts::load(db, tenant, &[staff.to_string()], &[]).await?;
+    let holdings = facts.holdings(staff);
+    Ok(schools
+        .iter()
+        .filter(|school| decide(&facts, &holdings, capability, &Scope::school(school)).is_some())
+        .cloned()
+        .collect())
+}
+
+/// What a service may ask about its own caller (ADR 0018 slice 6): for each capability, the tenants
+/// where the caller holds it for the whole tenant and the schools where they hold it, from their
+/// explicit and derived holdings. Admission and Payment call it with the caller's Auth
+/// `staff-api+jwt`, so it answers for that Staff Member only. A Staff Member who is not one active
+/// node holds nothing here.
+pub async fn held(graph: &Graph, staff: &str, codes: &[String]) -> Result<Value, Failure> {
+    let rows = Db::Graph(graph)
+        .rows(
+            query("MATCH(s:StaffMember {id:$staff}) RETURN coalesce(s.membershipStatus,'') AS status,coalesce(s.tenantIds,[]) AS tenants LIMIT 2")
+                .param("staff", staff),
+            2,
+        )
+        .await?;
+    let tenants: Vec<String> = match rows.as_slice() {
+        [r] if get::<String>(r, "status")? == "ACTIVE" => get(r, "tenants")?,
+        _ => vec![],
+    };
+    if tenants.len() > 16 {
+        return Err(unavailable("Bound exceeded"));
+    }
+    let mut out: BTreeMap<&str, Value> = codes
+        .iter()
+        .map(|c| (c.as_str(), json!({"tenants": [], "schools": []})))
+        .collect();
+    for tenant in &tenants {
+        let facts = facts::load(&mut Db::Graph(graph), tenant, &[staff.to_string()], &[]).await?;
+        let holdings = facts.holdings(staff);
+        for code in codes {
+            let entry = out.get_mut(code.as_str()).expect("every code has an entry");
+            if holds_tenant(&facts, &holdings, code) {
+                entry["tenants"].as_array_mut().unwrap().push(json!(tenant));
+            }
+            for school in facts.schools.keys() {
+                if decide(&facts, &holdings, code, &Scope::school(school)).is_some() {
+                    entry["schools"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!({"tenantId": tenant, "schoolId": school}));
+                }
+            }
+        }
+    }
+    Ok(json!({
+        "staffMemberId": staff,
+        "capabilities": out,
+        "cacheSeconds": CACHE_SECONDS,
+    }))
 }
 
 /// One class of the mastery roster: the students the caller may read mastery for, and the

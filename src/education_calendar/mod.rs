@@ -38,6 +38,45 @@ struct ContextPage {
     #[serde(alias = "tenantId")]
     tenant_id: Option<String>,
 }
+/// Actor, schools, tenants and `school|tenant` keys where a staff member who is not an
+/// administrator holds `school.content.manage`; `FORBIDDEN` when there is none.
+async fn content_scope(
+    s: &AppState,
+    h: &HeaderMap,
+    selection: &crate::school_portal::staff_capability::Selection,
+) -> Result<(String, Vec<String>, Vec<String>, Vec<String>), Failure> {
+    let (actor, _, mut schools, mut tenants) = crate::learning_access::any_staff_session(h)
+        .await?
+        .staff_scope();
+    if let Some((school, tenant)) = selection
+        .pair()
+        .map_err(|_| failure(StatusCode::BAD_REQUEST))?
+    {
+        if !(schools.iter().any(|x| x == school) && tenants.iter().any(|x| x == tenant)) {
+            return Err(failure(StatusCode::FORBIDDEN));
+        }
+        (schools, tenants) = (vec![school.into()], vec![tenant.into()]);
+    }
+    let mut capable = vec![];
+    for tenant in &tenants {
+        for school in crate::authorization::reads::permitted_schools(
+            &mut crate::authorization::facts::Db::Graph(&s.graph),
+            tenant,
+            &schools,
+            &actor,
+            "school.content.manage",
+        )
+        .await
+        .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
+        {
+            capable.push(format!("{school}|{tenant}"));
+        }
+    }
+    if capable.is_empty() {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    Ok((actor, schools, tenants, capable))
+}
 async fn context(
     State(s): State<AppState>,
     h: HeaderMap,
@@ -55,15 +94,19 @@ async fn context(
         .map_err(|_| failure(StatusCode::BAD_REQUEST))?,
         _ => return Err(failure(StatusCode::BAD_REQUEST)),
     };
-    let member = crate::learning_access::calendar_membership_for(
-        &h,
-        &crate::school_portal::staff_capability::Selection {
-            school_id: q.school_id,
-            tenant_id: q.tenant_id,
-        },
-    )
-    .await?;
-    repository::context(&s.graph, &member.0, &member.1, &member.2, &after)
+    let selection = crate::school_portal::staff_capability::Selection {
+        school_id: q.school_id,
+        tenant_id: q.tenant_id,
+    };
+    let (actor, schools, tenants, capable) =
+        match crate::learning_access::calendar_membership_for(&h, &selection).await {
+            Ok((actor, schools, tenants)) => (actor, schools, tenants, vec![]),
+            // Not an administrator: the schools where the caller holds `school.content.manage`
+            // (ADR 0018 slice 6), so Admin's article editor can name their classes.
+            Err(e) if e.0 == StatusCode::FORBIDDEN => content_scope(&s, &h, &selection).await?,
+            Err(e) => return Err(e),
+        };
+    repository::context(&s.graph, &actor, &schools, &tenants, &after, &capable)
         .await
         .map(|data| Json(json!({"data":data})))
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))

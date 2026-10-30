@@ -233,7 +233,7 @@ async fn cross_year_creation_archive_and_bounded_range_pages() {
         .await
         .unwrap();
     assert_eq!(
-        context(&graph, &key, &[key.clone()], &[key.clone()], "")
+        context(&graph, &key, &[key.clone()], &[key.clone()], "", &[])
             .await
             .unwrap()["classes"]
             .as_array()
@@ -263,7 +263,7 @@ async fn cross_year_creation_archive_and_bounded_range_pages() {
         .await
         .unwrap();
     graph.run(query("UNWIND range(0,204) AS i CREATE(:Section {section_id:$key+'-'+toString(i),name:'Historical class',school_id:$key,tenant_id:$key,academic_year:'2020/2021',status:'archived',test_key:$key})").param("key",key.clone())).await.unwrap();
-    let first_context = context(&graph, &key, &[key.clone()], &[key.clone()], "")
+    let first_context = context(&graph, &key, &[key.clone()], &[key.clone()], "", &[])
         .await
         .unwrap();
     assert_eq!(first_context["classes"].as_array().unwrap().len(), 200);
@@ -274,7 +274,7 @@ async fn cross_year_creation_archive_and_bounded_range_pages() {
             .unwrap(),
     )
     .unwrap();
-    let second_context = context(&graph, &key, &[key.clone()], &[key.clone()], &after)
+    let second_context = context(&graph, &key, &[key.clone()], &[key.clone()], &after, &[])
         .await
         .unwrap();
     assert_eq!(second_context["classes"].as_array().unwrap().len(), 7);

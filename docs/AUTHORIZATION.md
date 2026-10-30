@@ -33,9 +33,12 @@ unknown code counts as sensitive.
 
 The seeds are in `src/authorization/templates.json`. They are defaults the school may edit.
 
-- Until a tenant saves a seed, it reads as version 1 with `seeded: true`.
-- The first save of a seed stores the seed as version 1 and the change as version 2.
-- No migration Job is needed.
+- Until a tenant saves a seed, it reads at the seed's `version` (1 unless `templates.json` names another) with
+  `seeded: true`.
+- The first save of a seed stores the seed at that version and the change as the next one.
+- A change to a seed in this file raises its `version`, so audit rows and caches tell the two defaults apart.
+  `principal` is version 2 since 2026-10-30; the others are version 1.
+- No migration Job is needed. A tenant that already saved its own revision of a seed keeps that revision.
 
 | Code | Allowed scopes | Capabilities |
 |---|---|---|
@@ -44,7 +47,7 @@ The seeds are in `src/authorization/templates.json`. They are defaults the schoo
 | `subject_lead` | `SCHOOL_SUBJECT` | `learning.module.review`, `learning.module.manage_any`, `learning.plan.manage`, `learning.question_bank.manage` |
 | `curriculum_coordinator` | `SCHOOL` | `learning.curriculum.manage`, `learning.plan.manage`, `learning.module.review`, `learning.module.manage_any`, `learning.mastery.read` |
 | `school_admin` | `SCHOOL` | `academic.staffing.read`, `academic.staffing.manage`, `academic.subject_plan.manage`, `academic.calendar.manage`, `academic.class_access.manage`, `academic.extracurricular.manage`, `academic.nomenclature.manage`, `school.content.manage`, `staff.directory.manage`, `student.biodata.manage`, `authorization.read` |
-| `principal` | `SCHOOL` | `authorization.manage`, `authorization.read`, `academic.staffing.read`, `learning.curriculum.read`, `learning.mastery.read` |
+| `principal` (v2) | `SCHOOL` | `authorization.manage`, `authorization.read`, `academic.staffing.read`, `learning.curriculum.read`, `learning.mastery.read`, `learning.module.review` |
 
 Two seeds go further than spec §3, so that day-one access equals today:
 
@@ -60,6 +63,13 @@ revision. The catalogue check refuses any other seed that carries `authorization
 with another scope. A Principal manages access in their school under the same guardrails as everyone else: they
 revoke and change validity, but grant only capabilities they hold themselves, so with this seed they cannot
 hand out the Learning templates (`CAPABILITY_NOT_HELD`). Widening the seed is a product decision.
+
+Version 2 (2026-10-30, master thread's Principal change) adds `learning.module.review`, so a Principal can review
+modules in their school. `learning.curriculum.read` and `learning.mastery.read` were already in version 1. A
+Principal still cannot **give** Admin teacher: that template also carries `learning.class.teach`,
+`learning.module.write`, `.publish`, `.manage_any`, `learning.objective_tag.write` and `learning.gradebook.read`,
+which the Principal does not hold (graph test `authorization_graph_reassign_revoked_key_from_add`). They can
+**renew** it through the renewal rule below.
 
 ## Scopes
 
@@ -153,6 +163,24 @@ or `.manage` gets 403 on every read but their own `effective`. Audit entries nam
 | The `principal` template is assigned (or its dates changed) by an Owner of the school only | 403 `PRINCIPAL_NEEDS_OWNER` (`index`) |
 | A school that had a holder of `authorization.manage` keeps one after the change | 409 `LAST_AUTHORIZATION_MANAGER` (`schoolId`) |
 | A school admin acts only in their schools | follows from the rows above |
+
+**Renewal (2026-10-30).** This is a master-thread default, made under the user's approval for "Principal can renew";
+the school may revisit it. A `change_validity` is let through without the "grant only what you hold" rule when all
+of these hold (`commands::renewal`):
+
+1. The assignment is `active` and in force today. Revoked or expired ones are re-assigned through `assign`.
+2. Only the end moves, and later. Template, scope and person cannot change in this command. `validFrom` is the
+   current start or a later one (leaving it out clears a start, which counts as earlier).
+3. The new end is after the current one and no later than the end of the academic year that follows it: the same
+   date as `renewUntil` in the expiring read.
+4. The caller holds `authorization.manage` over the assignment's scope (their own school).
+5. The template carries no sensitive capability. Those stay with Owners.
+
+The audit row is `change_validity` with `authorized_by` `{"rule":"renewal","source",…,"previousEnd","newEnd"}`
+and the actor. Every other `change_validity`, every `assign` and `revoke`, and template commands keep the
+grant rules above. The Principal template itself carries `authorization.manage`, which is sensitive, so a
+Principal is never renewed this way (`PRINCIPAL_NEEDS_OWNER` still applies). Graph test:
+`authorization_graph_principal_renewal`.
 
 ## Writes: revisions, `Idempotency-Key`, audit
 
@@ -308,9 +336,43 @@ may replace this later. A tenant-wide assignment looks at the classes of every s
 
 Active explicit assignments in the readable schools that are in force today and end within `days` (1–366,
 default 30), soonest first: the rows of `GET /assignments` plus `daysLeft`, `renewUntil` and
-`renewAcademicYear` (the end of the academic year that follows, by the rule above) and `canRenew` (the reader
-manages access in that school; a tenant-wide row needs `authorization.manage` across the tenant). Also `today`
-and `days`. Same session and read rules as the other reads; renewing is a `change_validity` command.
+`renewAcademicYear` (the end of the academic year that follows, by the rule above) and `canRenew`. `canRenew`
+is true when the reader manages access in that school (a tenant-wide row needs `authorization.manage` across the
+tenant) and a `change_validity` to `renewUntil` would pass: either the grant rules or the renewal rule under
+Guardrails. Also `today` and `days`. Same session and read rules as the other reads; renewing is a
+`change_validity` command.
+
+### `GET /held?capabilities=a,b` (services, ADR 0018 slice 6)
+
+For Admission and Payment, which receive Auth's `staff-api+jwt` from Admin, not a portal session. The bearer is
+verified as for the enrollment handover (`STAFF_DOWNSTREAM_JWT_SECRET`, `STAFF_DOWNSTREAM_JWT_ISSUER`, audience
+`digital-school-admin-api`, scope `staff_downstream`, at most 15 minutes), and the answer covers only the Staff
+Member it names. 1–20 catalogue codes, comma-separated, no repeats; an unknown code is 400.
+
+```json
+{"data":{"staffMemberId":"staff-1","cacheSeconds":60,"capabilities":{
+  "admissions.application.read":{"tenants":["TENANT-001"],"schools":[{"tenantId":"TENANT-001","schoolId":"SCH-IISS"}]},
+  "billing.payment.read":{"tenants":[],"schools":[]}}}}
+```
+
+`tenants` lists the tenants where the capability is held for the whole tenant (`TENANT` scope, or every school);
+`schools` lists each school where it is held. Both come from explicit and derived holdings over the Staff Member's
+own `tenantIds`. An unscoped Owner names no tenant, so the answer is empty; Admission and Payment pass Owners by
+role. A Staff Member who is not one active node holds nothing. 401 for a missing or invalid bearer, 503 when the
+verifier is not configured. Callers may keep an answer for `cacheSeconds`.
+
+**Catalogue additions (version 2, 2026-10-30).** For Admission (`service: admission`, area `admissions`):
+
+- normal: `admissions.lead.assist`, `.visit.manage`, `.application.read`, `.step_link.issue`, `.test.decide`,
+  `.placement.manage`;
+- sensitive: `admissions.document.upload_on_behalf`, `.document.read`, `.document.review`, `.offer.manage`,
+  `.status.override`.
+
+For Payment: `billing.payment.read` and `billing.school_invoice.manage` (both sensitive, beside
+`billing.payment.manage`).
+
+No seed template carries them. School admins and teachers hold none on day one, and Owners hold all through
+derivation. Graph test: `authorization_graph_service_held_read`.
 
 ### `POST /check`
 
@@ -449,12 +511,34 @@ transaction it reads the facts under the caller's locks, so an assignment or tem
 | `PUT /academic/subject-plans`, `POST /academic/subject-plans/copy`, `PUT /academic/grade-weights` | `academic.subject_plan.manage` |
 | `POST /academic/teaching-assignments/commands` | `academic.staffing.manage` |
 | `PUT /academic/nomenclature/{kind}` (`academic_nomenclature`, 2026-10-29) | `academic.nomenclature.manage` |
+| `GET /academic/teachers`, `/academic/teachers/{id}`, `/academic/staffing-warnings` (`academic_teachers`, slice 6) | `academic.staffing.read` |
+| `GET /academic/teachers/context` (slice 6) | lists the schools where the caller holds `academic.staffing.read` |
+| `GET/POST /school-articles`, `POST /school-articles/cover`, `GET /school-articles/cover` (`school_articles`, slice 6) | `school.content.manage` |
+| `GET /education-calendar/context` for a caller who is not an administrator (slice 6) | the classes of schools where they hold `school.content.manage` |
 
-The Auth session gate is unchanged: these routes still take only Owner and `school_admin` staff portal sessions
-pinned to the school, so on day one the people who pass are exactly those who passed the role fragment. What
-changes is that a revision of the School admin template, or an explicit assignment, now reaches these routes
-(graph test `staffing_routes_decide_by_capability`). `GET /learning/grade-weights` (teachers' read) keeps its role
-fragment.
+**Session gate (slice 6, 2026-10-30).** The `academic_staffing`, `academic_teachers` and `school_articles` routes
+above take **any active staff portal session whose school and tenant lists cover the school**
+(`learning_access::school_staff_actor`; an unscoped Owner passes everywhere). The capability then decides. Before
+slice 6 they took only Owner and `school_admin` sessions, and on day one the same people pass: Owners and school
+administrators hold every one of these capabilities through derivation, and nobody else holds any of them until an
+Owner or Principal assigns a template that carries it (graph test `authorization_graph_day_one_equals_todays_checks`
+compares the old role rule with the new decision for every person and school, for `academic.staffing.read`,
+`.manage`, `academic.subject_plan.manage`, `school.content.manage` and `student.biodata.manage`).
+
+- An Admin teacher or a Principal (both carry `academic.staffing.read`) now reads the teacher list, subject
+  plans, weights and teaching assignments of their school; writes still need `.manage` or `subject_plan.manage`.
+- `teachers/context` answers `role` `owner`, `school_admin` or `staff` (new value).
+- Articles: the graph statement keeps today's administrator rule and accepts, beside it, a staff member of the school
+  whom the route found holding `school.content.manage` just before (`$capable`). Unlike the staffing writes, that
+  decision is read before the statement, not under its lock; a revoke can race one write by milliseconds, within
+  the 60-second cache this spec allows. Audit `actor_role` is `staff` for such a writer.
+- `education-calendar/context` keeps today's answer for administrators and Owners. Anyone else gets the classes of
+  the schools where they hold `school.content.manage` (Admin's article audience picker reads it), or 403. The
+  calendar's own reads and writes still need an administrator.
+- **Not moved:** student biodata (`student.biodata.manage`): its Admin screen sits on the Admission student page,
+  which Admission opens by Auth role, so a SIS change would reach nobody; calendar, rooms, timetable, class access,
+  extracurricular and nomenclature reads keep their role gate. `GET /learning/grade-weights` (teachers' read) keeps
+  its role fragment.
 
 `academic.nomenclature.manage` (school nomenclature, `docs/ACADEMIC_NOMENCLATURE.md`) was added to the catalogue and
 to the `school_admin` seed on 2026-10-29. A tenant that has already **saved** its own `school_admin` revision keeps
@@ -504,6 +588,9 @@ Past a bound the answer is 503, never a partial decision.
   - The day-one equality matrix above, and the Learning authorize capabilities.
   - The Principal guardrails and the mastery roster (`authorization_graph_principal_and_mastery_roster`).
   - The staffing routes deciding by capability (`academic_staffing::database_tests::staffing_routes_decide_by_capability`).
+  - Slice 6: the teacher list, its context and the article audience picker for an Admin teacher, a Principal and
+    a school-made content template, and a revoke closing them again (`authorization_graph_slice6_sections_by_capability`);
+    an article written by a capability holder (`school_articles::repository::database_tests`).
   - Replay, key reuse and stale revisions.
   - Every 422 with its index, and that nothing of a refused batch is written.
   - Each guardrail: school admin without manage, wider scope, capability not held, sensitive needs Owner, last
@@ -511,6 +598,7 @@ Past a bound the answer is 503, never a partial decision.
   - Validity change, revoke and reopen.
   - The default end per academic year and the expiring read
     (`authorization_graph_validity_default_and_expiring`).
+  - Renewal by an access manager, one case per condition (`authorization_graph_principal_renewal`).
   - The self-read behind Admin's gate, for a teacher who becomes Principal of one school
     (`authorization_graph_own_holdings_for_admin_gate`).
   - Template revise of a seed with history, the impact read, every template 409/422, and archive.

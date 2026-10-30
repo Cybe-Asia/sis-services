@@ -221,5 +221,53 @@ async fn lifecycle_audience_and_one_view_per_family() {
     assert_eq!(row.get::<i64>("writes").unwrap(), 6);
     assert_eq!(row.get::<Vec<String>>("roles").unwrap(), ["school_admin"]);
     drop(audit);
+
+    // ADR 0018 slice 6: a teacher the route found holding `school.content.manage` here writes,
+    // audited as `staff`; the same teacher without it, or for another school, does not.
+    let teacher = format!("teacher-{key}");
+    let holder = Actor {
+        id: &teacher,
+        capable: true,
+    };
+    v.entry.id = format!("staff-{key}");
+    v.expected_version = 0;
+    v.action = "save_draft".into();
+    assert_eq!(change(&graph, &teacher, &v).await.unwrap(), None);
+    assert_eq!(change(&graph, holder, &v).await.unwrap(), Some(1));
+    assert_eq!(
+        list(&graph, holder, &scope).await.unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(
+        add_cover(&graph, &store, holder, &key, &key, photograph.clone())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(add_cover(
+        &graph,
+        &store,
+        holder,
+        &key,
+        "other-school",
+        photograph.clone()
+    )
+    .await
+    .unwrap()
+    .is_none());
+    let mut audit=graph.execute(query("MATCH(a:SchoolArticleAudit {school_id:$key,actor_id:$teacher}) RETURN collect(a.actor_role) AS roles").param("key",key.clone()).param("teacher",teacher.clone())).await.unwrap();
+    let row = audit.next().await.unwrap().unwrap();
+    assert_eq!(row.get::<Vec<String>>("roles").unwrap(), ["staff"]);
+    drop(audit);
+    graph
+        .run(
+            query("MATCH(n:SchoolArticle {school_id:$key}) DETACH DELETE n")
+                .param("key", key.clone()),
+        )
+        .await
+        .unwrap();
     graph.run(query("MATCH(n) WHERE n.test_key=$key OR (n:SchoolArticle AND n.school_id=$key) OR (n:SchoolArticleAudit AND n.school_id=$key) OR (n:SchoolArticleLock AND n.key STARTS WITH $prefix) OR (n:SchoolArticleView AND n.article_key STARTS WITH $prefix) OR (n:SchoolArticleCover AND n.school_id=$key) DETACH DELETE n").param("key",key.clone()).param("prefix",format!("{key}|{key}"))).await.unwrap();
 }
