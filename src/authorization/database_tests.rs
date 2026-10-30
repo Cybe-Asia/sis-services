@@ -208,9 +208,12 @@ async fn authorization_graph_day_one_equals_todays_checks() {
         for school in ["school", "school-2"] {
             let scope = Scope::school(school);
             let administers = today(&g, &admin, person, school, "").await;
+            // Every capability an Admin section now opens by (ADR 0018 slice 6), and biodata.
             for capability in [
+                "academic.staffing.read",
                 "academic.staffing.manage",
                 "academic.subject_plan.manage",
+                "school.content.manage",
                 "student.biodata.manage",
             ] {
                 assert_eq!(
@@ -222,7 +225,7 @@ async fn authorization_graph_day_one_equals_todays_checks() {
             }
         }
     }
-    assert_eq!(compared, 12 * 5 * 2 + 12 * 2 * 3);
+    assert_eq!(compared, 12 * 5 * 2 + 12 * 2 * 5);
     // The personas the ADR names, spelled out.
     assert!(new(&g, "owner", MANAGE, &Scope::school("school-2")).await);
     assert!(
@@ -1785,4 +1788,157 @@ async fn authorization_graph_reassign_revoked_key_from_add() {
         .await,
         1
     );
+}
+
+/// ADR 0018 slice 6: the teacher list, its school context and the article audience picker open by
+/// capability. Nobody gains a section without an assignment that carries its capability, and a
+/// revoke takes it away again.
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn authorization_graph_slice6_sections_by_capability() {
+    let g = fixture().await;
+    let owner = |command: &'static str| writer("owner", "owner", command);
+    let teachers = crate::academic_teachers::repository::authorize;
+    let content = |who: &'static str| {
+        let g = g.clone();
+        async move {
+            reads::permitted_schools(
+                &mut Db::Graph(&g),
+                "tenant",
+                &["school".to_string(), "school-2".to_string()],
+                who,
+                "school.content.manage",
+            )
+            .await
+            .unwrap()
+        }
+    };
+    // Before any assignment: administrators and Owners only.
+    for (who, school, allowed) in [
+        ("admin", "school", true),
+        ("admin", "school-2", false),
+        ("owner", "school-2", true),
+        ("t-assigned", "school", false),
+        ("t-home", "school", false),
+        ("t-grant", "school", false),
+    ] {
+        assert_eq!(
+            teachers(&g, who, school, "tenant").await.unwrap(),
+            allowed,
+            "{who} {school}"
+        );
+    }
+    assert!(content("t-grant").await.is_empty());
+    assert_eq!(content("admin").await, ["school"]);
+
+    // The Principal seed is version 2 and carries module review; staffing reads come with it.
+    let loaded = facts::load(&mut Db::Graph(&g), "tenant", &[], &[])
+        .await
+        .unwrap();
+    let principal = loaded
+        .templates
+        .iter()
+        .find(|t| t.code == PRINCIPAL)
+        .unwrap();
+    assert_eq!(principal.version, 2);
+    assert!(principal
+        .capabilities
+        .iter()
+        .any(|c| c == "learning.module.review"));
+    let given = commands::assignments(
+        &g,
+        &owner("slice6-assign-01"),
+        &batch(vec![
+            assign("t-assigned", "admin_teacher", Scope::school("school"), 0),
+            assign("t-home", PRINCIPAL, Scope::school("school"), 0),
+        ]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        count(
+            &g,
+            "MATCH(e:AuthorizationAudit {template_code:'principal',template_version:2,action:'assign'}) RETURN count(e) AS n",
+        )
+        .await,
+        1
+    );
+    let teacher_id = given["assignments"][0]["id"].as_str().unwrap().to_string();
+    for (who, school, allowed) in [
+        ("t-assigned", "school", true),
+        ("t-assigned", "school-2", false),
+        ("t-home", "school", true),
+        ("t-home", "school-2", false),
+        ("t-grant", "school", false),
+    ] {
+        assert_eq!(
+            teachers(&g, who, school, "tenant").await.unwrap(),
+            allowed,
+            "{who} {school}"
+        );
+    }
+    // Neither template carries article writing.
+    assert!(content("t-assigned").await.is_empty());
+    assert!(content("t-home").await.is_empty());
+
+    // A school-made template with `school.content.manage` opens articles at its school only.
+    commands::templates(
+        &g,
+        &owner("slice6-template-01"),
+        &template(
+            CREATE,
+            "content_editor",
+            &["school.content.manage"],
+            &[SCHOOL],
+            0,
+        ),
+    )
+    .await
+    .unwrap();
+    commands::assignments(
+        &g,
+        &owner("slice6-assign-02"),
+        &batch(vec![assign(
+            "t-grant",
+            "content_editor",
+            Scope::school("school"),
+            0,
+        )]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(content("t-grant").await, ["school"]);
+    assert!(!teachers(&g, "t-grant", "school", "tenant").await.unwrap());
+    let schools = ["school".to_string(), "school-2".to_string()];
+    let tenants = ["tenant".to_string()];
+    let picker = crate::education_calendar::repository::context(
+        &g,
+        "t-grant",
+        &schools,
+        &tenants,
+        "",
+        &["school|tenant".to_string()],
+    )
+    .await
+    .unwrap();
+    let classes = picker["classes"].as_array().unwrap();
+    assert!(!classes.is_empty());
+    assert!(classes.iter().all(|c| c["schoolId"] == "school"));
+    let today_rule =
+        crate::education_calendar::repository::context(&g, "t-grant", &schools, &tenants, "", &[])
+            .await
+            .unwrap();
+    assert!(today_rule["classes"].as_array().unwrap().is_empty());
+
+    // A revoke closes the teacher list again.
+    commands::assignments(
+        &g,
+        &owner("slice6-revoke-01"),
+        &batch(vec![by_id(REVOKE, &teacher_id, 1)]),
+    )
+    .await
+    .unwrap();
+    assert!(!teachers(&g, "t-assigned", "school", "tenant")
+        .await
+        .unwrap());
 }

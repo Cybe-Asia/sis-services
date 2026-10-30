@@ -20,14 +20,18 @@ pub async fn init(graph: &Graph) -> Result<(), Error> {
     }
     Ok(())
 }
+/// The classes the caller sees here: today's administrators and Owners, plus the `school|tenant`
+/// keys in `capable` where the route found the caller holding `school.content.manage` (ADR 0018
+/// slice 6, for the Admin article audience picker).
 pub async fn context(
     graph: &Graph,
     actor: &str,
     schools: &[String],
     tenants: &[String],
     after: &str,
+    capable: &[String],
 ) -> Result<Value, Error> {
-    let mut rows=graph.execute(query("MATCH(a:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) MATCH(s:Section) WHERE s.school_id IN $schools AND s.tenant_id IN $tenants AND ((NOT 'owner' IN coalesce(a.roles,[]) AND 'school_admin' IN coalesce(a.roles,[]) AND s.school_id IN coalesce(a.schoolIds,[]) AND s.tenant_id IN coalesce(a.tenantIds,[])) OR ('owner' IN coalesce(a.roles,[]) AND size(coalesce(a.teamIds,[]))=0 AND ((size(coalesce(a.schoolIds,[]))=0 AND size(coalesce(a.tenantIds,[]))=0) OR (s.school_id IN coalesce(a.schoolIds,[]) AND s.tenant_id IN coalesce(a.tenantIds,[]))) AND NOT EXISTS {MATCH(other:StaffMember {id:a.id}) WHERE other<>a} AND EXISTS {MATCH(:School {school_id:s.school_id,tenant_id:s.tenant_id})} AND NOT EXISTS {MATCH(one:School {school_id:s.school_id,tenant_id:s.tenant_id}),(two:School {school_id:s.school_id,tenant_id:s.tenant_id}) WHERE one<>two})) AND coalesce(s.academic_year,'')<>'' AND s.status IN ['active','archived'] AND s.tenant_id+'|'+s.school_id+'|'+s.academic_year+'|'+s.section_id>$after RETURN DISTINCT s.tenant_id+'|'+s.school_id+'|'+s.academic_year+'|'+s.section_id AS cursor, s.section_id AS id,s.name AS name,s.school_id AS school,s.tenant_id AS tenant,s.academic_year AS year,s.status AS status ORDER BY cursor LIMIT 201").param("actor",actor).param("schools",schools.to_vec()).param("tenants",tenants.to_vec()).param("after",after)).await?;
+    let mut rows=graph.execute(query("MATCH(a:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) MATCH(s:Section) WHERE s.school_id IN $schools AND s.tenant_id IN $tenants AND ((s.school_id+'|'+s.tenant_id IN $capable AND s.school_id IN coalesce(a.schoolIds,[]) AND s.tenant_id IN coalesce(a.tenantIds,[])) OR (NOT 'owner' IN coalesce(a.roles,[]) AND 'school_admin' IN coalesce(a.roles,[]) AND s.school_id IN coalesce(a.schoolIds,[]) AND s.tenant_id IN coalesce(a.tenantIds,[])) OR ('owner' IN coalesce(a.roles,[]) AND size(coalesce(a.teamIds,[]))=0 AND ((size(coalesce(a.schoolIds,[]))=0 AND size(coalesce(a.tenantIds,[]))=0) OR (s.school_id IN coalesce(a.schoolIds,[]) AND s.tenant_id IN coalesce(a.tenantIds,[]))) AND NOT EXISTS {MATCH(other:StaffMember {id:a.id}) WHERE other<>a} AND EXISTS {MATCH(:School {school_id:s.school_id,tenant_id:s.tenant_id})} AND NOT EXISTS {MATCH(one:School {school_id:s.school_id,tenant_id:s.tenant_id}),(two:School {school_id:s.school_id,tenant_id:s.tenant_id}) WHERE one<>two})) AND coalesce(s.academic_year,'')<>'' AND s.status IN ['active','archived'] AND s.tenant_id+'|'+s.school_id+'|'+s.academic_year+'|'+s.section_id>$after RETURN DISTINCT s.tenant_id+'|'+s.school_id+'|'+s.academic_year+'|'+s.section_id AS cursor, s.section_id AS id,s.name AS name,s.school_id AS school,s.tenant_id AS tenant,s.academic_year AS year,s.status AS status ORDER BY cursor LIMIT 201").param("actor",actor).param("schools",schools.to_vec()).param("tenants",tenants.to_vec()).param("after",after).param("capable",capable.to_vec())).await?;
     let mut classes = vec![];
     let mut last = String::new();
     let mut next = None;

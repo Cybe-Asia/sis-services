@@ -364,7 +364,7 @@ pub async fn history(
     }
     if versions.is_empty() && template.seeded {
         versions.push(json!({
-            "version": 1, "name": template.name, "capabilities": template.capabilities,
+            "version": template.version, "name": template.name, "capabilities": template.capabilities,
             "allowedScopes": template.allowed_scopes, "status": template.status,
             "seed": true, "actorName": null, "at": null,
         }));
@@ -668,6 +668,23 @@ pub async fn permits(
     let facts = facts::load(db, tenant, &[staff.to_string()], &[]).await?;
     let holdings = facts.holdings(staff);
     Ok(decide(&facts, &holdings, capability, &Scope::school(school)).is_some())
+}
+
+/// The schools among `schools` where `staff` holds `capability`, from one read of the tenant.
+pub async fn permitted_schools(
+    db: &mut Db<'_>,
+    tenant: &str,
+    schools: &[String],
+    staff: &str,
+    capability: &str,
+) -> Result<Vec<String>, Failure> {
+    let facts = facts::load(db, tenant, &[staff.to_string()], &[]).await?;
+    let holdings = facts.holdings(staff);
+    Ok(schools
+        .iter()
+        .filter(|school| decide(&facts, &holdings, capability, &Scope::school(school)).is_some())
+        .cloned()
+        .collect())
 }
 
 /// One class of the mastery roster: the students the caller may read mastery for, and the

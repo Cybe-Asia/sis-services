@@ -328,7 +328,7 @@ async fn template_command(
         }
     };
     if let Some(t) = before.filter(|t| t.seeded) {
-        // The first save of a repository default keeps that default as version 1.
+        // The first save of a repository default keeps that default at its seed version.
         store_version(tx, w, t, "seed").await?;
     }
     let mut next = next;

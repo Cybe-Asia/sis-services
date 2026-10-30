@@ -77,8 +77,14 @@ pub struct Catalogue {
 pub struct Seed {
     pub code: String,
     pub name: Text,
+    /// Raised when the repository default changes, so audit rows and caches tell the two apart.
+    #[serde(default = "first_version")]
+    pub version: u32,
     pub allowed_scopes: Vec<String>,
     pub capabilities: Vec<String>,
+}
+fn first_version() -> u32 {
+    1
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -135,6 +141,7 @@ fn parse_seeds(text: &str, catalogue: &Catalogue) -> Result<Vec<Seed>, String> {
         if !template_code(&s.code)
             || !seen.insert(s.code.clone())
             || !s.name.valid(80)
+            || s.version == 0
             || caps.len() != s.capabilities.len()
             || !s.capabilities.iter().all(|c| known.contains(c.as_str()))
             // `authorization.manage` stays with Owners and the Principal (spec §10 #8.3); the
@@ -418,7 +425,7 @@ impl Template {
         Self {
             code: seed.code.clone(),
             name: seed.name.clone(),
-            version: 1,
+            version: seed.version,
             capabilities: seed.capabilities.clone(),
             allowed_scopes: seed.allowed_scopes.clone(),
             status: "active".into(),

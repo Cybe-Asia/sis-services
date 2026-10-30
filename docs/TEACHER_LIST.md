@@ -11,21 +11,23 @@ listed under "Teacher list additions" there. Everything below still holds.
 
 ## Access
 
-The caller is a staff portal session (`Authorization: Bearer`, Auth introspection) of an active
-`school_admin` of the school, or of an `owner` whose scope covers it. This is the same rule as the Admin
-timetable routes. The rule is checked three times:
+The caller is a staff portal session (`Authorization: Bearer`, Auth introspection) whose school and tenant lists
+cover the school (an unscoped Owner covers every school), and who holds `academic.staffing.read` there (ADR 0018
+slice 6, `docs/AUTHORIZATION.md`). Owners and school administrators hold it on day one; an Admin teacher or a
+Principal assigned at the school holds it too. The rule is checked three times:
 
 1. on the introspected session;
-2. in the graph (`StaffMember` active, one node per id, exactly one `School` node);
-3. on the session again after the read. A role revoked while the read ran gets 403, not the data.
+2. in the graph (`StaffMember` active, one node per id, exactly one `School` node) and the capability decision
+   from the caller's explicit and derived holdings;
+3. on the session again after the read. A session ended while the read ran gets 403, not the data.
 
-Admins and Owners get the same projection. Teachers and other roles get 403.
+Everyone who passes gets the same projection. Teachers without the capability and other roles get 403.
 
 ## `GET /api/v1/sis-service/academic/teachers/context`
 
-The schools the caller administers, with the academic years that have active classes, newest first. An
-Owner without a school scope sees every school that has exactly one `School` node. A school
-administrator sees only the schools in their own session lists.
+The schools where the caller holds `academic.staffing.read`, with the academic years that have active classes,
+newest first. An Owner without a school scope sees every school that has exactly one `School` node. Anyone else
+sees only schools in their own session lists. `role` is the Auth role: `owner`, `school_admin` or `staff`.
 
 ```json
 {"data":{"role":"owner","schools":[{"schoolId":"SCH-IISS","tenantId":"TENANT-001",

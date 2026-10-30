@@ -1,6 +1,8 @@
 //! Admin teacher list (slice 1 of the teacher assignments spec, `docs/TEACHER_LIST.md`): who
 //! teaches what, homerooms, coaches and scheduled load, read from data SIS already stores.
-//! School administrators and Owners of the school only; nothing is written.
+//! Staff who read staffing at the school (`academic.staffing.read`, ADR 0018 slice 6): its
+//! administrators and Owners on day one, and Admin teachers or a Principal named there; nothing is
+//! written.
 use crate::AppState;
 use axum::{
     extract::{rejection::QueryRejection, Path, Query, State},
@@ -68,8 +70,8 @@ impl Lookup {
     }
 }
 
-/// Session, graph authority, the read, then the session again: a role revoked while the read
-/// ran does not get the answer.
+/// Session, the capability decision from the graph, the read, then the session again: a role
+/// revoked while the read ran does not get the answer.
 async fn read(
     state: &AppState,
     headers: &HeaderMap,
@@ -80,7 +82,7 @@ async fn read(
         .filter(|_| q.valid())
         .ok_or_else(|| failure(StatusCode::BAD_REQUEST))?;
     let session =
-        crate::learning_access::administrator_actor(headers, &q.tenant_id, &q.school_id).await?;
+        crate::learning_access::school_staff_actor(headers, &q.tenant_id, &q.school_id).await?;
     let report = deadline(async {
         if !repository::authorize(&state.graph, &session.0, &q.school_id, &q.tenant_id)
             .await
@@ -102,7 +104,7 @@ async fn read(
         model::report(&snapshot).ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))
     })
     .await?;
-    if crate::learning_access::administrator_actor(headers, &q.tenant_id, &q.school_id).await?
+    if crate::learning_access::school_staff_actor(headers, &q.tenant_id, &q.school_id).await?
         != session
     {
         return Err(failure(StatusCode::FORBIDDEN));
@@ -178,19 +180,35 @@ async fn detail(
     Ok(Json(json!({"data": data})))
 }
 
-/// The schools the caller administers and their academic years, newest first.
+/// The schools where the caller reads staffing and their academic years, newest first. `role` is
+/// the Auth role: `owner`, `school_admin` or `staff`.
 async fn context(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, Failure> {
-    let (actor, role, schools, tenants) = crate::learning_access::staff_session(&headers)
+    let (actor, role, schools, tenants) = crate::learning_access::any_staff_session(&headers)
         .await?
-        .scope();
+        .staff_scope();
     let all = role == "owner" && schools.is_empty() && tenants.is_empty();
     let rows = deadline(async {
-        repository::schools(&state.graph, &actor, schools, tenants, all)
+        let rows = repository::schools(&state.graph, &actor, schools, tenants, all)
             .await
-            .map_err(unavailable)
+            .map_err(unavailable)?;
+        let mut allowed = BTreeMap::new();
+        let mut out = vec![];
+        for r in rows {
+            let key = (r.school_id.clone(), r.tenant_id.clone());
+            if !allowed.contains_key(&key) {
+                let reads = repository::reads_staffing(&state.graph, &actor, &key.0, &key.1)
+                    .await
+                    .map_err(unavailable)?;
+                allowed.insert(key.clone(), reads);
+            }
+            if allowed[&key] {
+                out.push(r);
+            }
+        }
+        Ok(out)
     })
     .await?;
     let mut by_school: BTreeMap<(String, String), Vec<Value>> = BTreeMap::new();

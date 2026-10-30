@@ -1,18 +1,29 @@
 //! Reads only. Every query is scoped by school and tenant; the authority check runs in the graph
 //! as well as on the introspected session.
 use super::model::{Activity, Assignment, Grant, Lesson, PlannedSubject, Section, Snapshot, Staff};
-use crate::school_portal::{model::identifier, staff_capability};
+use crate::school_portal::model::identifier;
 use neo4rs::{query, Graph, Query, Row};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
-/// Active school administrators of the school and Owners whose scope covers it.
+/// The rule before ADR 0018 slice 6: active school administrators of the school and Owners whose
+/// scope covers it. The authorization graph test keeps it as the day-one reference.
+#[cfg(test)]
 pub(crate) fn authorized(school: &str, tenant: &str) -> String {
     format!(
-        "MATCH(a:StaffMember {{id:$actor}}) WHERE {} AND NOT EXISTS {{MATCH(other:StaffMember {{id:a.id}}) WHERE other<>a}} AND EXISTS {{MATCH(:School {{school_id:{school},tenant_id:{tenant}}})}} AND NOT EXISTS {{MATCH(one:School {{school_id:{school},tenant_id:{tenant}}}),(two:School {{school_id:{school},tenant_id:{tenant}}}) WHERE one<>two}}",
-        staff_capability::authority("a", "'school_admin'", school, tenant)
+        "{} AND {}",
+        known(school, tenant),
+        crate::school_portal::staff_capability::authority("a", "'school_admin'", school, tenant)
+    )
+}
+/// The caller is one active Staff Member whose own lists cover the school (an unscoped Owner covers
+/// every school), and the school one School node. Who may read is then decided by capability
+/// (`academic.staffing.read` at the school, ADR 0018 slice 6).
+fn known(school: &str, tenant: &str) -> String {
+    format!(
+        "MATCH(a:StaffMember {{id:$actor}}) WHERE a.membershipStatus='ACTIVE' AND (({school} IN coalesce(a.schoolIds,[]) AND {tenant} IN coalesce(a.tenantIds,[])) OR ('owner' IN coalesce(a.roles,[]) AND size(coalesce(a.schoolIds,[]))=0 AND size(coalesce(a.tenantIds,[]))=0)) AND NOT EXISTS {{MATCH(other:StaffMember {{id:a.id}}) WHERE other<>a}} AND EXISTS {{MATCH(:School {{school_id:{school},tenant_id:{tenant}}})}} AND NOT EXISTS {{MATCH(one:School {{school_id:{school},tenant_id:{tenant}}}),(two:School {{school_id:{school},tenant_id:{tenant}}}) WHERE one<>two}}"
     )
 }
 const SECTIONS: &str = "MATCH(sec:Section {school_id:$school,tenant_id:$tenant,academic_year:$year,status:'active'}) WHERE NOT EXISTS {MATCH(o:Section {section_id:sec.section_id}) WHERE o<>sec} RETURN sec.section_id AS id,coalesce(sec.name,sec.section_id) AS name,coalesce(sec.year_group,'') AS grade,sec.homeroom_staff_member_id AS homeroom ORDER BY id LIMIT 201";
@@ -47,7 +58,34 @@ fn id(value: String) -> Result<String, Error> {
         .ok_or_else(|| "Invalid id".into())
 }
 
+/// Who reads the list: one active Staff Member, one School node, and `academic.staffing.read` at
+/// the school from the caller's explicit and derived holdings.
 pub async fn authorize(
+    graph: &Graph,
+    actor: &str,
+    school: &str,
+    tenant: &str,
+) -> Result<bool, Error> {
+    Ok(known_school(graph, actor, school, tenant).await?
+        && reads_staffing(graph, actor, school, tenant).await?)
+}
+pub async fn reads_staffing(
+    graph: &Graph,
+    actor: &str,
+    school: &str,
+    tenant: &str,
+) -> Result<bool, Error> {
+    crate::authorization::reads::permits(
+        &mut crate::authorization::facts::Db::Graph(graph),
+        tenant,
+        school,
+        actor,
+        crate::academic_staffing::repository::STAFFING_READ,
+    )
+    .await
+    .map_err(|_| "Authorization read failed".into())
+}
+async fn known_school(
     graph: &Graph,
     actor: &str,
     school: &str,
@@ -55,7 +93,7 @@ pub async fn authorize(
 ) -> Result<bool, Error> {
     let q = query(&format!(
         "{} RETURN count(a) AS count",
-        authorized("$school", "$tenant")
+        known("$school", "$tenant")
     ))
     .param("actor", actor)
     .param("school", school)
@@ -204,7 +242,8 @@ pub struct School {
     pub academic_year: String,
     pub classes: i64,
 }
-/// The schools (and their academic years with active classes) the caller administers.
+/// The schools (and their academic years with active classes) in the caller's scope that are one
+/// School node each; the route keeps those where the caller reads staffing.
 /// `all` is an Owner without a school scope: every school with exactly one School node.
 pub async fn schools(
     graph: &Graph,
@@ -215,7 +254,7 @@ pub async fn schools(
 ) -> Result<Vec<School>, Error> {
     let body = format!(
         "MATCH(sec:Section {{status:'active'}}) WHERE ($all OR (sec.school_id IN $schools AND sec.tenant_id IN $tenants)) AND coalesce(sec.academic_year,'')<>'' WITH sec.school_id AS school,sec.tenant_id AS tenant,sec.academic_year AS year,count(sec) AS classes CALL {{ WITH school,tenant {} RETURN count(a) AS allowed }} WITH school,tenant,year,classes WHERE allowed=1 RETURN school,tenant,year,classes ORDER BY school,tenant,year DESC LIMIT 101",
-        authorized("school", "tenant")
+        known("school", "tenant")
     );
     let q = query(&body)
         .param("actor", actor)

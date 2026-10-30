@@ -65,7 +65,7 @@ where
         return Err(invalid());
     }
     let session =
-        crate::learning_access::administrator_actor(headers, &q.tenant_id, &q.school_id).await?;
+        crate::learning_access::school_staff_actor(headers, &q.tenant_id, &q.school_id).await?;
     let data = tokio::time::timeout(Duration::from_secs(8), async {
         if !crate::authorization::reads::permits(
             &mut crate::authorization::facts::Db::Graph(&state.graph),
@@ -82,7 +82,7 @@ where
     })
     .await
     .map_err(unavailable)??;
-    if crate::learning_access::administrator_actor(headers, &q.tenant_id, &q.school_id).await?
+    if crate::learning_access::school_staff_actor(headers, &q.tenant_id, &q.school_id).await?
         != session
     {
         return Err(refuse(StatusCode::FORBIDDEN, "FORBIDDEN", json!({})));
@@ -163,7 +163,7 @@ where
 {
     let command = command_key(&headers)?;
     let (actor, role) =
-        crate::learning_access::administrator_actor(&headers, &tenant, &school).await?;
+        crate::learning_access::school_staff_actor(&headers, &tenant, &school).await?;
     let task = tokio::spawn(async move {
         tokio::time::timeout(
             Duration::from_secs(20),

@@ -1,4 +1,5 @@
-//! Articles and webinars the school publishes for families. The school administrator writes them;
+//! Articles and webinars the school publishes for families. Staff holding `school.content.manage`
+//! at the school (its administrators and Owners on day one) write them;
 //! the school portal lets a Parent read the published ones and counts who opened them.
 pub mod cover;
 pub mod model;
@@ -34,6 +35,34 @@ pub struct Scope {
     pub after: Option<String>,
     pub id: Option<String>,
 }
+/// `school.content.manage` at the school (ADR 0018 slice 6): today's administrators and Owners hold
+/// it, and so does anyone the school assigned it. The graph statement checks the caller's node again.
+const CONTENT_MANAGE: &str = "school.content.manage";
+async fn manager(
+    s: &AppState,
+    h: &HeaderMap,
+    tenant: &String,
+    school: &String,
+) -> Result<String, Failure> {
+    let (actor, _) = crate::learning_access::school_staff_actor(h, tenant, school).await?;
+    if crate::authorization::reads::permits(
+        &mut crate::authorization::facts::Db::Graph(&s.graph),
+        tenant,
+        school,
+        &actor,
+        CONTENT_MANAGE,
+    )
+    .await
+    .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
+    {
+        Ok(actor)
+    } else {
+        Err(failure(StatusCode::FORBIDDEN))
+    }
+}
+fn capable(id: &str) -> repository::Actor<'_> {
+    repository::Actor { id, capable: true }
+}
 async fn list(
     State(s): State<AppState>,
     h: HeaderMap,
@@ -47,8 +76,8 @@ async fn list(
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor = crate::learning_access::administrator(&h, &q.tenant_id, &q.school_id).await?;
-    repository::list(&s.graph, &actor, &q)
+    let actor = manager(&s, &h, &q.tenant_id, &q.school_id).await?;
+    repository::list(&s.graph, capable(&actor), &q)
         .await
         .map(|data| Json(json!({"data":data})))
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))
@@ -62,9 +91,8 @@ async fn change(
     if !v.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor =
-        crate::learning_access::administrator(&h, &v.entry.tenant_id, &v.entry.school_id).await?;
-    match repository::change(&s.graph, &actor, &v).await {
+    let actor = manager(&s, &h, &v.entry.tenant_id, &v.entry.school_id).await?;
+    match repository::change(&s.graph, capable(&actor), &v).await {
         Ok(Some(version)) => Ok(Json(json!({"data":{"version":version}}))),
         Ok(None) => Err(failure(StatusCode::CONFLICT)),
         Err(_) => Err(failure(StatusCode::SERVICE_UNAVAILABLE)),
@@ -125,13 +153,22 @@ async fn upload_cover(
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let source = body.map_err(|_| failure(StatusCode::PAYLOAD_TOO_LARGE))?;
-    let actor = crate::learning_access::administrator(&h, &q.tenant_id, &q.school_id).await?;
+    let actor = manager(&s, &h, &q.tenant_id, &q.school_id).await?;
     let store = cover::store().ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))?;
     let stored = tokio::task::spawn_blocking(move || cover::normalize(&source))
         .await
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
         .ok_or_else(|| failure(StatusCode::BAD_REQUEST))?;
-    match repository::add_cover(&s.graph, store, &actor, &q.tenant_id, &q.school_id, stored).await {
+    match repository::add_cover(
+        &s.graph,
+        store,
+        capable(&actor),
+        &q.tenant_id,
+        &q.school_id,
+        stored,
+    )
+    .await
+    {
         Ok(Some(id)) => Ok(Json(json!({"data":{"coverId":id}}))),
         Ok(None) => Err(failure(StatusCode::FORBIDDEN)),
         Err(_) => Err(failure(StatusCode::SERVICE_UNAVAILABLE)),
@@ -145,9 +182,19 @@ async fn admin_cover(
     let Some(id) = q.cover_id.as_deref().filter(|_| q.valid()) else {
         return Err(failure(StatusCode::BAD_REQUEST));
     };
-    let actor = crate::learning_access::administrator(&h, &q.tenant_id, &q.school_id).await?;
+    let actor = manager(&s, &h, &q.tenant_id, &q.school_id).await?;
     let store = cover::store().ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))?;
-    found(repository::admin_cover(&s.graph, store, &actor, &q.tenant_id, &q.school_id, id).await)
+    found(
+        repository::admin_cover(
+            &s.graph,
+            store,
+            capable(&actor),
+            &q.tenant_id,
+            &q.school_id,
+            id,
+        )
+        .await,
+    )
 }
 /// The cover of a published article, for a Parent whose child's class received the article.
 async fn parent_cover(

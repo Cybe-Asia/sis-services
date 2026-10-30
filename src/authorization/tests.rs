@@ -122,9 +122,19 @@ fn authorization_catalogue_and_seeds_load_and_keep_manage_with_owners() {
         "academic.staffing.read",
         "learning.curriculum.read",
         MASTERY_READ,
+        "learning.module.review",
     ] {
         assert!(principal.capabilities.iter().any(|c| c == code), "{code}");
     }
+    // Version 2 since the master thread's Principal change (2026-10-30): an unsaved seed reads
+    // at the version its default carries; the others are still at 1.
+    assert_eq!(principal.version, 2);
+    assert_eq!(Template::from_seed(principal).version, 2);
+    assert!(r
+        .seeds
+        .iter()
+        .filter(|s| s.code != PRINCIPAL)
+        .all(|s| s.version == 1));
     assert!(r
         .seeds
         .iter()
