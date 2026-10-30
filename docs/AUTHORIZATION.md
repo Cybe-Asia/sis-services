@@ -22,8 +22,8 @@ A bad file stops the service. Admin cannot add a capability. Each entry has:
 - `classWide`;
 - `description`: `{id, en}`.
 
-`classWide` marks a capability that applies to a class as a whole: `learning.class.teach` and
-`learning.class.homeroom`. Holding it for one subject of a class holds it for the class, as a teaching grant per
+`classWide` marks a capability that applies to a class as a whole: `learning.class.teach`,
+`learning.class.homeroom` and `learning.report_card.publish`. Holding it for one subject of a class holds it for the class, as a teaching grant per
 class does today.
 
 Sensitive capabilities are `student.biodata.manage`, `billing.payment.manage` and `authorization.manage`. An
@@ -42,9 +42,9 @@ The seeds are in `src/authorization/templates.json`. They are defaults the schoo
 | `regular_teacher` | `SECTION_SUBJECT`, `SECTION`, `SCHOOL_SUBJECT` | `learning.class.teach`, `learning.module.write`, `learning.module.publish`, `learning.curriculum.read`, `learning.objective_tag.write`, `learning.mastery.read`, `learning.gradebook.read` |
 | `admin_teacher` | `SCHOOL`, `SCHOOL_SUBJECT`, `SECTION` | Regular teacher + `learning.module.review`, `learning.module.manage_any`, `academic.staffing.read` |
 | `subject_lead` | `SCHOOL_SUBJECT` | `learning.module.review`, `learning.module.manage_any`, `learning.plan.manage`, `learning.question_bank.manage` |
-| `curriculum_coordinator` | `SCHOOL` | `learning.curriculum.manage`, `learning.plan.manage`, `learning.module.review`, `learning.module.manage_any`, `learning.mastery.read` |
+| `curriculum_coordinator` | `SCHOOL` | `learning.curriculum.manage`, `learning.plan.manage`, `learning.module.review`, `learning.module.manage_any`, `learning.mastery.read`, `learning.report_card.publish` |
 | `school_admin` | `SCHOOL` | `academic.staffing.read`, `academic.staffing.manage`, `academic.subject_plan.manage`, `academic.calendar.manage`, `academic.class_access.manage`, `academic.extracurricular.manage`, `academic.nomenclature.manage`, `school.content.manage`, `staff.directory.manage`, `student.biodata.manage`, `authorization.read` |
-| `principal` | `SCHOOL` | `authorization.manage`, `authorization.read`, `academic.staffing.read`, `learning.curriculum.read`, `learning.mastery.read` |
+| `principal` | `SCHOOL` | `authorization.manage`, `authorization.read`, `academic.staffing.read`, `learning.curriculum.read`, `learning.mastery.read`, `learning.report_card.publish` |
 
 Two seeds go further than spec §3, so that day-one access equals today:
 
@@ -103,8 +103,9 @@ The order is the order in which a decision looks:
      teacher's grant to the class is `ACTIVE`. The grant stays the gate, so a grant revoked by hand also ends the
      access of an assignment that is still open, as today.
    - **Grant without an assignment** (`teaching_grant`): *Regular teacher* at `SECTION`.
-   - **Homeroom** (`homeroom`): *Regular teacher* plus `learning.class.homeroom` at `SECTION`. A homeroom teacher
-     teaches their class today, and only they have homeroom access (ADR 0015).
+   - **Homeroom** (`homeroom`): *Regular teacher* plus `learning.class.homeroom` and `learning.report_card.publish`
+     at `SECTION`. A homeroom teacher teaches their class today, only they have homeroom access (ADR 0015), and they
+     publish its report cards (report card spec §4).
 
 Derived rows use the **current version** of `regular_teacher` and `school_admin`. Editing those templates
 changes derived access, and the impact read says for how many people. Neither template can be archived.

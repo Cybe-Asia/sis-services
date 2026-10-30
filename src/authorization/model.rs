@@ -18,6 +18,8 @@ pub const SCOPE_TYPES: [&str; 5] = [TENANT, SCHOOL, SCHOOL_SUBJECT, SECTION, SEC
 pub const MANAGE: &str = "authorization.manage";
 pub const READ: &str = "authorization.read";
 pub const HOMEROOM: &str = "learning.class.homeroom";
+/// The homeroom publishes its class's report cards (report card spec §4).
+pub const REPORT_CARD_PUBLISH: &str = "learning.report_card.publish";
 /// Templates that derived sources use: they cannot be archived.
 pub const REGULAR_TEACHER: &str = "regular_teacher";
 pub const SCHOOL_ADMIN: &str = "school_admin";
@@ -765,6 +767,7 @@ impl Facts {
                 if s.homeroom.as_deref() == Some(staff_id) {
                     let mut homeroom = caps.clone();
                     homeroom.insert(HOMEROOM.into());
+                    homeroom.insert(REPORT_CARD_PUBLISH.into());
                     out.push(Holding {
                         source: derived("homeroom", None, REGULAR_TEACHER, version),
                         scope: Scope::section(&s.school, &s.id),

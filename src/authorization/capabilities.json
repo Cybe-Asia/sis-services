@@ -27,6 +27,8 @@
      "description": {"id": "Mengatur lingkup dan urutan materi", "en": "Manage the scope and sequence"}},
     {"code": "learning.question_bank.manage", "service": "learning-api", "area": "learning", "sensitivity": "normal",
      "description": {"id": "Mengatur bank soal bersama", "en": "Manage the shared question bank"}},
+    {"code": "learning.report_card.publish", "service": "learning-api", "area": "learning", "sensitivity": "normal", "classWide": true,
+     "description": {"id": "Menerbitkan dan menarik rapor kelas", "en": "Publish and withdraw a class's report cards"}},
     {"code": "academic.staffing.read", "service": "sis", "area": "academic", "sensitivity": "normal",
      "description": {"id": "Melihat daftar guru dan penugasan mengajar", "en": "Read the teacher list and teaching assignments"}},
     {"code": "academic.staffing.manage", "service": "sis", "area": "academic", "sensitivity": "normal",

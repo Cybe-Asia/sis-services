@@ -91,6 +91,7 @@ fn authorization_catalogue_and_seeds_load_and_keep_manage_with_owners() {
         "unknown counts as sensitive"
     );
     assert!(r.class_wide("learning.class.teach") && r.class_wide(HOMEROOM));
+    assert!(r.class_wide(REPORT_CARD_PUBLISH));
     assert!(!r.class_wide("learning.module.review"));
     let codes: Vec<&str> = r.seeds.iter().map(|s| s.code.as_str()).collect();
     assert_eq!(
@@ -303,6 +304,9 @@ fn authorization_day_one_access_equals_todays_rules() {
     assert!(!allowed(&f, "granted", HOMEROOM, &class("9A")));
     assert!(allowed(&f, "homeroom", teach, &class("7A")));
     assert!(allowed(&f, "homeroom", HOMEROOM, &class("7A")));
+    // The homeroom publishes its class's report cards; a teaching grant alone does not.
+    assert!(allowed(&f, "homeroom", REPORT_CARD_PUBLISH, &class("7A")));
+    assert!(!allowed(&f, "granted", REPORT_CARD_PUBLISH, &class("9A")));
     assert!(!allowed(&f, "homeroom", teach, &class("7B")));
     assert!(
         !allowed(&f, "revoked", teach, &class("7B")),

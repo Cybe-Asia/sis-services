@@ -15,7 +15,7 @@
     {"code": "curriculum_coordinator", "name": {"id": "Koordinator kurikulum", "en": "Curriculum coordinator"},
      "allowedScopes": ["SCHOOL"],
      "capabilities": ["learning.curriculum.manage", "learning.plan.manage", "learning.module.review", "learning.module.manage_any",
-                      "learning.mastery.read"]},
+                      "learning.mastery.read", "learning.report_card.publish"]},
     {"code": "school_admin", "name": {"id": "Admin sekolah", "en": "School admin"},
      "allowedScopes": ["SCHOOL"],
      "capabilities": ["academic.staffing.read", "academic.staffing.manage", "academic.subject_plan.manage", "academic.calendar.manage",
@@ -24,6 +24,6 @@
     {"code": "principal", "name": {"id": "Kepala Sekolah", "en": "Principal"},
      "allowedScopes": ["SCHOOL"],
      "capabilities": ["authorization.manage", "authorization.read", "academic.staffing.read", "learning.curriculum.read",
-                      "learning.mastery.read"]}
+                      "learning.mastery.read", "learning.report_card.publish"]}
   ]
 }
