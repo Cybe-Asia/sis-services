@@ -504,7 +504,14 @@ async fn assignment_command(
             academic_year: c.academic_year.clone(),
             ..Assignment::default()
         },
-        (ASSIGN, Some(a)) if a.status == "revoked" && a.version == c.expected_version => a.clone(),
+        // A revoked key reopens at its version, or from an "add" that sends 0 because it never read
+        // the revoked record. An active key still takes 0 as a conflict.
+        (ASSIGN, Some(a))
+            if a.status == "revoked"
+                && (c.expected_version == 0 || a.version == c.expected_version) =>
+        {
+            a.clone()
+        }
         (REVOKE | CHANGE_VALIDITY, Some(a))
             if a.status == "active" && a.version == c.expected_version =>
         {

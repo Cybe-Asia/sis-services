@@ -1041,7 +1041,9 @@ async fn authorization_graph_learning_scopes_per_school() {
 #[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
 async fn authorization_graph_school_list_names() {
     let g = fixture().await;
-    g.run(query("MATCH(s:School) DETACH DELETE s")).await.unwrap();
+    g.run(query("MATCH(s:School) DETACH DELETE s"))
+        .await
+        .unwrap();
     g.run(query("CREATE(:School {school_id:'SCH-IIHS',tenant_id:'tenant',school_code:'IIHS',school_name:'International Islamic High School'}) CREATE(:School {school_id:'SCH-OLD',tenant_id:'tenant',name:'Legacy name'}) CREATE(:School {school_id:'SCH-BOTH',tenant_id:'tenant',school_name:'Preferred',name:'Ignored'}) CREATE(:School {school_id:'SCH-BARE',tenant_id:'tenant'})")).await.unwrap();
     let f = facts::load(&mut Db::Graph(&g), "tenant", &[], &[])
         .await
@@ -1638,5 +1640,149 @@ async fn authorization_graph_own_holdings_for_admin_gate() {
     assert_eq!(
         code(reads::own(&g, &scoped_reader("t-off", &["school"]), "tenant").await),
         "FORBIDDEN"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn authorization_graph_reassign_revoked_key_from_add() {
+    let g = fixture().await;
+    let owner = |command: &'static str| writer("owner", "owner", command);
+    let today = super::model::today();
+    let loaded = facts::load(&mut Db::Graph(&g), "tenant", &[], &[])
+        .await
+        .unwrap();
+    let (_, end, _) = loaded.academic_year_on(Some("school"), today);
+    let lead = || assign("t-home", "subject_lead", subject_scope("mathematics"), 0);
+
+    let given = commands::assignments(
+        &g,
+        &owner("reassign-given-01"),
+        &batch(vec![AssignmentCommand {
+            valid_until: Some(
+                (today + chrono::Duration::days(5))
+                    .format("%Y-%m-%d")
+                    .to_string(),
+            ),
+            ..lead()
+        }]),
+    )
+    .await
+    .unwrap();
+    let id = given["assignments"][0]["id"].as_str().unwrap().to_string();
+    commands::assignments(
+        &g,
+        &owner("reassign-revoke-01"),
+        &batch(vec![by_id(REVOKE, &id, 1)]),
+    )
+    .await
+    .unwrap();
+
+    // The "add" drawer never read the revoked record and sends 0: the key reopens, with the
+    // validity rule of a new assignment (no end given, so the academic year's end).
+    let reopened = commands::assignments(&g, &owner("reassign-zero-01"), &batch(vec![lead()]))
+        .await
+        .unwrap();
+    let row = &reopened["assignments"][0];
+    assert_eq!(
+        (
+            row["id"].as_str(),
+            row["version"].as_i64(),
+            row["status"].as_str()
+        ),
+        (Some(id.as_str()), Some(3), Some("active"))
+    );
+    assert_eq!(row["validUntil"], end.to_string());
+    assert_eq!(row["validity"]["rule"], "academic_year_end");
+    assert_eq!(
+        count(
+            &g,
+            &format!("MATCH(e:AuthorizationAudit {{action:'assign',record_key:'{id}'}}) WHERE e.before CONTAINS '\"revoked\"' AND e.after CONTAINS '\"active\"' AND e.authorized_by CONTAINS 'owner' RETURN count(e) AS n"),
+        )
+        .await,
+        1,
+        "the reopening is audited with the revoked record as before"
+    );
+
+    // An active key keeps optimistic concurrency: 0 is a conflict, as is a stale version later.
+    assert_eq!(
+        code(commands::assignments(&g, &owner("reassign-active-01"), &batch(vec![lead()])).await),
+        "REVISION_CONFLICT"
+    );
+    commands::assignments(
+        &g,
+        &owner("reassign-revoke-02"),
+        &batch(vec![by_id(REVOKE, &id, 3)]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &owner("reassign-stale-01"),
+                &batch(vec![assign(
+                    "t-home",
+                    "subject_lead",
+                    subject_scope("mathematics"),
+                    2
+                )]),
+            )
+            .await
+        ),
+        "REVISION_CONFLICT"
+    );
+
+    // The grant rules run as for a new assignment: a Principal cannot reopen an Admin teacher
+    // whose capabilities she does not hold, and the record stays revoked.
+    commands::assignments(
+        &g,
+        &owner("reassign-principal-01"),
+        &batch(vec![assign(
+            "t-grant",
+            PRINCIPAL,
+            Scope::school("school"),
+            0,
+        )]),
+    )
+    .await
+    .unwrap();
+    let admin_teacher = || assign("t-assigned", "admin_teacher", Scope::school("school"), 0);
+    let teacher = commands::assignments(
+        &g,
+        &owner("reassign-admin-t-01"),
+        &batch(vec![admin_teacher()]),
+    )
+    .await
+    .unwrap();
+    let teacher_id = teacher["assignments"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    commands::assignments(
+        &g,
+        &owner("reassign-admin-t-02"),
+        &batch(vec![by_id(REVOKE, &teacher_id, 1)]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        code(
+            commands::assignments(
+                &g,
+                &writer("t-grant", "school_admin", "reassign-by-principal"),
+                &batch(vec![admin_teacher()]),
+            )
+            .await
+        ),
+        "CAPABILITY_NOT_HELD"
+    );
+    assert_eq!(
+        count(
+            &g,
+            &format!("MATCH(a:AuthorizationAssignment {{id:'{teacher_id}',status:'revoked',version:2}}) RETURN count(a) AS n"),
+        )
+        .await,
+        1
     );
 }
