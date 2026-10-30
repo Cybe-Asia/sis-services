@@ -33,7 +33,7 @@ async fn read(s: &AppState, h: &HeaderMap, q: &Scope) -> Result<Value, Failure> 
             .param("tenant", q.tenant_id.clone())
     };
 
-    let mut rows = s.graph.execute(query_for("OPTIONAL MATCH (school:School {school_id:$school,tenant_id:$tenant}) RETURN DISTINCT p.email AS email,s.fullName AS name,s.nisn AS nisn,s.birthPlace AS birth_place,s.dateOfBirth AS birth_date,s.gender AS gender,s.emergencyContact AS emergency,school.name AS school_name LIMIT 2")).await.map_err(unavailable)?;
+    let mut rows = s.graph.execute(query_for("OPTIONAL MATCH (school:School {school_id:$school,tenant_id:$tenant}) RETURN DISTINCT p.email AS email,s.fullName AS name,s.nisn AS nisn,s.birthPlace AS birth_place,s.dateOfBirth AS birth_date,s.gender AS gender,s.emergencyContact AS emergency,coalesce(school.school_name,school.name) AS school_name LIMIT 2")).await.map_err(unavailable)?;
     let row = rows
         .next()
         .await
