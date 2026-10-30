@@ -467,7 +467,7 @@ async fn student_history_lists_enrolments_across_schools_to_callers_who_see_the_
         actor(format!("parent-{key}"), "parent"),
         actor(format!("home-{key}"), "teacher"),
     ] {
-        let enrolments = student_history::read(&s, &a, &scope, &key).await.unwrap();
+        let (enrolments, _) = student_history::read(&s, &a, &scope, &key).await.unwrap();
         assert_eq!(
             json!(enrolments),
             expected,
@@ -497,6 +497,24 @@ async fn student_history_lists_enrolments_across_schools_to_callers_who_see_the_
             a.id
         );
     }
+    // Recorded years (enrolment_history) come back beside the enrolments, oldest first, with the school's name.
+    graph.run(query("CREATE(:SISEnrolmentPeriod {key:'a-'+$key,student_id:$key,school_id:$iiss,tenant_id:$tenant,academic_year_code:'2025/2026',academic_year:'2025',grade_code:'Y7',year_group:'Year 7',section_id:'7a-'+$key,section_name:'7A',source:'backfill_class',test_key:$key}) CREATE(:SISEnrolmentPeriod {key:'b-'+$key,student_id:$key,school_id:$iiss,tenant_id:$tenant,academic_year_code:'2026/2027',grade_code:'Y8',source:'roster',section_id:'8a-'+$key,section_name:'8A',test_key:$key}) CREATE(:SISEnrolmentPeriod {key:'c-'+$key,student_id:$key,school_id:$iiss,tenant_id:'other-'+$tenant,academic_year_code:'2026/2027',source:'roster',test_key:$key})").param("key",key.clone()).param("iiss",iiss.clone()).param("tenant",tenant.clone())).await.unwrap();
+    let (_, years) = student_history::read(
+        &s,
+        &actor(format!("student-{key}"), "student"),
+        &scope,
+        &key,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        json!(years),
+        json!([
+            {"schoolId":iiss,"schoolName":"IISS","academicYearCode":"2025/2026","academicYear":"2025","gradeCode":"Y7","yearGroup":"Year 7","class":{"id":format!("7a-{key}"),"name":"7A"},"source":"backfill_class"},
+            {"schoolId":iiss,"schoolName":"IISS","academicYearCode":"2026/2027","academicYear":null,"gradeCode":"Y8","yearGroup":null,"class":{"id":format!("8a-{key}"),"name":"8A"},"source":"roster"},
+        ]),
+        "another tenant's record is left out"
+    );
     // Pinned to IISS, where the Student no longer studies, the homeroom of IIHS sees nothing.
     let iiss_scope = Scope {
         school_id: iiss.clone(),

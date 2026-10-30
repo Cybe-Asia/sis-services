@@ -112,7 +112,7 @@ async fn run(g: Graph, f: Fixture) {
     ] {
         g.run(f.params(query("CREATE(u:User {id:$subject,staffMemberId:$actor,sis_academic_test:$tag})-[:STAFF_MEMBER]->(:StaffMember {id:$actor,membershipStatus:'ACTIVE',roles:[$role],schoolIds:$schools,tenantIds:$tenants,teamIds:[],sis_academic_test:$tag})")).param("subject",a.subject.clone()).param("actor",a.staff.clone()).param("role",role).param("schools",if global {vec![]} else {vec![f.school.clone()]}).param("tenants",if global {vec![]} else {vec![f.tenant.clone()]})).await.unwrap();
     }
-    g.run(f.params(query("CREATE(:School {school_id:$school,tenant_id:$tenant,sis_academic_test:$tag}),(:School {school_id:$other,tenant_id:$tenant,sis_academic_test:$tag}) WITH 1 AS ready UNWIND [$section,$next,$foreign] AS id CREATE(sec:Section {section_id:id,name:'Synthetic section',school_id:CASE WHEN id=$foreign THEN $other ELSE $school END,tenant_id:$tenant,status:'active',year_group:'Grade 7',academic_year:'2026/2027',sis_academic_test:$tag})"))).await.unwrap();
+    g.run(f.params(query("CREATE(:School {school_id:$school,tenant_id:$tenant,sis_academic_test:$tag}),(:School {school_id:$other,tenant_id:$tenant,sis_academic_test:$tag}) WITH 1 AS ready UNWIND [$section,$next,$foreign] AS id CREATE(sec:Section {section_id:id,name:'Synthetic section',school_id:CASE WHEN id=$foreign THEN $other ELSE $school END,tenant_id:$tenant,status:'active',year_group:'Grade 7',academic_year:'2026/2027',academic_year_code:'2026/2027',grade_code:'Y7',sis_academic_test:$tag})"))).await.unwrap();
     g.run(f.params(query("UNWIND [$child,$foreign_child] AS id MATCH(sec:Section {section_id:CASE WHEN id=$child THEN $section ELSE $foreign END}) CREATE(s:Student {studentId:id,fullName:'Synthetic child',sis_academic_test:$tag})-[:ENROLLED_AS]->(e:EnrolledStudent {student_id:id+'-permanent',applicant_student_id:id,student_number:id+'-number',status:'active',school_id:sec.school_id,tenant_id:sec.tenant_id,academic_year:sec.academic_year,year_group:sec.year_group,sis_academic_test:$tag})-[:ENROLLED_IN]->(sec)"))).await.unwrap();
     let key = "synthetic-academic-staff-key-at-least-32-bytes";
     std::env::set_var("STAFF_DOWNSTREAM_JWT_SECRET", key);
@@ -309,6 +309,12 @@ async fn run(g: Graph, f: Fixture) {
         .0,
         StatusCode::OK
     );
+    // The move records the year in this class for the Learning pathway (`enrolment_history`).
+    assert_eq!(
+        count(&g, &f, "MATCH(p:SISEnrolmentPeriod {student_id:$child,school_id:$school,tenant_id:$tenant,academic_year_code:'2026/2027',section_id:$next,source:'roster'}) RETURN count(p) AS n").await,
+        1
+    );
+    g.run(f.params(query("MATCH(p:SISEnrolmentPeriod {tenant_id:$tenant}) DETACH DELETE p"))).await.unwrap();
     assert_eq!(
         h::admin_attendance_upsert_handler(
             State(state.clone()),

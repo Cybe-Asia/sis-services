@@ -42,6 +42,7 @@ mod authorization;
 mod config;
 mod billing_owner;
 mod enrollment_handover;
+mod enrolment_history;
 mod database;
 mod handlers;
 mod learning_access;
@@ -125,6 +126,19 @@ async fn main() {
         println!("{}", serde_json::to_string(&report).expect("report"));
         return;
     }
+    // Learning ADR 0017 slice 5: the years SIS already knows, recorded once. A dry run unless `--apply`; the report is
+    // one JSON line on stdout (docs/LEARNING_STUDENT_HISTORY.md).
+    if std::env::args().nth(1).as_deref() == Some("backfill-enrolment-history") {
+        enrolment_history::init(&graph)
+            .await
+            .expect("failed to initialize enrolment history constraints");
+        let apply = std::env::args().nth(2).as_deref() == Some("--apply");
+        let report = enrolment_history::backfill::run(&graph, apply)
+            .await
+            .expect("enrolment history backfill failed");
+        println!("{}", serde_json::to_string(&report).expect("report"));
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("--migrate-enrollment-handover") {
         enrollment_handover::migrate(&graph)
             .await
@@ -147,6 +161,7 @@ async fn main() {
     academic_staffing::init(&graph).await.expect("failed to initialize subject plan and teaching assignment constraints");
     authorization::init(&graph).await.expect("failed to initialize the authorization catalogue and constraints");
     academic_nomenclature::init(&graph).await.expect("failed to initialize school nomenclature constraints");
+    enrolment_history::init(&graph).await.expect("failed to initialize enrolment history constraints");
     student_biodata::init(&graph).await.expect("failed to initialize student biodata constraints");
     school_articles::repository::init(&graph).await.expect("failed to initialize school article indexes");
     extra_curricular::repository::init(&graph).await.expect("extracurricular schema initialization failed");

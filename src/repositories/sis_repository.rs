@@ -332,17 +332,20 @@ pub async fn assign_students(
         return Err(invalid());
     }
     let now = Utc::now();
-    let q = query(
-        "MATCH (sec:Section {section_id: $section_id}) \
+    // The year in this class is recorded for the Learning pathway (`enrolment_history`) in the same transaction.
+    let q = query(&format!(
+        "MATCH (sec:Section {{section_id: $section_id}}) \
          UNWIND $ids AS appId \
-         MATCH (s:Student {studentId: appId})-[:ENROLLED_AS]->(e:EnrolledStudent) \
+         MATCH (s:Student {{studentId: appId}})-[:ENROLLED_AS]->(e:EnrolledStudent) \
          OPTIONAL MATCH (e)-[old:ENROLLED_IN]->(:Section) \
          DELETE old \
          MERGE (e)-[r:ENROLLED_IN]->(sec) \
          ON CREATE SET r.assigned_at = datetime($now) \
+         {} \
          SET sec.updated_at = datetime($now) \
          RETURN count(DISTINCT e) AS assigned",
-    )
+        crate::enrolment_history::record("roster")
+    ))
     .param("section_id", section_id.to_string())
     .param("ids", applicant_student_ids.to_vec())
     .param("now", now.to_rfc3339());

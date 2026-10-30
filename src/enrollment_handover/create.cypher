@@ -14,6 +14,7 @@ FOREACH(ignore IN CASE WHEN h.version=0 THEN [1] ELSE [] END |
       created_at:datetime(),updated_at:datetime(),handover_id:$handover,version:1})
   CREATE(s)-[:ENROLLED_AS]->(e)
   CREATE(e)-[:ENROLLED_IN {assigned_at:datetime()}]->(sec)
+  /*ENROLMENT_PERIOD*/
   SET s.applicantStatus='handed_to_sis',s.updatedAt=datetime(),
       h.id=$handover,h.version=1,h.enrolled_student_id=$permanent,h.student_number=$number,
       h.request_json=$request,h.actor_user_id=$subject,h.staff_member_id=$actor,
