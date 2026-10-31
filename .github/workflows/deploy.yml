@@ -15,6 +15,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
+      # Rulebook gates (docs/RUST_RULES_OF_THUMB.md §26, §31). The extracurricular-preview bin does not
+      # compile today, so the gates name the service binary. Clippy reports without -D warnings for now.
+      - name: Rulebook ratchet
+        run: scripts/check-rulebook.sh
+      - name: Tests
+        run: cargo test --locked --bin sis-service
+      - name: Clippy
+        run: cargo clippy --locked --bin sis-service --profile test
       - name: Freeze source and release identity
         id: release
         shell: bash
