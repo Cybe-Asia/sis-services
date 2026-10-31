@@ -34,6 +34,8 @@ pub struct Scope {
     pub school_id: String,
     pub after: Option<String>,
     pub id: Option<String>,
+    /// `hosts` lists who may host a webinar here instead of the articles.
+    pub view: Option<String>,
 }
 /// `school.content.manage` at the school (ADR 0018 slice 6): today's administrators and Owners hold
 /// it, and so does anyone the school assigned it. The graph statement checks the caller's node again.
@@ -73,12 +75,16 @@ async fn list(
         || !identifier(&q.tenant_id)
         || q.id.as_deref().is_some_and(|id| !identifier(id))
         || q.after.as_deref().is_some_and(|a| !identifier(a))
+        || q.view.as_deref().is_some_and(|v| v != "hosts")
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let actor = manager(&s, &h, &q.tenant_id, &q.school_id).await?;
-    repository::list(&s.graph, capable(&actor), &q)
-        .await
+    if q.view.is_some() {
+        repository::hosts(&s.graph, capable(&actor), &q).await
+    } else {
+        repository::list(&s.graph, capable(&actor), &q).await
+    }
         .map(|data| Json(json!({"data":data})))
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))
 }

@@ -14,7 +14,7 @@ pub async fn context(graph: &Graph, member: &Teacher) -> Result<Value, Error> {
         items.push(json!({"id":r.get::<String>("id")?,"name":r.get::<String>("name")?,"year":r.get::<String>("year")?,"schoolId":r.get::<String>("school")?,"tenantId":r.get::<String>("tenant")?,"homeroom":r.get::<bool>("homeroom")?,"canManageHomeroom":r.get::<bool>("management")?}));
     }
     // Webinars the school runs in its own room, for the staff who may host them: an Owner, or a
-    // teacher with a class in the school. They travel apart, so an earlier client keeps reading.
+    // teacher the webinar names as its host. They travel apart, so an earlier client keeps reading.
     let webinars = super::articles::hostable(graph, member).await?;
     Ok(
         json!({"actor":{"id":member.staff_member_id,"role":member.role()},"classes":items,"webinars":webinars}),

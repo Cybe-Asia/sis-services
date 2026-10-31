@@ -51,8 +51,19 @@ pub struct Article {
     /// existed has none.
     #[serde(default)]
     pub cover: Option<String>,
+    /// The staff members who host a webinar in the school's own room, beside its Owners. Left out
+    /// when there are none, so a reader that predates hosts keeps reading.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
 }
+pub const MAX_HOSTS: usize = 10;
 impl Article {
+    /// The day of a webinar held in the school's own room, the only kind a host opens.
+    pub fn room_day(&self) -> Option<&str> {
+        (self.kind == "webinar" && self.join_url.is_none())
+            .then_some(self.date.as_deref())
+            .flatten()
+    }
     pub fn valid(&self) -> bool {
         [&self.id, &self.school_id, &self.tenant_id]
             .iter()
@@ -66,6 +77,15 @@ impl Article {
             && self.body.len() <= 8000
             && !self.body.chars().any(|c| c.is_control() && c != '\n')
             && self.cover.as_deref().is_none_or(identifier)
+            && self.hosts.len() <= MAX_HOSTS
+            && self.hosts.iter().all(|s| identifier(s))
+            && self
+                .hosts
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                == self.hosts.len()
+            && (self.hosts.is_empty() || self.room_day().is_some())
             && self.section_ids.len() <= 200
             && self.section_ids.iter().all(|s| identifier(s))
             && self
@@ -133,7 +153,31 @@ mod tests {
             end: None,
             join_url: None,
             cover: None,
+            hosts: vec![],
         }
+    }
+    #[test]
+    fn only_a_webinar_in_the_school_room_names_hosts_and_none_is_written_out() {
+        let mut w = article();
+        w.kind = "webinar".into();
+        w.date = Some("2026-11-02".into());
+        w.start = Some("19:00".into());
+        assert_eq!(w.room_day(), Some("2026-11-02"));
+        assert!(!serde_json::to_string(&w).unwrap().contains("hosts"));
+        w.hosts = vec!["staff-1".into(), "staff-2".into()];
+        assert!(w.valid());
+        w.hosts = vec!["staff-1".into(), "staff-1".into()];
+        assert!(!w.valid());
+        w.hosts = vec!["../x".into()];
+        assert!(!w.valid());
+        w.hosts = (0..=MAX_HOSTS).map(|i| format!("s{i}")).collect();
+        assert!(!w.valid());
+        w.hosts = vec!["staff-1".into()];
+        w.join_url = Some("https://meet.google.com/abc-defg-hij".into());
+        assert!(!w.valid() && w.room_day().is_none());
+        let mut a = article();
+        a.hosts = vec!["staff-1".into()];
+        assert!(!a.valid());
     }
     #[test]
     fn a_cover_is_an_identifier_and_an_earlier_record_has_none() {

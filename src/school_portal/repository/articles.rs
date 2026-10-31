@@ -1,4 +1,4 @@
-use super::{parent_write_prefix, teacher_query, Error, PARENT, PARENT_SECTION};
+use super::{parent_write_prefix, Error, PARENT, PARENT_SECTION};
 use crate::school_articles::{model::Article, repository as articles};
 use neo4rs::{query, Graph};
 use serde_json::{json, Value};
@@ -43,8 +43,11 @@ pub async fn cover(
     drop(rows);
     Ok(Some(store.get(&object).await?))
 }
-/// Published webinars without an outside join address, from yesterday on, of the schools where
-/// this staff member has a class or is the Owner. These are the rooms they may open.
+/// Published webinars without an outside join address, from yesterday on, that this staff member
+/// may open: every one of the selected school for its Owner, otherwise the ones that name them as
+/// a host while they still teach at that school. The room day and hosts are read from the record,
+/// so the limit applies to these webinars only; a record saved before they existed is checked from
+/// its payload.
 pub async fn hostable(
     graph: &Graph,
     member: &crate::school_portal::auth::Teacher,
@@ -53,17 +56,17 @@ pub async fn hostable(
         .pred_opt()
         .ok_or("date out of range")?
         .to_string();
-    let mut rows=graph.execute(teacher_query(member,"MATCH(a:SchoolArticle {school_id:sec.school_id,tenant_id:sec.tenant_id,status:'published'}) RETURN DISTINCT a.payload AS payload,a.id AS id ORDER BY id LIMIT 201",None,false,false)).await?;
+    let owner = crate::school_portal::staff_capability::owner("t", "a.school_id", "a.tenant_id");
+    let host = articles::host("t", "a.school_id", "a.tenant_id");
+    let mut rows=graph.execute(query(&format!("MATCH(t:StaffMember {{id:$actor}}) WHERE t.membershipStatus='ACTIVE' MATCH(a:SchoolArticle {{status:'published'}}) WHERE a.school_id IN $schools AND a.tenant_id IN $tenants AND (a.kind IS NULL OR a.room_day>=$from) AND (($owner AND size($schools)=1 AND size($tenants)=1 AND {owner}) OR (NOT $owner AND $actor IN coalesce(a.host_ids,[]) AND {host})) RETURN a.payload AS payload,a.id AS id ORDER BY id LIMIT 201")).param("actor",member.staff_member_id.clone()).param("owner",member.is_owner()).param("schools",member.school_ids.clone()).param("tenants",member.tenant_ids.clone()).param("from",from.clone())).await?;
     let mut items = vec![];
     while let Some(r) = rows.next().await? {
         let article: Article = serde_json::from_str(&r.get::<String>("payload")?)?;
         if !article.valid() {
             return Err("invalid article publication".into());
         }
-        if article.kind != "webinar"
-            || article.join_url.is_some()
-            || article.date.as_deref().is_none_or(|day| day < from.as_str())
-        {
+        let hosts = member.is_owner() || article.hosts.contains(&member.staff_member_id);
+        if !hosts || article.room_day().is_none_or(|day| day < from.as_str()) {
             continue;
         }
         items.push(json!({"id":article.id,"title":article.title,"date":article.date,"start":article.start,"end":article.end,"schoolId":article.school_id,"tenantId":article.tenant_id}));

@@ -51,6 +51,10 @@ pub async fn init(graph: &Graph) -> Result<(), Error> {
     Ok(())
 }
 
+/// A staff member who may host a webinar of the school: active and teaching there.
+pub(crate) fn host(alias: &str, school: &str, tenant: &str) -> String {
+    format!("{alias}.membershipStatus='ACTIVE' AND 'teacher' IN coalesce({alias}.roles,[]) AND {school} IN coalesce({alias}.schoolIds,[]) AND {tenant} IN coalesce({alias}.tenantIds,[])")
+}
 fn change_query(actor: Actor<'_>, input: &Change) -> Result<Query, Error> {
     let e = &input.entry;
     let manager = manager();
@@ -59,7 +63,10 @@ fn change_query(actor: Actor<'_>, input: &Change) -> Result<Query, Error> {
     // version check even for a first save. Only a draft is edited: a published article is taken
     // back to a draft first, so what families read never changes under them. A cover must be one
     // this school uploaded. State and audit commit together.
-    let cypher=format!("{manager} WITH actor MERGE(lock:SchoolArticleLock {{key:$lock}}) ON CREATE SET lock.version=0 SET lock.version=lock.version+1 WITH lock {manager} WITH actor WHERE $action IN ['unpublish','archive'] OR (all(id IN $sections WHERE EXISTS {{ MATCH(:Section {{section_id:id,school_id:$school,tenant_id:$tenant,status:'active'}}) }}) AND ($cover='' OR EXISTS {{ MATCH(:SchoolArticleCover {{key:$cover_key}}) }})) OPTIONAL MATCH(old:SchoolArticle {{key:$key}}) WITH actor,old WHERE (old IS NULL AND $version=0 AND $action='save_draft') OR (old.version=$version AND old.school_id=$school AND old.tenant_id=$tenant AND ((old.status='draft' AND $action='save_draft') OR (old.payload=$payload AND ((old.status='draft' AND $action='publish') OR (old.status='published' AND $action='unpublish') OR (old.status IN ['draft','published'] AND $action='archive'))))) MERGE(r:SchoolArticle {{key:$key}}) ON CREATE SET r.id=$id,r.school_id=$school,r.tenant_id=$tenant,r.version=0,r.created_at=datetime() SET r.version=r.version+1,r.payload=$payload,r.status=$status,r.audience=$audience,r.section_ids=$sections,r.cover=$cover,r.updated_at=datetime(),r.published_at=CASE WHEN $action='publish' THEN datetime() ELSE r.published_at END CREATE(:SchoolArticleAudit {{key:$audit,actor_id:actor.id,actor_role:CASE WHEN 'owner' IN coalesce(actor.roles,[]) THEN 'owner' WHEN 'school_admin' IN coalesce(actor.roles,[]) THEN 'school_admin' ELSE 'staff' END,article_key:r.key,school_id:$school,tenant_id:$tenant,version:r.version,action:$action,created_at:datetime()}}) RETURN r.version AS version");
+    // A host is named once, at a draft or publish: a host who later leaves still opens nothing,
+    // because the room check reads the staff member again.
+    let host = host("h", "$school", "$tenant");
+    let cypher=format!("{manager} WITH actor MERGE(lock:SchoolArticleLock {{key:$lock}}) ON CREATE SET lock.version=0 SET lock.version=lock.version+1 WITH lock {manager} WITH actor WHERE $action IN ['unpublish','archive'] OR (all(id IN $sections WHERE EXISTS {{ MATCH(:Section {{section_id:id,school_id:$school,tenant_id:$tenant,status:'active'}}) }}) AND ($cover='' OR EXISTS {{ MATCH(:SchoolArticleCover {{key:$cover_key}}) }}) AND all(id IN $hosts WHERE EXISTS {{ MATCH(h:StaffMember {{id:id}}) WHERE {host} }})) OPTIONAL MATCH(old:SchoolArticle {{key:$key}}) WITH actor,old WHERE (old IS NULL AND $version=0 AND $action='save_draft') OR (old.version=$version AND old.school_id=$school AND old.tenant_id=$tenant AND ((old.status='draft' AND $action='save_draft') OR (old.payload=$payload AND ((old.status='draft' AND $action='publish') OR (old.status='published' AND $action='unpublish') OR (old.status IN ['draft','published'] AND $action='archive'))))) MERGE(r:SchoolArticle {{key:$key}}) ON CREATE SET r.id=$id,r.school_id=$school,r.tenant_id=$tenant,r.version=0,r.created_at=datetime() SET r.version=r.version+1,r.payload=$payload,r.status=$status,r.audience=$audience,r.section_ids=$sections,r.cover=$cover,r.kind=$kind,r.room_day=$room_day,r.host_ids=$hosts,r.updated_at=datetime(),r.published_at=CASE WHEN $action='publish' THEN datetime() ELSE r.published_at END CREATE(:SchoolArticleAudit {{key:$audit,actor_id:actor.id,actor_role:CASE WHEN 'owner' IN coalesce(actor.roles,[]) THEN 'owner' WHEN 'school_admin' IN coalesce(actor.roles,[]) THEN 'school_admin' ELSE 'staff' END,article_key:r.key,school_id:$school,tenant_id:$tenant,version:r.version,action:$action,created_at:datetime()}}) RETURN r.version AS version");
     Ok(query(&cypher)
         .param("actor", actor.id)
         .param("capable", actor.capable)
@@ -79,6 +86,9 @@ fn change_query(actor: Actor<'_>, input: &Change) -> Result<Query, Error> {
                 _ => "draft",
             },
         )
+        .param("kind", e.kind.clone())
+        .param("room_day", e.room_day().unwrap_or_default())
+        .param("hosts", e.hosts.clone())
         .param("audience", e.audience.clone())
         .param("sections", e.section_ids.clone())
         .param("cover", e.cover.clone().unwrap_or_default())
@@ -143,6 +153,23 @@ pub async fn list<'a>(
         items.push(item);
     }
     Ok(json!({"items":items,"next":next}))
+}
+/// The staff members the caller may name as a webinar's host at this school, by name.
+pub async fn hosts<'a>(
+    graph: &Graph,
+    actor: impl Into<Actor<'a>>,
+    q: &Scope,
+) -> Result<Value, Error> {
+    let (actor, manager, host) = (actor.into(), manager(), host("h", "$school", "$tenant"));
+    let mut rows=graph.execute(query(&format!("{manager} WITH actor MATCH(h:StaffMember) WHERE {host} RETURN DISTINCT h.id AS id,coalesce(h.displayName,h.email,h.id) AS name ORDER BY name,id LIMIT 501")).param("actor",actor.id).param("capable",actor.capable).param("school",q.school_id.clone()).param("tenant",q.tenant_id.clone())).await?;
+    let mut items = vec![];
+    while let Some(r) = rows.next().await? {
+        if items.len() == 500 {
+            return Err("host limit exceeded".into());
+        }
+        items.push(json!({"id":r.get::<String>("id")?,"name":r.get::<String>("name")?}));
+    }
+    Ok(json!({"hosts":items}))
 }
 /// Published for the caller's class. `sec` must already be a class the caller currently belongs to.
 pub(crate) const PUBLISHED:&str="MATCH(a:SchoolArticle {school_id:sec.school_id,tenant_id:sec.tenant_id,status:'published'}) WHERE (a.audience='school' OR (a.audience='sections' AND sec.section_id IN a.section_ids))";

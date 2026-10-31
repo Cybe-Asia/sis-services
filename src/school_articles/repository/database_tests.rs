@@ -45,6 +45,7 @@ async fn lifecycle_audience_and_one_view_per_family() {
             end: Some("20:00".into()),
             join_url: Some("https://meet.example.org/calm".into()),
             cover: None,
+            hosts: vec![],
         },
         expected_version: 0,
         action: "save_draft".into(),
@@ -165,38 +166,57 @@ async fn lifecycle_audience_and_one_view_per_family() {
     assert_eq!(seen[0]["views"], 1);
     assert!(article_view(&graph, &neighbour, &key).await.unwrap());
 
-    // In-app webinars reach the staff who may host them: here the webinar has no outside address
-    // and its day is far ahead, so the school's teacher of a class sees it; a teacher of no class
-    // of this school sees none.
-    let teacher = |id: String| crate::school_portal::auth::Teacher {
+    // In-app webinars reach the staff who host them. A teacher of a class who is not named sees
+    // none; a host must be a teacher of this school; once named and published, that teacher sees
+    // it, a stranger still none, and the school's Owner sees it without being named.
+    let teacher = |id: String, role: &str| crate::school_portal::auth::Teacher {
         active: true,
         staff_member_id: id,
-        roles: vec!["teacher".into()],
+        roles: vec![role.into()],
         school_ids: vec![key.clone()],
         tenant_ids: vec![key.clone()],
     };
-    graph.run(query("MATCH(sec:Section {section_id:$key}),(t:StaffMember {id:$teacher}) SET sec.homeroom_staff_member_id=t.id").param("key",key.clone()).param("teacher",format!("teacher-{key}"))).await.unwrap();
-    let hosted = crate::school_portal::repository::context(&graph, &teacher(format!("teacher-{key}")))
-        .await
-        .unwrap();
-    assert_eq!(hosted["webinars"].as_array().unwrap().len(), 1);
-    assert_eq!(hosted["webinars"][0]["id"], key.as_str());
-    assert_eq!(hosted["webinars"][0]["start"], "19:00");
-    let stranger = crate::school_portal::repository::context(&graph, &teacher(format!("stranger-{key}")))
-        .await
-        .unwrap();
-    assert!(stranger["webinars"].as_array().unwrap().is_empty());
-
+    graph.run(query("MATCH(sec:Section {section_id:$key}),(t:StaffMember {id:$teacher}) SET sec.homeroom_staff_member_id=t.id CREATE(:School {school_id:$key,tenant_id:$key,test_key:$key}) CREATE(:StaffMember {id:$owner,membershipStatus:'ACTIVE',roles:['owner'],test_key:$key})").param("key",key.clone()).param("teacher",format!("teacher-{key}")).param("owner",format!("owner-{key}"))).await.unwrap();
+    let hosted = |id: String, role: &'static str| {
+        let member = teacher(id, role);
+        let graph = graph.clone();
+        async move { crate::school_portal::repository::context(&graph, &member).await.unwrap()["webinars"].as_array().unwrap().clone() }
+    };
+    assert!(hosted(format!("teacher-{key}"), "teacher").await.is_empty());
     let scope = Scope {
         tenant_id: key.clone(),
         school_id: key.clone(),
         after: None,
         id: None,
+        view: Some("hosts".into()),
     };
+    assert_eq!(hosts(&graph, &key, &scope).await.unwrap()["hosts"], serde_json::json!([{"id":format!("teacher-{key}"),"name":format!("teacher-{key}")}]));
+    assert!(hosts(&graph, &format!("teacher-{key}"), &scope).await.unwrap()["hosts"].as_array().unwrap().is_empty());
+    v.expected_version = 5;
+    v.action = "unpublish".into();
+    assert_eq!(change(&graph, &key, &v).await.unwrap(), Some(6));
+    v.expected_version = 6;
+    v.action = "save_draft".into();
+    v.entry.hosts = vec![format!("owner-{key}")];
+    assert_eq!(change(&graph, &key, &v).await.unwrap(), None);
+    v.entry.hosts = vec![format!("teacher-{key}")];
+    assert_eq!(change(&graph, &key, &v).await.unwrap(), Some(7));
+    v.expected_version = 7;
+    v.action = "publish".into();
+    assert_eq!(change(&graph, &key, &v).await.unwrap(), Some(8));
+    let named = hosted(format!("teacher-{key}"), "teacher").await;
+    assert_eq!(named.len(), 1);
+    assert_eq!(named[0]["id"], key.as_str());
+    assert_eq!(named[0]["start"], "19:00");
+    assert!(hosted(format!("stranger-{key}"), "teacher").await.is_empty());
+    assert_eq!(hosted(format!("owner-{key}"), "owner").await.len(), 1);
+    assert!(read(&graph, &parent).await[0]["content"].get("hosts").is_none());
+
+    let scope = Scope { view: None, ..scope };
     let page = list(&graph, &key, &scope).await.unwrap();
     assert_eq!(page["items"].as_array().unwrap().len(), 1);
     assert_eq!(page["items"][0]["status"], "published");
-    assert_eq!(page["items"][0]["version"], 5);
+    assert_eq!(page["items"][0]["version"], 8);
     assert_eq!(page["items"][0]["views"], 2);
     assert_eq!(page["items"][0]["entry"]["audience"], "school");
     assert!(page["items"][0]["publishedAt"].is_string());
@@ -205,20 +225,20 @@ async fn lifecycle_audience_and_one_view_per_family() {
         .unwrap()
         .is_empty());
 
-    v.expected_version = 5;
+    v.expected_version = 8;
     v.action = "archive".into();
-    assert_eq!(change(&graph, &key, &v).await.unwrap(), Some(6));
+    assert_eq!(change(&graph, &key, &v).await.unwrap(), Some(9));
     assert!(read(&graph, &parent).await.is_empty());
     assert_eq!(
         list(&graph, &key, &scope).await.unwrap()["items"][0]["status"],
         "archived"
     );
-    v.expected_version = 6;
+    v.expected_version = 9;
     v.action = "save_draft".into();
     assert_eq!(change(&graph, &key, &v).await.unwrap(), None);
     let mut audit=graph.execute(query("MATCH(a:SchoolArticleAudit {school_id:$key}) RETURN count(a) AS writes,collect(DISTINCT a.actor_role) AS roles").param("key",key.clone())).await.unwrap();
     let row = audit.next().await.unwrap().unwrap();
-    assert_eq!(row.get::<i64>("writes").unwrap(), 6);
+    assert_eq!(row.get::<i64>("writes").unwrap(), 9);
     assert_eq!(row.get::<Vec<String>>("roles").unwrap(), ["school_admin"]);
     drop(audit);
 
@@ -230,6 +250,7 @@ async fn lifecycle_audience_and_one_view_per_family() {
         capable: true,
     };
     v.entry.id = format!("staff-{key}");
+    v.entry.hosts.clear();
     v.expected_version = 0;
     v.action = "save_draft".into();
     assert_eq!(change(&graph, &teacher, &v).await.unwrap(), None);
