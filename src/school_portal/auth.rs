@@ -112,12 +112,14 @@ pub async fn teacher_in(
 /// One pooled client per trust anchor for calls to Auth. A client built per request loaded the
 /// TLS roots and opened a new TLS connection each time: about 100 ms of SIS CPU and a full
 /// handshake on Auth's 250m TLS proxy for every Learning read, so concurrent reads queued into
-/// 503s (QA B5, 2026-10-23). Keyed by the PEM bytes, so a rotated anchor applies without a restart.
-pub(crate) fn auth_client(pem: Option<&[u8]>, no_proxy: bool) -> Result<reqwest::Client, Failure> {
-    type Key = (Option<Vec<u8>>, bool);
+/// 503s (QA B5, 2026-10-23). Keyed by the `AUTH_PORTAL_CA_FILE` path, so the file is read once
+/// when its client is built and never on the request path.
+// shortcut: a rotated anchor at the same path applies after a restart; re-read on a timer if rotation must apply live.
+pub(crate) fn auth_client(no_proxy: bool) -> Result<reqwest::Client, Failure> {
+    type Key = (Option<String>, bool);
     static CLIENTS: OnceLock<Mutex<HashMap<Key, reqwest::Client>>> = OnceLock::new();
     let unavailable = || super::failure(StatusCode::SERVICE_UNAVAILABLE);
-    let key = (pem.map(<[u8]>::to_vec), no_proxy);
+    let key = (std::env::var("AUTH_PORTAL_CA_FILE").ok(), no_proxy);
     let mut clients = CLIENTS
         .get_or_init(Default::default)
         .lock()
@@ -134,9 +136,14 @@ pub(crate) fn auth_client(pem: Option<&[u8]>, no_proxy: bool) -> Result<reqwest:
     if no_proxy {
         builder = builder.no_proxy();
     }
-    if let Some(pem) = pem {
+    if let Some(path) = &key.0 {
+        let metadata = std::fs::metadata(path).map_err(|_| unavailable())?;
+        if !metadata.is_file() || metadata.len() > 65_536 {
+            return Err(unavailable());
+        }
+        let pem = std::fs::read(path).map_err(|_| unavailable())?;
         builder = builder
-            .add_root_certificate(reqwest::Certificate::from_pem(pem).map_err(|_| unavailable())?);
+            .add_root_certificate(reqwest::Certificate::from_pem(&pem).map_err(|_| unavailable())?);
     }
     let client = builder.build().map_err(|_| unavailable())?;
     // Old anchors after rotations never accumulate.
@@ -179,18 +186,7 @@ pub async fn teacher(headers: &HeaderMap) -> Result<Teacher, Failure> {
     {
         return Err(super::failure(StatusCode::SERVICE_UNAVAILABLE));
     }
-    let pem = match std::env::var("AUTH_PORTAL_CA_FILE") {
-        Ok(path) => {
-            let metadata = std::fs::metadata(&path)
-                .map_err(|_| super::failure(StatusCode::SERVICE_UNAVAILABLE))?;
-            if !metadata.is_file() || metadata.len() > 65_536 {
-                return Err(super::failure(StatusCode::SERVICE_UNAVAILABLE));
-            }
-            Some(std::fs::read(path).map_err(|_| super::failure(StatusCode::SERVICE_UNAVAILABLE))?)
-        }
-        Err(_) => None,
-    };
-    let client = auth_client(pem.as_deref(), false)?;
+    let client = auth_client(false)?;
     let mut response = client
         .post(url)
         .bearer_auth(token)
@@ -270,7 +266,7 @@ mod client_tests {
     async fn auth_calls_share_one_pooled_connection() {
         let (origin, connections) = server();
         for _ in 0..3 {
-            let client = auth_client(None, true).unwrap();
+            let client = auth_client(true).unwrap();
             let response = client
                 .post(format!("{origin}/session"))
                 .send()

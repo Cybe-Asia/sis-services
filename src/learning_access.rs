@@ -73,13 +73,7 @@ async fn verified(headers: &HeaderMap, administrators: bool) -> Result<Membershi
     {
         return Err(failure(StatusCode::SERVICE_UNAVAILABLE));
     }
-    let pem = match std::env::var("AUTH_PORTAL_CA_FILE") {
-        Ok(path) => {
-            Some(std::fs::read(path).map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?)
-        }
-        Err(_) => None,
-    };
-    let client = crate::school_portal::auth::auth_client(pem.as_deref(), false)?;
+    let client = crate::school_portal::auth::auth_client(false)?;
     let response = client
         .post(url)
         .bearer_auth(token)

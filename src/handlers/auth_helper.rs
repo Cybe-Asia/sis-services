@@ -23,7 +23,7 @@ pub async fn resolve_lead_id_from_bearer(
             "Missing or invalid Authorization header".to_string(),
         ));
     };
-    let sub = decode_verification_token(&token)
+    let sub = decode_verification_token(&token, &state.config.jwt_secret)
         .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid or expired token".to_string()))?;
 
     if sub.starts_with("LEAD-") {
@@ -36,7 +36,10 @@ pub async fn resolve_lead_id_from_bearer(
             StatusCode::NOT_FOUND,
             "No lead found for this user".to_string(),
         )),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        Err(e) => {
+            tracing::error!(error = %e, "lead lookup for bearer failed");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string()))
+        }
     }
 }
 

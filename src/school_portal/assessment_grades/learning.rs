@@ -4,13 +4,20 @@ use super::{
 };
 use axum::http::{HeaderMap, StatusCode};
 use serde::Deserialize;
-use std::{io::Read, path::Path};
+use std::{
+    collections::HashMap,
+    ffi::OsString,
+    io::Read,
+    path::Path,
+    sync::{Mutex, OnceLock},
+};
 
 // The private Learning trust anchor belongs only to this owner transport.
 // Keep default public roots and hostname verification on both TLS backends.
 fn client_builder(ca_file: Option<&Path>) -> Result<reqwest::ClientBuilder, Failure> {
     let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(5));
     if let Some(path) = ca_file {
         let mut pem = Vec::new();
@@ -54,6 +61,28 @@ fn private_roots(pem: &[u8]) -> Result<Vec<reqwest::Certificate>, Failure> {
     }
     Ok(roots)
 }
+/// One pooled client per CA path, as in `auth::auth_client`: the CA file is read and the TLS roots
+/// loaded when the client is first built, not on every grade read.
+// shortcut: a rotated anchor at the same path applies after a restart; re-read on a timer if rotation must apply live.
+fn client(ca_file: Option<OsString>) -> Result<reqwest::Client, Failure> {
+    static CLIENTS: OnceLock<Mutex<HashMap<Option<OsString>, reqwest::Client>>> = OnceLock::new();
+    let unavailable = || failure(StatusCode::SERVICE_UNAVAILABLE);
+    let mut clients = CLIENTS
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| unavailable())?;
+    if let Some(client) = clients.get(&ca_file) {
+        return Ok(client.clone());
+    }
+    let client = client_builder(ca_file.as_deref().map(Path::new))?
+        .build()
+        .map_err(|_| unavailable())?;
+    if clients.len() >= 8 {
+        clients.clear();
+    }
+    clients.insert(ca_file, client.clone());
+    Ok(client)
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope {
@@ -91,10 +120,7 @@ pub async fn read(headers: &HeaderMap, input: &Import) -> Result<Export, Failure
             "attempts",
             &input.attempt_id,
         ]);
-    let ca_file = std::env::var_os("LEARNING_SERVICE_CA_FILE");
-    let client = client_builder(ca_file.as_deref().map(Path::new))?
-        .build()
-        .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    let client = client(std::env::var_os("LEARNING_SERVICE_CA_FILE"))?;
     let mut response = client
         .get(url)
         .bearer_auth(auth::bearer(headers)?)

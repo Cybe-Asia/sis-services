@@ -1,7 +1,5 @@
-use chrono::{Duration, Utc};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{decode, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
-use std::env;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
@@ -19,46 +17,11 @@ pub struct Claims {
     pub scope: Option<String>,
 }
 
-pub fn generate_verification_token(id: &str) -> Result<String, String> {
-    let secret = env::var("JWT_SECRET").unwrap_or_else(|_| "secret".to_string());
-    let expiration = Utc::now()
-        .checked_add_signed(Duration::hours(24))
-        .expect("valid timestamp")
-        .timestamp() as usize;
-
-    let claims = Claims {
-        sub: id.to_owned(),
-        exp: expiration,
-        email: None,
-        scope: None,
-    };
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret.as_ref()),
-    )
-    .map_err(|e| e.to_string())
+/// `secret` is `AppConfig::jwt_secret`; a local fallback once disagreed with the config value.
+pub fn decode_verification_token(token: &str, secret: &str) -> Result<String, String> {
+    decode_parent_claims(token, secret).map(|c| c.sub)
 }
 
-pub fn decode_verification_token(token: &str) -> Result<String, String> {
-    decode_full_claims(token).map(|c| c.sub)
-}
-
-/// Returns the embedded `email` claim, if any. Auth-service login
-/// tokens carry it; magic-link tokens do not.
-pub fn decode_verification_token_email(token: &str) -> Result<String, String> {
-    let claims = decode_full_claims(token)?;
-    claims
-        .email
-        .ok_or_else(|| "token has no email claim".to_string())
-}
-
-fn decode_full_claims(token: &str) -> Result<Claims, String> {
-    let secret = env::var("JWT_SECRET").unwrap_or_else(|_| "secret".to_string());
-
-    decode_parent_claims(token, &secret)
-}
 fn decode_parent_claims(token: &str, secret: &str) -> Result<Claims, String> {
     let token_data = decode::<Claims>(
         token,
@@ -76,6 +39,7 @@ fn decode_parent_claims(token: &str, secret: &str) -> Result<Claims, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jsonwebtoken::{encode, EncodingKey, Header};
     #[test]
     fn parent_records_reject_setup_proofs() {
         let secret = "test-sis-scope";

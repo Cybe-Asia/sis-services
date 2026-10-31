@@ -39,11 +39,16 @@ impl AppConfig {
             .map_err(|_| ConfigError::MissingVar("NEO4J_PASSWORD".into()))?;
 
         // JWT_SECRET must match admission-services and auth-services
-        // or cross-service bearer tokens won't decode. Default is
-        // intentionally dev-only so a misconfigured prod pod fails
-        // loudly at first auth rather than silently minting tokens
-        // nobody else trusts.
-        let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| "super-secret-key".to_string());
+        // or cross-service bearer tokens won't decode. No default: a
+        // missing secret stops the service at startup.
+        let jwt_secret = env::var("JWT_SECRET")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ConfigError::MissingVar("JWT_SECRET".into()))?;
+        if jwt_secret.len() < 32 {
+            // shortcut: warn instead of refusing so a short live secret cannot take SIS down; refuse once every environment is >= 32 bytes.
+            tracing::warn!("JWT_SECRET is shorter than 32 bytes");
+        }
 
         Ok(Self {
             server_port,

@@ -140,23 +140,7 @@ pub(crate) async fn actor(headers: &HeaderMap) -> Result<String, Failure> {
     // Separate from Staff membership/portal URLs. Missing configuration never falls back.
     let url = endpoint(&std::env::var("AUTH_STUDENT_SESSION_URL").map_err(|_| unavailable())?)?;
     let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-    let pem = match std::env::var("AUTH_PORTAL_CA_FILE") {
-        Ok(path) => {
-            let pem = std::fs::read(path).map_err(|_| unavailable())?;
-            if pem.len() > 65_536 {
-                return Err(unavailable());
-            }
-            Some(pem)
-        }
-        Err(_) => None,
-    };
-    verify(
-        token,
-        claims,
-        url,
-        super::auth::auth_client(pem.as_deref(), loopback)?,
-    )
-    .await
+    verify(token, claims, url, super::auth::auth_client(loopback)?).await
 }
 
 #[cfg(test)]

@@ -575,6 +575,12 @@ fn admin_date_valid(date: &str) -> bool {
     date.len() == 10 && chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok()
 }
 
+/// Same 500 envelope as before, with a fixed message: driver error text stays in the log.
+fn internal_failure<T: Serialize + ToSchema>(e: impl std::fmt::Display) -> (StatusCode, Json<ApiResponse<T>>) {
+    tracing::error!(error = %e, "parent read failed");
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error("Internal server error", 500)))
+}
+
 fn academic_failure<T: Serialize + ToSchema>(
     e: crate::repositories::lead_repository::RepositoryError,
 ) -> (StatusCode, Json<ApiResponse<T>>) {
@@ -611,7 +617,7 @@ pub async fn parent_list_grades_handler(
         .unwrap_or_else(|_| vec![lead_id.clone()]);
     match sis_repository::list_grades_for_parent(&state.graph, &lead_ids).await {
         Ok(v) => (StatusCode::OK, Json(ApiResponse::success(v))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(&e.to_string(), 500))),
+        Err(e) => internal_failure(e),
     }
 }
 
@@ -651,7 +657,7 @@ pub async fn parent_list_attendance_handler(
     let to = q.to.filter(|s| is_valid_ymd(s)).unwrap_or_else(|| today.format("%Y-%m-%d").to_string());
     match sis_repository::list_attendance_for_parent(&state.graph, &lead_ids, &from, &to).await {
         Ok(v) => (StatusCode::OK, Json(ApiResponse::success(v))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(&e.to_string(), 500))),
+        Err(e) => internal_failure(e),
     }
 }
 
@@ -681,6 +687,6 @@ pub async fn parent_list_sections_handler(
         .unwrap_or_else(|_| vec![lead_id.clone()]);
     match sis_repository::list_parent_sections(&state.graph, &lead_ids, &principal).await {
         Ok(v) => (StatusCode::OK, Json(ApiResponse::success(v))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(&e.to_string(), 500))),
+        Err(e) => internal_failure(e),
     }
 }
