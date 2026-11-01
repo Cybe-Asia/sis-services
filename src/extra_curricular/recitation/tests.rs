@@ -155,6 +155,14 @@ async fn a_student_submits_a_coach_grades_and_retention_removes_the_clip() {
     assert!(matches!(repository::audio(&g, &store, &stranger, &clip_query).await.unwrap(), Outcome::Forbidden));
     assert!(matches!(repository::audio(&g, &store, &outsider, &clip_query).await.unwrap(), Outcome::Forbidden));
     assert!(matches!(repository::audio(&g, &store, &student, &clip_query).await.unwrap(), Outcome::Done(_)));
+    // A parent sees nothing of the child's until it is graded; another parent never does.
+    let parent = Actor { id: format!("{mark}-parent-0"), role: "parent".into() };
+    let other_parent = Actor { id: format!("{mark}-parent-1"), role: "parent".into() };
+    let child_query = Query { student_id: Some(students[0].0.clone()), ..q.clone() };
+    assert_eq!(repository::list(&g, &parent, &child_query).await.unwrap().unwrap()["items"].as_array().unwrap().len(), 0);
+    assert!(matches!(repository::audio(&g, &store, &parent, &clip_query).await.unwrap(), Outcome::Missing));
+    assert!(repository::list(&g, &other_parent, &child_query).await.unwrap().is_none());
+    assert!(matches!(repository::audio(&g, &store, &other_parent, &clip_query).await.unwrap(), Outcome::Forbidden));
     // Grading needs every criterion, the revision the coach listened to, and a roster student.
     let mut review = Review { scope: scope.clone(), activity_id: "tahfiz".into(), student_id: students[0].0.clone(), verse: "114:1".into(), revision: 1, skills: vec![Skill { criterion_id: "kelancaran".into(), level: 1 }, Skill { criterion_id: "tajwid".into(), level: 0 }], note: Some("Ulangi mad".into()), decision: "retry".into() };
     assert!(matches!(repository::review(&g, &teacher, &review).await.unwrap(), Outcome::Conflict));
@@ -169,6 +177,10 @@ async fn a_student_submits_a_coach_grades_and_retention_removes_the_clip() {
     assert_eq!(mine["items"][0]["review"]["decision"], "retry");
     assert_eq!(mine["items"][0]["review"]["revision"], 2);
     assert_eq!(mine["items"][0]["status"], "reviewed");
+    let seen = repository::list(&g, &parent, &child_query).await.unwrap().unwrap();
+    assert_eq!(seen["items"][0]["review"]["decision"], "retry");
+    assert!(seen["items"][0].get("studentName").is_none());
+    assert!(matches!(repository::audio(&g, &store, &parent, &clip_query).await.unwrap(), Outcome::Done(_)));
     // A new take after the grade goes back to the queue and keeps the grade as history.
     let third = match repository::submit(&g, &store, &student, &sub, webm()).await.unwrap() { Outcome::Done(v) => v, _ => panic!("third submission refused") };
     assert_eq!(third["revision"], 4);

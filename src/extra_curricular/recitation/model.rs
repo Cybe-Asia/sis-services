@@ -178,6 +178,13 @@ impl Query {
             after: None,
         }
     }
+    /// A parent's reads name the child, as the activity reads of the parent role require.
+    pub fn scope_as(&self, role: &str) -> Scope {
+        Scope {
+            student_id: (role == "parent").then(|| self.student_id.clone()).flatten(),
+            ..self.scope()
+        }
+    }
     pub fn valid(&self) -> bool {
         self.scope().valid()
             && identifier(&self.activity_id)

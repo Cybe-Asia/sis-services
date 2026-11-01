@@ -162,12 +162,13 @@ async fn own(g: &Graph, actor: &Actor, scope: &Scope, key: &str) -> Result<Optio
     }
     Ok(found)
 }
-/// A Student lists their own verses; a coach lists the roster's, newest first within a page.
+/// A Student lists their own verses and a parent their child's graded ones; a coach lists the
+/// roster's, newest first within a page.
 pub async fn list(g: &Graph, actor: &Actor, q: &Query) -> Result<Option<Value>, Error> {
-    let scope = q.scope();
+    let scope = q.scope_as(&actor.role);
     let key = activity_key(&scope, &q.activity_id);
     let (students, names): (Vec<String>, Vec<(String, String)>) = match actor.role.as_str() {
-        "student" => {
+        "student" | "parent" => {
             let Some(student) = own(g, actor, &scope, &key).await? else {
                 return Ok(None);
             };
@@ -189,7 +190,7 @@ pub async fn list(g: &Graph, actor: &Actor, q: &Query) -> Result<Option<Value>, 
         Some(cursor) => String::from_utf8(URL_SAFE_NO_PAD.decode(cursor).map_err(|_| "bad cursor")?).map_err(|_| "bad cursor")?,
         None => String::new(),
     };
-    let mut rows = g.execute(query(&format!("MATCH(r:ExtraCurricularRecitation {{activity_key:$key}}) WHERE r.key>$after AND r.student_id IN $students AND ($verse='' OR r.verse=$verse) AND ($status='' OR r.status=$status) RETURN {FIELDS} ORDER BY r.key LIMIT {}", PAGE + 1)).param("key", key).param("after", after).param("students", students).param("verse", q.verse.clone().unwrap_or_default()).param("status", q.status.clone().unwrap_or_default())).await?;
+    let mut rows = g.execute(query(&format!("MATCH(r:ExtraCurricularRecitation {{activity_key:$key}}) WHERE r.key>$after AND r.student_id IN $students AND ($verse='' OR r.verse=$verse) AND ($status='' OR r.status=$status) RETURN {FIELDS} ORDER BY r.key LIMIT {}", PAGE + 1)).param("key", key).param("after", after).param("students", students).param("verse", q.verse.clone().unwrap_or_default()).param("status", if actor.role == "parent" { "reviewed".into() } else { q.status.clone().unwrap_or_default() })).await?;
     let mut items = vec![];
     let mut next = None;
     while let Some(row) = rows.next().await? {
@@ -199,7 +200,7 @@ pub async fn list(g: &Graph, actor: &Actor, q: &Query) -> Result<Option<Value>, 
         }
         let student: String = row.get("student")?;
         let name = names.iter().find(|(id, _)| id == &student).map(|(_, n)| n.as_str());
-        let mut value = item(&row, if actor.role == "student" { None } else { name.or(Some("")) })?;
+        let mut value = item(&row, if matches!(actor.role.as_str(), "student" | "parent") { None } else { name.or(Some("")) })?;
         value["key"] = json!(row.get::<String>("key")?);
         items.push(value);
     }
@@ -215,22 +216,23 @@ fn last_key(items: &[Value]) -> Result<String, Error> {
         .map(String::from)
         .ok_or_else(|| "cursor missing".into())
 }
-/// The clip of one submission: the Student's own, or one of the coach's roster.
+/// The clip of one submission: the Student's own, the child's once graded, or one of the coach's roster.
 pub async fn audio(g: &Graph, store: &Store, actor: &Actor, q: &Query) -> Result<Outcome, Error> {
     let (Some(verse), Some(wanted)) = (q.verse.as_deref(), q.student_id.as_deref()) else {
         return Ok(Outcome::Missing);
     };
-    let scope = q.scope();
+    let scope = q.scope_as(&actor.role);
     let key = activity_key(&scope, &q.activity_id);
     let allowed = match actor.role.as_str() {
-        "student" => own(g, actor, &scope, &key).await?.is_some_and(|s| s == wanted),
+        "student" | "parent" => own(g, actor, &scope, &key).await?.is_some_and(|s| s == wanted),
         "teacher" | "owner" => roster(g, actor, &scope, &key).await?.is_some_and(|r| r.iter().any(|(id, _)| id == wanted)),
         _ => false,
     };
     if !allowed {
         return Ok(Outcome::Forbidden);
     }
-    let mut rows = g.execute(query("MATCH(r:ExtraCurricularRecitation {key:$rk}) RETURN r.object_key AS object,r.mime AS mime").param("rk", record_key(&key, wanted, verse))).await?;
+    // Nothing reaches a parent before the ustadz has graded it (ADR 0009).
+    let mut rows = g.execute(query("MATCH(r:ExtraCurricularRecitation {key:$rk}) WHERE $any OR r.status='reviewed' RETURN r.object_key AS object,r.mime AS mime").param("rk", record_key(&key, wanted, verse)).param("any", actor.role != "parent")).await?;
     let Some(row) = rows.next().await? else {
         return Ok(Outcome::Missing);
     };

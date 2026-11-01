@@ -1,7 +1,7 @@
 //! Recitation submissions of a tahfiz activity (digital-school ADR 0009). After the AI check the
 //! Student screen sends the take and the verdict here; one submission per verse, the newest
 //! replacing the previous. The coach lists the roster's submissions, plays a clip and grades it
-//! against the activity's criteria. Clips live in the shared object store and are removed after
+//! against the activity's criteria. A parent reads their child's graded verses and their clips. Clips live in the shared object store and are removed after
 //! the retention period; the graph keeps the grade history.
 pub mod model;
 pub mod repository;
@@ -48,10 +48,10 @@ async fn list(
     Path(role): Path<String>,
     Query(q): Query<model::Query>,
 ) -> Result<Json<Value>, Failure> {
-    if !matches!(role.as_str(), "student" | "teacher") || !q.valid() {
+    if !matches!(role.as_str(), "student" | "teacher" | "parent") || !q.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor = auth::actor(&s.config, &h, &role, &q.scope()).await?;
+    let actor = auth::actor(&s.config, &h, &role, &q.scope_as(&role)).await?;
     match repository::list(&s.graph, &actor, &q).await {
         Ok(Some(data)) => Ok(Json(json!({"data":data}))),
         Ok(None) => Err(failure(StatusCode::FORBIDDEN)),
@@ -95,10 +95,10 @@ async fn audio(
     Path(role): Path<String>,
     Query(q): Query<model::Query>,
 ) -> Result<Response, Failure> {
-    if !matches!(role.as_str(), "student" | "teacher") || !q.valid() || q.verse.is_none() || q.student_id.is_none() {
+    if !matches!(role.as_str(), "student" | "teacher" | "parent") || !q.valid() || q.verse.is_none() || q.student_id.is_none() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor = auth::actor(&s.config, &h, &role, &q.scope()).await?;
+    let actor = auth::actor(&s.config, &h, &role, &q.scope_as(&role)).await?;
     let store = store(&s.config)?;
     let clip = done(repository::audio(&s.graph, store, &actor, &q).await)?.0;
     let mime = clip["data"]["mime"].as_str().unwrap_or("application/octet-stream").to_string();
