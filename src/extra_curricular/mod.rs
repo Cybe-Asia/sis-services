@@ -89,4 +89,4 @@ pub fn router() -> Router<AppState> {
 mod tests;
 
 #[cfg(test)]
-mod browser_fixture;
+mod browser_fixture_tests;
