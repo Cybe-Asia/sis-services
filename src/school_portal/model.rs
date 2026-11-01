@@ -19,9 +19,14 @@ pub fn school_today() -> NaiveDate {
 }
 pub fn date(value: &str) -> bool {
     NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok_and(|d| {
+        let today = school_today();
         d.to_string() == value
-            && d >= school_today().checked_sub_days(Days::new(365)).unwrap()
-            && d <= school_today().checked_add_days(Days::new(365)).unwrap()
+            && today
+                .checked_sub_days(Days::new(365))
+                .is_some_and(|earliest| d >= earliest)
+            && today
+                .checked_add_days(Days::new(365))
+                .is_some_and(|latest| d <= latest)
     })
 }
 fn time(value: &Option<String>) -> bool {

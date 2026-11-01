@@ -18,20 +18,23 @@ pub struct Claims {
 }
 
 /// `secret` is `AppConfig::jwt_secret`; a local fallback once disagreed with the config value.
-pub fn decode_verification_token(token: &str, secret: &str) -> Result<String, String> {
+pub fn decode_verification_token(
+    token: &str,
+    secret: &str,
+) -> Result<String, jsonwebtoken::errors::Error> {
     decode_parent_claims(token, secret).map(|c| c.sub)
 }
 
-fn decode_parent_claims(token: &str, secret: &str) -> Result<Claims, String> {
+fn decode_parent_claims(token: &str, secret: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
     let token_data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_ref()),
         &Validation::default(),
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
+    // A scoped setup proof is not a parent session.
     if token_data.claims.scope.is_some() {
-        return Err("token scope mismatch".into());
+        return Err(jsonwebtoken::errors::ErrorKind::InvalidToken.into());
     }
     Ok(token_data.claims)
 }

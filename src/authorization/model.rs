@@ -114,8 +114,16 @@ pub fn template_code(value: &str) -> bool {
         && !RESERVED.contains(&value)
 }
 
-fn parse_catalogue(text: &str) -> Result<Catalogue, String> {
-    let catalogue: Catalogue = serde_json::from_str(text).map_err(|e| e.to_string())?;
+/// Why the catalogue or seed templates in this repository were refused at start-up.
+#[derive(Debug, thiserror::Error)]
+pub enum ReferenceError {
+    #[error("authorization reference is not valid JSON: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("invalid authorization reference: {0}")]
+    Invalid(String),
+}
+fn parse_catalogue(text: &str) -> Result<Catalogue, ReferenceError> {
+    let catalogue: Catalogue = serde_json::from_str(text)?;
     let mut seen = BTreeSet::new();
     for c in &catalogue.capabilities {
         if !capability_code(&c.code)
@@ -125,13 +133,13 @@ fn parse_catalogue(text: &str) -> Result<Catalogue, String> {
             || !c.code.starts_with(&format!("{}.", c.area))
             || !c.description.valid(160)
         {
-            return Err(format!("invalid capability {}", c.code));
+            return Err(ReferenceError::Invalid(format!("capability {}", c.code)));
         }
     }
     Ok(catalogue)
 }
-fn parse_seeds(text: &str, catalogue: &Catalogue) -> Result<Vec<Seed>, String> {
-    let seeds: Seeds = serde_json::from_str(text).map_err(|e| e.to_string())?;
+fn parse_seeds(text: &str, catalogue: &Catalogue) -> Result<Vec<Seed>, ReferenceError> {
+    let seeds: Seeds = serde_json::from_str(text)?;
     let known: BTreeSet<&str> = catalogue
         .capabilities
         .iter()
@@ -153,12 +161,14 @@ fn parse_seeds(text: &str, catalogue: &Catalogue) -> Result<Vec<Seed>, String> {
                 && (s.allowed_scopes != [SCHOOL] || !s.capabilities.iter().any(|c| c == MANAGE)))
             || !valid_scope_types(&s.allowed_scopes)
         {
-            return Err(format!("invalid seed template {}", s.code));
+            return Err(ReferenceError::Invalid(format!("seed template {}", s.code)));
         }
     }
     for required in [REGULAR_TEACHER, SCHOOL_ADMIN, PRINCIPAL] {
         if !seen.contains(required) {
-            return Err(format!("missing seed template {required}"));
+            return Err(ReferenceError::Invalid(format!(
+                "missing seed template {required}"
+            )));
         }
     }
     Ok(seeds.templates)
@@ -194,7 +204,7 @@ impl Reference {
             .collect()
     }
 }
-pub fn load() -> Result<Reference, String> {
+pub fn load() -> Result<Reference, ReferenceError> {
     let catalogue = parse_catalogue(include_str!("capabilities.json"))?;
     let seeds = parse_seeds(include_str!("templates.json"), &catalogue)?;
     Ok(Reference { catalogue, seeds })

@@ -718,28 +718,29 @@ pub async fn held(graph: &Graph, staff: &str, codes: &[String]) -> Result<Value,
     if tenants.len() > 16 {
         return Err(unavailable("Bound exceeded"));
     }
-    let mut out: BTreeMap<&str, Value> = codes
+    // Per code: the tenants held whole, then the schools held.
+    let mut out: BTreeMap<&str, (Vec<Value>, Vec<Value>)> = codes
         .iter()
-        .map(|c| (c.as_str(), json!({"tenants": [], "schools": []})))
+        .map(|c| (c.as_str(), Default::default()))
         .collect();
     for tenant in &tenants {
         let facts = facts::load(&mut Db::Graph(graph), tenant, &[staff.to_string()], &[]).await?;
         let holdings = facts.holdings(staff);
-        for code in codes {
-            let entry = out.get_mut(code.as_str()).expect("every code has an entry");
+        for (code, (held_tenants, held_schools)) in out.iter_mut() {
             if holds_tenant(&facts, &holdings, code) {
-                entry["tenants"].as_array_mut().unwrap().push(json!(tenant));
+                held_tenants.push(json!(tenant));
             }
             for school in facts.schools.keys() {
                 if decide(&facts, &holdings, code, &Scope::school(school)).is_some() {
-                    entry["schools"]
-                        .as_array_mut()
-                        .unwrap()
-                        .push(json!({"tenantId": tenant, "schoolId": school}));
+                    held_schools.push(json!({"tenantId": tenant, "schoolId": school}));
                 }
             }
         }
     }
+    let out: BTreeMap<&str, Value> = out
+        .into_iter()
+        .map(|(code, (tenants, schools))| (code, json!({"tenants": tenants, "schools": schools})))
+        .collect();
     Ok(json!({
         "staffMemberId": staff,
         "capabilities": out,

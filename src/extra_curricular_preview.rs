@@ -36,5 +36,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3235")
         .await
         .expect("preview port unavailable");
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app)
+        .await
+        .expect("preview server stopped");
 }

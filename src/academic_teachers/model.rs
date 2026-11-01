@@ -87,8 +87,7 @@ pub fn school_week(anchor: NaiveDate) -> (NaiveDate, NaiveDate) {
 /// Half-open epoch window in milliseconds from Monday 00:00 to Saturday 00:00 school time (WIB).
 pub fn window_ms(monday: NaiveDate) -> (i64, i64) {
     let start = monday
-        .and_hms_opt(0, 0, 0)
-        .unwrap()
+        .and_time(chrono::NaiveTime::MIN)
         .and_utc()
         .timestamp_millis()
         - WIB_MS;

@@ -207,6 +207,8 @@ async fn main() {
         .parse()
         .expect("invalid server port");
     info!("starting sis-service on {}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .expect("failed to bind the server port");
+    axum::serve(listener, app).await.expect("server stopped with an error");
 }
