@@ -189,6 +189,7 @@ pub(super) async fn apply(
     graph: &Graph,
     actor: &str,
     role: &str,
+    config: &crate::config::config::AppConfig,
     headers: &HeaderMap,
     family: Family,
     input: &Weekly,
@@ -197,7 +198,7 @@ pub(super) async fn apply(
         .start_txn()
         .await
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
-    match apply_locked(&mut tx, actor, role, headers, family, input).await {
+    match apply_locked(&mut tx, actor, role, config, headers, family, input).await {
         Ok(value) => {
             tx.commit()
                 .await
@@ -214,6 +215,7 @@ async fn apply_locked(
     tx: &mut Txn,
     actor: &str,
     role: &str,
+    config: &crate::config::config::AppConfig,
     headers: &HeaderMap,
     family: Family,
     input: &Weekly,
@@ -243,12 +245,17 @@ async fn apply_locked(
     // Revalidate the caller after taking locks, through its own family (Admin Portal or Learning).
     let current = match family {
         Family::Portal => {
-            super::super::administrator_actor(headers, &input.tenant_id, &input.school_id).await?
+            super::super::administrator_actor(config, headers, &input.tenant_id, &input.school_id)
+                .await?
         }
         Family::Learning => {
-            let staff =
-                crate::school_portal::auth::teacher_in(headers, &input.school_id, &input.tenant_id)
-                    .await?;
+            let staff = crate::school_portal::auth::teacher_in(
+                config,
+                headers,
+                &input.school_id,
+                &input.tenant_id,
+            )
+            .await?;
             let role = staff.role().to_string();
             (staff.staff_member_id, role)
         }

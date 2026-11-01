@@ -10,7 +10,7 @@ async fn read(s: &AppState, h: &HeaderMap, q: &Scope) -> Result<Value, Failure> 
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let a = actor(h, q).await?;
+    let a = actor(&s.config, h, q).await?;
     if a.role != "student" {
         return Err(failure(StatusCode::FORBIDDEN));
     }
@@ -20,10 +20,9 @@ async fn read(s: &AppState, h: &HeaderMap, q: &Scope) -> Result<Value, Failure> 
         .flat_map(|c| c["students"].as_array().into_iter().flatten())
         .filter_map(|s| s["id"].as_str())
         .collect::<BTreeSet<_>>();
-    if students.len() != 1 {
+    let (1, Some(&student)) = (students.len(), students.first()) else {
         return Err(failure(StatusCode::FORBIDDEN));
-    }
-    let student = *students.first().unwrap();
+    };
     let query_for = |body: &str| {
         query(&format!("{STUDENT} WITH DISTINCT s,c {body}"))
             .param("principal", a.id.clone())
@@ -121,7 +120,6 @@ mod tests {
             .await
             .unwrap();
         let secret = "student-read-test-key-at-least-32-bytes";
-        std::env::set_var("JWT_SECRET", secret);
         let s = AppState {
             graph: graph.clone(),
             config: crate::config::config::AppConfig {
@@ -130,6 +128,7 @@ mod tests {
                 neo4j_user: "neo4j".into(),
                 neo4j_password: "parent-otp-fixture-password".into(),
                 jwt_secret: secret.into(),
+                ..Default::default()
             },
             http_client: reqwest::Client::new(),
         };
@@ -216,7 +215,7 @@ pub(super) async fn calendar(
     if !w.valid() || !valid_id(&q.school_id) || !valid_id(&q.tenant_id) {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let a = actor(&h, &scope).await?;
+    let a = actor(&s.config, &h, &scope).await?;
     if a.role != "student" {
         return Err(failure(StatusCode::FORBIDDEN));
     }

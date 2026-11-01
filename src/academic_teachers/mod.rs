@@ -81,8 +81,13 @@ async fn read(
         .week()
         .filter(|_| q.valid())
         .ok_or_else(|| failure(StatusCode::BAD_REQUEST))?;
-    let session =
-        crate::learning_access::school_staff_actor(headers, &q.tenant_id, &q.school_id).await?;
+    let session = crate::learning_access::school_staff_actor(
+        &state.config,
+        headers,
+        &q.tenant_id,
+        &q.school_id,
+    )
+    .await?;
     let report = deadline(async {
         if !repository::authorize(&state.graph, &session.0, &q.school_id, &q.tenant_id)
             .await
@@ -104,7 +109,13 @@ async fn read(
         model::report(&snapshot).ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))
     })
     .await?;
-    if crate::learning_access::school_staff_actor(headers, &q.tenant_id, &q.school_id).await?
+    if crate::learning_access::school_staff_actor(
+        &state.config,
+        headers,
+        &q.tenant_id,
+        &q.school_id,
+    )
+    .await?
         != session
     {
         return Err(failure(StatusCode::FORBIDDEN));
@@ -186,9 +197,10 @@ async fn context(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, Failure> {
-    let (actor, role, schools, tenants) = crate::learning_access::any_staff_session(&headers)
-        .await?
-        .staff_scope();
+    let (actor, role, schools, tenants) =
+        crate::learning_access::any_staff_session(&state.config, &headers)
+            .await?
+            .staff_scope();
     let all = role == "owner" && schools.is_empty() && tenants.is_empty();
     let rows = deadline(async {
         let rows = repository::schools(&state.graph, &actor, schools, tenants, all)

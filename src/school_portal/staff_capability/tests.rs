@@ -196,24 +196,6 @@ async fn owner_queued_write_rechecks_session_after_resource_lock() {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
-    struct EnvRestore(Vec<(&'static str, Option<String>)>);
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            for (key, value) in &self.0 {
-                if let Some(value) = value {
-                    std::env::set_var(key, value);
-                } else {
-                    std::env::remove_var(key);
-                }
-            }
-        }
-    }
-    let restore = EnvRestore(
-        ["APP_ENV", "AUTH_SCHOOL_MEMBERSHIP_URL"]
-            .into_iter()
-            .map(|k| (k, std::env::var(k).ok()))
-            .collect(),
-    );
     let uri = std::env::var("SIS_OWNER_TEST_NEO4J_URI").unwrap();
     assert!(matches!(
         uri.as_str(),
@@ -239,11 +221,13 @@ async fn owner_queued_write_rechecks_session_after_resource_lock() {
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    std::env::set_var("APP_ENV", "test");
-    std::env::set_var(
-        "AUTH_SCHOOL_MEMBERSHIP_URL",
-        format!("http://{address}/api/v1/auth-service/oauth/membership"),
-    );
+    let config = crate::config::config::AppConfig {
+        local_test: true,
+        auth_school_membership_url: Some(format!(
+            "http://{address}/api/v1/auth-service/oauth/membership"
+        )),
+        ..Default::default()
+    };
     let mut headers = HeaderMap::new();
     headers.insert(
         "authorization",
@@ -272,12 +256,14 @@ async fn owner_queued_write_rechecks_session_after_resource_lock() {
             let school = school.clone();
             let tenant = tenant.clone();
             let mark = mark.clone();
+            let config = config.clone();
             async move {
                 let lock=query("MATCH(r:OwnerParityResource {key:$mark}) SET r.version=r.version+1 RETURN r.key AS key").param("mark",mark.clone());
                 let write=query(&format!("MATCH(a:StaffMember {{id:$actor,membershipStatus:'ACTIVE'}}) WHERE {} CREATE(:OwnerParityAudit {{owner_parity_tag:$mark}}) RETURN a.id AS id",owner("a","$school","$tenant"))).param("actor",actor.clone()).param("school",school.clone()).param("tenant",tenant.clone()).param("mark",mark);
                 live_write(
                     &g,
                     OwnerSession {
+                        config: &config,
                         headers: &headers,
                         actor: &actor,
                         school: &school,
@@ -314,7 +300,6 @@ async fn owner_queued_write_rechecks_session_after_resource_lock() {
         );
     }
     server.abort();
-    drop(restore);
     g.run(query("MATCH(n {owner_parity_tag:$mark}) DETACH DELETE n").param("mark", mark))
         .await
         .unwrap();

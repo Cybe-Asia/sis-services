@@ -50,7 +50,7 @@ pub async fn require_admin(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<AdminActor, (StatusCode, String)> {
-    let actor = crate::enrollment_handover::auth::actor(headers, &state.config.jwt_secret)
+    let actor = crate::enrollment_handover::auth::actor(headers, &state.config)
         .map_err(|e| match e {
             crate::enrollment_handover::auth::Error::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,

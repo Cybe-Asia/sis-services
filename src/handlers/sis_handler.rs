@@ -674,7 +674,7 @@ pub async fn parent_list_sections_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> (StatusCode, Json<ApiResponse<Vec<sis_repository::ParentSectionRow>>>) {
-    let principal = match crate::school_portal::auth::parent(&headers) {
+    let principal = match crate::school_portal::auth::parent(&state.config, &headers) {
         Ok(id) => id,
         Err((code, _)) => return (code, Json(ApiResponse::error("Unable to read owned sections", code.as_u16() as i32))),
     };

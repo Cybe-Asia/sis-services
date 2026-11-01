@@ -53,7 +53,7 @@ async fn context(
     h: HeaderMap,
     Query(scope): Query<staff_capability::Selection>,
 ) -> Result<Json<Value>, Failure> {
-    let m = auth::teacher(&h).await?.select(&scope)?;
+    let m = auth::teacher(&s.config, &h).await?.select(&scope)?;
     repository::context(&s.graph, &m)
         .await
         .map(envelope)
@@ -82,7 +82,7 @@ async fn homeroom_summary(
         school_id: q.school_id,
         tenant_id: q.tenant_id,
     };
-    let m = auth::teacher(&h).await?.select(&scope)?;
+    let m = auth::teacher(&s.config, &h).await?.select(&scope)?;
     let range = model::homeroom::range(&q.from, &q.to);
     let term_ok = q.term.as_deref().is_none_or(model::homeroom::term);
     let (Some(range), true, true) = (range, term_ok, model::identifier(&section)) else {
@@ -103,7 +103,7 @@ async fn class_extracurricular(
     Path(section): Path<String>,
     Query(scope): Query<staff_capability::Selection>,
 ) -> Result<Json<Value>, Failure> {
-    let m = auth::teacher(&h).await?.select(&scope)?;
+    let m = auth::teacher(&s.config, &h).await?.select(&scope)?;
     if !model::identifier(&section) {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
@@ -123,7 +123,7 @@ async fn classroom(
         school_id: q.school_id,
         tenant_id: q.tenant_id,
     };
-    let m = auth::teacher(&h).await?.select(&scope)?;
+    let m = auth::teacher(&s.config, &h).await?.select(&scope)?;
     let date = q.date.unwrap_or_else(|| model::school_today().to_string());
     if !model::identifier(&section) || !model::date(&date) {
         return Err(failure(StatusCode::BAD_REQUEST));
@@ -141,12 +141,12 @@ async fn attendance(
     Query(scope): Query<staff_capability::Selection>,
     input: Result<Json<model::RollCall>, JsonRejection>,
 ) -> Result<Json<Value>, Failure> {
-    let m = auth::teacher(&h).await?.select(&scope)?;
+    let m = auth::teacher(&s.config, &h).await?.select(&scope)?;
     let Json(v) = input.map_err(|_| failure(StatusCode::BAD_REQUEST))?;
     if !model::identifier(&section) || !v.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    saved(repository::attendance_live(&s.graph, &m, &section, &v, &h).await)
+    saved(repository::attendance_live(&s.graph, &m, &section, &v, &s.config, &h).await)
 }
 async fn publish(
     State(s): State<AppState>,
@@ -155,12 +155,12 @@ async fn publish(
     Query(scope): Query<staff_capability::Selection>,
     input: Result<Json<model::PublishedRecord>, JsonRejection>,
 ) -> Result<Json<Value>, Failure> {
-    let m = auth::teacher(&h).await?.select(&scope)?;
+    let m = auth::teacher(&s.config, &h).await?.select(&scope)?;
     let Json(v) = input.map_err(|_| failure(StatusCode::BAD_REQUEST))?;
     if !model::identifier(&section) || !v.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    saved(repository::publish_live(&s.graph, &m, &section, &v, &h).await)
+    saved(repository::publish_live(&s.graph, &m, &section, &v, &s.config, &h).await)
 }
 async fn review(
     State(s): State<AppState>,
@@ -169,15 +169,15 @@ async fn review(
     Query(scope): Query<staff_capability::Selection>,
     input: Result<Json<model::Review>, JsonRejection>,
 ) -> Result<Json<Value>, Failure> {
-    let m = auth::teacher(&h).await?.select(&scope)?;
+    let m = auth::teacher(&s.config, &h).await?.select(&scope)?;
     let Json(v) = input.map_err(|_| failure(StatusCode::BAD_REQUEST))?;
     if !model::identifier(&section) || !model::identifier(&id) || !v.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    saved(repository::review_live(&s.graph, &m, &section, &id, &v, &h).await)
+    saved(repository::review_live(&s.graph, &m, &section, &id, &v, &s.config, &h).await)
 }
 async fn parent(State(s): State<AppState>, h: HeaderMap) -> Result<Json<Value>, Failure> {
-    let sub = auth::parent(&h)?;
+    let sub = auth::parent(&s.config, &h)?;
     repository::parent_snapshot(&s.graph, &sub)
         .await
         .map(envelope)
@@ -188,7 +188,7 @@ async fn parent_growth(
     h: HeaderMap,
     Path(student): Path<String>,
 ) -> Result<Json<Value>, Failure> {
-    let sub = auth::parent(&h)?;
+    let sub = auth::parent(&s.config, &h)?;
     if !model::identifier(&student) {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
@@ -203,7 +203,7 @@ async fn preferences(
     h: HeaderMap,
     input: Result<Json<model::ParentPreferences>, JsonRejection>,
 ) -> Result<Json<Value>, Failure> {
-    let sub = auth::parent(&h)?;
+    let sub = auth::parent(&s.config, &h)?;
     let Json(v) = input.map_err(|_| failure(StatusCode::BAD_REQUEST))?;
     if !v.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
@@ -216,7 +216,7 @@ async fn rsvp(
     Path(id): Path<String>,
     input: Result<Json<model::Rsvp>, JsonRejection>,
 ) -> Result<Json<Value>, Failure> {
-    let sub = auth::parent(&h)?;
+    let sub = auth::parent(&s.config, &h)?;
     let Json(v) = input.map_err(|_| failure(StatusCode::BAD_REQUEST))?;
     if !model::identifier(&id) || !v.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
@@ -230,7 +230,7 @@ async fn read(
     h: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Failure> {
-    let sub = auth::parent(&h)?;
+    let sub = auth::parent(&s.config, &h)?;
     if !model::identifier(&id) {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
@@ -248,7 +248,7 @@ async fn parent_calendar(
     h: HeaderMap,
     Query(w): Query<crate::education_calendar::window::Window>,
 ) -> Result<Json<Value>, Failure> {
-    let sub = auth::parent(&h)?;
+    let sub = auth::parent(&s.config, &h)?;
     if !w.valid() || w.student_id.is_none() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
@@ -280,7 +280,7 @@ async fn teacher_calendar(
         school_id: q.school_id,
         tenant_id: q.tenant_id,
     };
-    let member = auth::teacher(&h).await?.select(&scope)?;
+    let member = auth::teacher(&s.config, &h).await?.select(&scope)?;
     let w = crate::education_calendar::window::Window {
         from: q.from,
         to: q.to,

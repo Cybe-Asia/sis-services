@@ -115,11 +115,6 @@ async fn run(g: Graph, f: Fixture) {
     g.run(f.params(query("CREATE(:School {school_id:$school,tenant_id:$tenant,sis_academic_test:$tag}),(:School {school_id:$other,tenant_id:$tenant,sis_academic_test:$tag}) WITH 1 AS ready UNWIND [$section,$next,$foreign] AS id CREATE(sec:Section {section_id:id,name:'Synthetic section',school_id:CASE WHEN id=$foreign THEN $other ELSE $school END,tenant_id:$tenant,status:'active',year_group:'Grade 7',academic_year:'2026/2027',academic_year_code:'2026/2027',grade_code:'Y7',sis_academic_test:$tag})"))).await.unwrap();
     g.run(f.params(query("UNWIND [$child,$foreign_child] AS id MATCH(sec:Section {section_id:CASE WHEN id=$child THEN $section ELSE $foreign END}) CREATE(s:Student {studentId:id,fullName:'Synthetic child',sis_academic_test:$tag})-[:ENROLLED_AS]->(e:EnrolledStudent {student_id:id+'-permanent',applicant_student_id:id,student_number:id+'-number',status:'active',school_id:sec.school_id,tenant_id:sec.tenant_id,academic_year:sec.academic_year,year_group:sec.year_group,sis_academic_test:$tag})-[:ENROLLED_IN]->(sec)"))).await.unwrap();
     let key = "synthetic-academic-staff-key-at-least-32-bytes";
-    std::env::set_var("STAFF_DOWNSTREAM_JWT_SECRET", key);
-    std::env::set_var(
-        "STAFF_DOWNSTREAM_JWT_ISSUER",
-        "https://auth.academic.example.test/staff-api",
-    );
     let state = AppState {
         graph: g.clone(),
         config: crate::config::config::AppConfig {
@@ -128,6 +123,9 @@ async fn run(g: Graph, f: Fixture) {
             neo4j_user: String::new(),
             neo4j_password: String::new(),
             jwt_secret: "synthetic-parent-key-at-least-32-bytes".into(),
+            staff_downstream_jwt_secret: Some(key.into()),
+            staff_downstream_jwt_issuer: Some("https://auth.academic.example.test/staff-api".into()),
+            ..Default::default()
         },
         http_client: reqwest::Client::new(),
     };

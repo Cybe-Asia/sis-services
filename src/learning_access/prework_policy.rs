@@ -66,22 +66,26 @@ async fn read(
     if !valid(&scope) {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let (actor, role) =
-        match crate::school_portal::auth::teacher_in(&headers, &scope.school_id, &scope.tenant_id)
-            .await
+    let (actor, role) = match crate::school_portal::auth::teacher_in(
+        &state.config,
+        &headers,
+        &scope.school_id,
+        &scope.tenant_id,
+    )
+    .await
+    {
+        Ok(m)
+            if m.school_ids.contains(&scope.school_id)
+                && m.tenant_ids.contains(&scope.tenant_id) =>
         {
-            Ok(m)
-                if m.school_ids.contains(&scope.school_id)
-                    && m.tenant_ids.contains(&scope.tenant_id) =>
-            {
-                let role = m.role();
-                (m.staff_member_id, role)
-            }
-            _ => (
-                administrator(&headers, &scope.tenant_id, &scope.school_id).await?,
-                "school_admin",
-            ),
-        };
+            let role = m.role();
+            (m.staff_member_id, role)
+        }
+        _ => (
+            administrator(&state.config, &headers, &scope.tenant_id, &scope.school_id).await?,
+            "school_admin",
+        ),
+    };
     let mut rows=state.graph.execute(query(&format!("{READER} OPTIONAL MATCH (p:LearningPreworkPolicy {{key:$key}}) RETURN coalesce(p.version,0) AS version,coalesce(p.opening_offset_minutes,10) AS offset,coalesce(p.teacher_override_allowed,false) AS allowed")).param("actor",actor).param("role",role).param("school",scope.school_id.clone()).param("tenant",scope.tenant_id.clone()).param("key",key(&scope))).await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
     let row = rows
         .next()
@@ -107,12 +111,12 @@ async fn update(
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let (actor, actor_role) =
-        administrator_actor(&headers, &scope.tenant_id, &scope.school_id).await?;
+        administrator_actor(&state.config, &headers, &scope.tenant_id, &scope.school_id).await?;
     // Unique policy node serializes CAS and audit in the same implicit transaction.
     let q=query(&format!("{ADMIN} MERGE (p:LearningPreworkPolicy {{key:$key}}) ON CREATE SET p.version=0,p.school_id=$school,p.tenant_id=$tenant SET p.lock=coalesce(p.lock,0)+1 WITH p {ADMIN} WITH actor,p WHERE p.version=$version AND p.school_id=$school AND p.tenant_id=$tenant SET p.version=p.version+1,p.opening_offset_minutes=$offset,p.teacher_override_allowed=$allowed,p.updated_at=timestamp() CREATE (:LearningPreworkPolicyAudit {{id:$audit,actor_id:actor.id,actor_role:CASE WHEN 'owner' IN coalesce(actor.roles,[]) THEN 'owner' ELSE 'school_admin' END,school_id:$school,tenant_id:$tenant,version:p.version,opening_offset_minutes:$offset,teacher_override_allowed:$allowed,created_at:timestamp()}}) RETURN p.version AS version,p.opening_offset_minutes AS offset,p.teacher_override_allowed AS allowed")).param("actor",actor.clone()).param("school",scope.school_id.clone()).param("tenant",scope.tenant_id.clone()).param("key",key(&scope)).param("version",i64::from(change.expected_version)).param("offset",i64::from(change.opening_offset_minutes)).param("allowed",change.teacher_override_allowed).param("audit",uuid::Uuid::new_v4().to_string());
     let row=if actor_role=="owner"{
         let lock=query(&format!("{ADMIN} MERGE(p:LearningPreworkPolicy {{key:$key}}) ON CREATE SET p.version=0,p.school_id=$school,p.tenant_id=$tenant SET p.lock=coalesce(p.lock,0)+1 RETURN p.key AS key")).param("actor",actor.clone()).param("school",scope.school_id.clone()).param("tenant",scope.tenant_id.clone()).param("key",key(&scope));
-        crate::school_portal::staff_capability::live_write(&state.graph,crate::school_portal::staff_capability::OwnerSession{headers:&headers,actor:&actor,school:&scope.school_id,tenant:&scope.tenant_id,learning:false},lock,q).await?
+        crate::school_portal::staff_capability::live_write(&state.graph,crate::school_portal::staff_capability::OwnerSession{config:&state.config,headers:&headers,actor:&actor,school:&scope.school_id,tenant:&scope.tenant_id,learning:false},lock,q).await?
     }else{
         let mut rows=state.graph.execute(q).await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
         let row=rows.next().await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;

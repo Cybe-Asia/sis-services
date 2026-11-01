@@ -7,7 +7,7 @@ pub(super) async fn context(
     headers: HeaderMap,
     Query(selection): Query<crate::school_portal::staff_capability::Selection>,
 ) -> Result<Json<Value>, Failure> {
-    let member = calendar_membership_for(&headers, &selection).await?;
+    let member = calendar_membership_for(&state.config, &headers, &selection).await?;
     let mut rows = state
         .graph
         .execute(

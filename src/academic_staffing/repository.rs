@@ -75,7 +75,10 @@ async fn rows_in(tx: &mut Txn, q: Query, max: usize) -> Result<Vec<Row>, Failure
 
 /// How the caller's Auth session is checked again once the locks are held.
 pub enum Session<'a> {
-    Headers(&'a axum::http::HeaderMap),
+    Headers(
+        &'a crate::config::config::AppConfig,
+        &'a axum::http::HeaderMap,
+    ),
     /// Graph tests only: they have no Auth fixture and check the graph rules alone.
     #[cfg(test)]
     Unchecked,
@@ -125,8 +128,9 @@ async fn guard(tx: &mut Txn, w: &Writer<'_>, fingerprint: &str) -> Result<Option
     }
     // A role revoked while this request waited for the locks does not write.
     match w.session {
-        Session::Headers(headers) => {
+        Session::Headers(config, headers) => {
             let (actor, role) = crate::learning_access::school_staff_actor(
+                config,
                 headers,
                 &w.tenant.to_string(),
                 &w.school.to_string(),

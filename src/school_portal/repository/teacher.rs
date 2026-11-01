@@ -128,7 +128,7 @@ async fn attendance_write(
     member: &Teacher,
     section: &str,
     input: &RollCall,
-    headers: Option<&HeaderMap>,
+    live: Option<(&crate::config::config::AppConfig, &HeaderMap)>,
 ) -> Result<bool, Error> {
     let scope=format!("{ENROLLED} WITH t,sec,collect(DISTINCT s.studentId) AS roster WHERE all(id IN $ids WHERE id IN roster) UNWIND range(0,size($ids)-1) AS i MATCH(s:Student {{studentId:$ids[i]}}) MERGE(a:AttendanceRecord {{section_id:sec.section_id,applicant_student_id:s.studentId,date:$date}}) ON CREATE SET a.record_id='ATT-'+randomUUID() SET a.status=$statuses[i],a.arrived_at=$arrived[i],a.dismissed_at=$dismissed[i],a.notes=$notes[i],a.recorded_at=datetime(),a.recorded_by=t.id MERGE(s)-[:HAS_ATTENDANCE]->(a) WITH DISTINCT t,sec CREATE(:SchoolPortalAudit {{id:$audit,actor_id:t.id,actor_role:$actor_role,school_id:sec.school_id,tenant_id:sec.tenant_id,section_id:sec.section_id,kind:'attendance',date:$date,created_at:datetime()}}) RETURN true AS saved");
     let q = teacher_query(member, &scope, Some(section), true, true)
@@ -174,14 +174,14 @@ async fn attendance_write(
                 .collect::<Vec<_>>(),
         )
         .param("audit", uuid::Uuid::new_v4().to_string());
-    execute_write(graph, member, section, q, headers).await
+    execute_write(graph, member, section, q, live).await
 }
 async fn publish_write(
     graph: &Graph,
     member: &Teacher,
     section: &str,
     input: &PublishedRecord,
-    headers: Option<&HeaderMap>,
+    live: Option<(&crate::config::config::AppConfig, &HeaderMap)>,
 ) -> Result<bool, Error> {
     let grade = if let PublishedRecord::Grade {
         subject,
@@ -225,7 +225,7 @@ async fn publish_write(
             .param("score", score)
             .param("maximum", maximum);
     }
-    execute_write(graph, member, section, q, headers).await
+    execute_write(graph, member, section, q, live).await
 }
 async fn review_write(
     graph: &Graph,
@@ -233,7 +233,7 @@ async fn review_write(
     section: &str,
     id: &str,
     input: &Review,
-    headers: Option<&HeaderMap>,
+    live: Option<(&crate::config::config::AppConfig, &HeaderMap)>,
 ) -> Result<bool, Error> {
     let body=format!("{ENROLLED} MATCH(r:ParentSchoolRequest {{public_id:$id,section_id:sec.section_id,school_id:sec.school_id,tenant_id:sec.tenant_id}})-[:FOR_STUDENT]->(s) MATCH(u:User)-[:CREATED_SCHOOL_REQUEST]->(r) WHERE r.status=$expected OR (r.status=$status AND r.reviewed_by=t.id AND r.review_note=$note) WITH DISTINCT t,sec,r,u SET r.status=$status,r.review_note=$note,r.reviewed_by=t.id,r.reviewed_at=coalesce(r.reviewed_at,datetime()) MERGE(n:SchoolNotice {{id:'school-request:'+r.public_id}}) ON CREATE SET n.title='School request reviewed',n.body=$notice,n.created_at=datetime(),n.is_read=false MERGE(u)-[:HAS_SCHOOL_NOTICE]->(n) MERGE(a:SchoolPortalAudit {{id:'review|'+r.public_id}}) ON CREATE SET a.actor_id=t.id,a.actor_role=$actor_role,a.school_id=sec.school_id,a.tenant_id=sec.tenant_id,a.section_id=sec.section_id,a.kind='request_review',a.status=$status,a.created_at=datetime() RETURN true AS saved");
     let q = teacher_query(member, &body, Some(section), true, true)
@@ -242,7 +242,7 @@ async fn review_write(
         .param("status", input.status.clone())
         .param("note", input.note.clone())
         .param("notice", format!("{} · {}", input.status, input.note));
-    execute_write(graph, member, section, q, headers).await
+    execute_write(graph, member, section, q, live).await
 }
 
 pub async fn teacher_calendar(
@@ -294,9 +294,10 @@ pub async fn attendance_live(
     member: &Teacher,
     section: &str,
     input: &RollCall,
+    config: &crate::config::config::AppConfig,
     headers: &HeaderMap,
 ) -> Result<bool, Error> {
-    attendance_write(graph, member, section, input, Some(headers)).await
+    attendance_write(graph, member, section, input, Some((config, headers))).await
 }
 
 #[cfg(test)]
@@ -313,9 +314,10 @@ pub async fn publish_live(
     member: &Teacher,
     section: &str,
     input: &PublishedRecord,
+    config: &crate::config::config::AppConfig,
     headers: &HeaderMap,
 ) -> Result<bool, Error> {
-    publish_write(graph, member, section, input, Some(headers)).await
+    publish_write(graph, member, section, input, Some((config, headers))).await
 }
 
 #[cfg(test)]
@@ -334,9 +336,10 @@ pub async fn review_live(
     section: &str,
     id: &str,
     input: &Review,
+    config: &crate::config::config::AppConfig,
     headers: &HeaderMap,
 ) -> Result<bool, Error> {
-    review_write(graph, member, section, id, input, Some(headers)).await
+    review_write(graph, member, section, id, input, Some((config, headers))).await
 }
 
 async fn execute_write(
@@ -344,10 +347,10 @@ async fn execute_write(
     member: &Teacher,
     section: &str,
     q: Query,
-    headers: Option<&HeaderMap>,
+    live: Option<(&crate::config::config::AppConfig, &HeaderMap)>,
 ) -> Result<bool, Error> {
     if member.is_owner() {
-        if let Some(headers) = headers {
+        if let Some((config, headers)) = live {
             let school = member.school_ids.first().ok_or("missing Owner school")?;
             let tenant = member.tenant_ids.first().ok_or("missing Owner tenant")?;
             let lock = teacher_query(
@@ -360,6 +363,7 @@ async fn execute_write(
             return crate::school_portal::staff_capability::live_write(
                 graph,
                 crate::school_portal::staff_capability::OwnerSession {
+                    config,
                     headers,
                     actor: &member.staff_member_id,
                     school,

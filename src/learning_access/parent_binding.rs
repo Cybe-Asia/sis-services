@@ -23,17 +23,8 @@ fn parent_role() -> String {
     "parent".into()
 }
 
-fn enabled() -> bool {
-    std::env::var("SIS_PARENT_LEARNING_BINDING_ENABLED").as_deref() == Ok("true")
-}
-
 /// A non-scoped HS256 parent access token; the caller never supplies an actor id.
-fn parent(headers: &HeaderMap) -> Result<String, Failure> {
-    let secret =
-        std::env::var("JWT_SECRET").map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
-    parent_with(headers, &secret)
-}
-fn parent_with(headers: &HeaderMap, secret: &str) -> Result<String, Failure> {
+fn parent(headers: &HeaderMap, secret: &str) -> Result<String, Failure> {
     let token = crate::school_portal::auth::bearer(headers)?;
     if secret.len() < 32 {
         return Err(failure(StatusCode::SERVICE_UNAVAILABLE));
@@ -111,10 +102,10 @@ async fn handle(
     headers: HeaderMap,
     input: Result<Json<BindRequest>, JsonRejection>,
 ) -> Result<Json<Value>, Failure> {
-    if !enabled() {
+    if !state.config.parent_learning_binding_enabled {
         return Err(failure(StatusCode::SERVICE_UNAVAILABLE));
     }
-    let parent = parent(&headers)?;
+    let parent = parent(&headers, &state.config.jwt_secret)?;
     let Json(input) = input.map_err(|_| failure(StatusCode::BAD_REQUEST))?;
     if !valid_id(&input.student_id) {
         return Err(failure(StatusCode::BAD_REQUEST));
@@ -150,7 +141,7 @@ mod tests {
     #[test]
     fn only_unscoped_parent_access_tokens_bind() {
         let secret = "x".repeat(32);
-        let parent = |h: &HeaderMap| parent_with(h, &secret);
+        let parent = |h: &HeaderMap| super::parent(h, &secret);
         let headers = |t: &str| {
             let mut h = HeaderMap::new();
             h.insert("authorization", format!("Bearer {t}").parse().unwrap());

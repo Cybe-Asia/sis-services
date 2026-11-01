@@ -1,9 +1,11 @@
 use super::*;
 #[tokio::test]
 async fn setup_tokens_and_non_family_hs_tokens_have_no_learning_authority() {
-    let previous_endpoint = std::env::var_os("AUTH_STUDENT_SESSION_URL");
-    std::env::remove_var("AUTH_STUDENT_SESSION_URL");
-    std::env::set_var("JWT_SECRET", "owner-contract-test-key-at-least-32-bytes");
+    // No Student session endpoint: a Student token answers 503.
+    let config = crate::config::config::AppConfig {
+        jwt_secret: "owner-contract-test-key-at-least-32-bytes".into(),
+        ..Default::default()
+    };
     let scope = Scope {
         school_id: "school".into(),
         tenant_id: "tenant".into(),
@@ -30,13 +32,10 @@ async fn setup_tokens_and_non_family_hs_tokens_have_no_learning_authority() {
         .unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
-        match actor(&headers, &scope).await {
+        match actor(&config, &headers, &scope).await {
             Ok(_) => assert_eq!(expected, 200),
             Err((status, _)) => assert_eq!(status.as_u16(), expected),
         }
-    }
-    if let Some(endpoint) = previous_endpoint {
-        std::env::set_var("AUTH_STUDENT_SESSION_URL", endpoint);
     }
 }
 #[tokio::test]
@@ -66,6 +65,7 @@ async fn current_owner_projection_denies_foreign_family_and_revoked_class_access
             neo4j_user: "neo4j".into(),
             neo4j_password: "parent-otp-fixture-password".into(),
             jwt_secret: "owner-contract-test-key-at-least-32-bytes".into(),
+            ..Default::default()
         },
         http_client: reqwest::Client::new(),
     };
@@ -212,6 +212,7 @@ async fn homeroom_access_and_summary_belong_to_the_homeroom_teacher_or_an_owner(
             neo4j_user: "neo4j".into(),
             neo4j_password: "parent-otp-fixture-password".into(),
             jwt_secret: "owner-contract-test-key-at-least-32-bytes".into(),
+            ..Default::default()
         },
         http_client: reqwest::Client::new(),
     };
@@ -362,6 +363,7 @@ async fn school_classes_carry_grade_year_and_the_callers_taught_subjects() {
             neo4j_user: "neo4j".into(),
             neo4j_password: "parent-otp-fixture-password".into(),
             jwt_secret: "owner-contract-test-key-at-least-32-bytes".into(),
+            ..Default::default()
         },
         http_client: reqwest::Client::new(),
     };
@@ -442,6 +444,7 @@ async fn student_history_lists_enrolments_across_schools_to_callers_who_see_the_
             neo4j_user: "neo4j".into(),
             neo4j_password: "parent-otp-fixture-password".into(),
             jwt_secret: "owner-contract-test-key-at-least-32-bytes".into(),
+            ..Default::default()
         },
         http_client: reqwest::Client::new(),
     };

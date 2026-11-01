@@ -39,9 +39,11 @@ async fn list(
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let (actor, role) =
-        super::administrator_actor(&headers, &scope.tenant_id, &scope.school_id).await?;
+        super::administrator_actor(&state.config, &headers, &scope.tenant_id, &scope.school_id)
+            .await?;
     let data = reads::list(&state.graph, &actor, &role, &scope).await?;
-    if super::administrator_actor(&headers, &scope.tenant_id, &scope.school_id).await?
+    if super::administrator_actor(&state.config, &headers, &scope.tenant_id, &scope.school_id)
+        .await?
         != (actor, role)
     {
         return Err(failure(StatusCode::FORBIDDEN));
@@ -59,13 +61,18 @@ async fn change(
     if !input.valid() || input.ad_hoc {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let (actor, role) =
-        super::administrator_actor(&headers, &input.meeting.tenant_id, &input.meeting.school_id)
-            .await?;
+    let (actor, role) = super::administrator_actor(
+        &state.config,
+        &headers,
+        &input.meeting.tenant_id,
+        &input.meeting.school_id,
+    )
+    .await?;
     repository::change(
         &state.graph,
         &actor,
         &role,
+        &state.config,
         &headers,
         repository::Family::Portal,
         &input,
@@ -132,6 +139,7 @@ async fn learning_change(
         &state.graph,
         &actor,
         &role,
+        &state.config,
         &headers,
         repository::Family::Learning,
         &input,
@@ -163,6 +171,7 @@ async fn learning_weekly(
         &state.graph,
         &actor,
         &role,
+        &state.config,
         &headers,
         repository::Family::Learning,
         &input,
@@ -180,11 +189,13 @@ async fn portal_weekly(
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let (actor, role) =
-        super::administrator_actor(&headers, &input.tenant_id, &input.school_id).await?;
+        super::administrator_actor(&state.config, &headers, &input.tenant_id, &input.school_id)
+            .await?;
     weekly::apply(
         &state.graph,
         &actor,
         &role,
+        &state.config,
         &headers,
         repository::Family::Portal,
         &input,

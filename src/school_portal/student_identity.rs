@@ -132,15 +132,28 @@ async fn verify(
     Ok(claims.id)
 }
 
-pub(crate) async fn actor(headers: &HeaderMap) -> Result<String, Failure> {
+pub(crate) async fn actor(
+    config: &crate::config::config::AppConfig,
+    headers: &HeaderMap,
+) -> Result<String, Failure> {
     let token = bearer(headers)?;
     let unavailable = || failure(StatusCode::SERVICE_UNAVAILABLE);
-    let secret = std::env::var("JWT_SECRET").map_err(|_| unavailable())?;
-    let claims = signed(token, &secret)?;
+    let claims = signed(token, &config.jwt_secret)?;
     // Separate from Staff membership/portal URLs. Missing configuration never falls back.
-    let url = endpoint(&std::env::var("AUTH_STUDENT_SESSION_URL").map_err(|_| unavailable())?)?;
+    let url = endpoint(
+        config
+            .auth_student_session_url
+            .as_deref()
+            .ok_or_else(unavailable)?,
+    )?;
     let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-    verify(token, claims, url, super::auth::auth_client(loopback)?).await
+    verify(
+        token,
+        claims,
+        url,
+        super::auth::auth_client(config, loopback)?,
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -163,7 +163,7 @@ pub(super) async fn handler(
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let a = actor(&h, &q).await?;
+    let a = actor(&s.config, &h, &q).await?;
     super::super::ensure_schema(&s.graph).await?;
     let (enrolments, years) = read(&s, &a, &q, &student).await?;
     let mut response = Json(

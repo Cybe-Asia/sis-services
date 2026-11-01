@@ -161,6 +161,7 @@ pub(super) async fn change(
     graph: &Graph,
     actor: &str,
     role: &str,
+    config: &crate::config::config::AppConfig,
     headers: &HeaderMap,
     family: Family,
     input: &Change,
@@ -170,7 +171,7 @@ pub(super) async fn change(
         .start_txn()
         .await
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
-    let result = change_locked(&mut tx, actor, role, headers, family, input).await;
+    let result = change_locked(&mut tx, actor, role, config, headers, family, input).await;
     match result {
         Ok(value) => {
             tx.commit()
@@ -188,6 +189,7 @@ async fn change_locked(
     tx: &mut Txn,
     actor: &str,
     role: &str,
+    config: &crate::config::config::AppConfig,
     headers: &HeaderMap,
     family: Family,
     input: &Change,
@@ -211,11 +213,12 @@ async fn change_locked(
     }
     let current = match family {
         Family::Portal => {
-            super::super::administrator_actor(headers, &m.tenant_id, &m.school_id).await?
+            super::super::administrator_actor(config, headers, &m.tenant_id, &m.school_id).await?
         }
         Family::Learning => {
             let staff =
-                crate::school_portal::auth::teacher_in(headers, &m.school_id, &m.tenant_id).await?;
+                crate::school_portal::auth::teacher_in(config, headers, &m.school_id, &m.tenant_id)
+                    .await?;
             let role = staff.role().to_string();
             (staff.staff_member_id, role)
         }

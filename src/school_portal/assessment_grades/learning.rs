@@ -2,31 +2,20 @@ use super::{
     super::{auth, failure, Failure},
     contract::{Export, Import},
 };
+use crate::config::config::AppConfig;
 use axum::http::{HeaderMap, StatusCode};
 use serde::Deserialize;
-use std::{
-    collections::HashMap,
-    ffi::OsString,
-    io::Read,
-    path::Path,
-    sync::{Mutex, OnceLock},
-};
+use std::sync::{Mutex, OnceLock};
 
 // The private Learning trust anchor belongs only to this owner transport.
 // Keep default public roots and hostname verification on both TLS backends.
-fn client_builder(ca_file: Option<&Path>) -> Result<reqwest::ClientBuilder, Failure> {
+fn client_builder(ca: Option<&[u8]>) -> Result<reqwest::ClientBuilder, Failure> {
     let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(5));
-    if let Some(path) = ca_file {
-        let mut pem = Vec::new();
-        std::fs::File::open(path)
-            .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
-            .take(262_145)
-            .read_to_end(&mut pem)
-            .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
-        for certificate in private_roots(&pem)? {
+    if let Some(pem) = ca {
+        for certificate in private_roots(pem)? {
             builder = builder.add_root_certificate(certificate);
         }
     }
@@ -61,26 +50,25 @@ fn private_roots(pem: &[u8]) -> Result<Vec<reqwest::Certificate>, Failure> {
     }
     Ok(roots)
 }
-/// One pooled client per CA path, as in `auth::auth_client`: the CA file is read and the TLS roots
-/// loaded when the client is first built, not on every grade read.
-// shortcut: a rotated anchor at the same path applies after a restart; re-read on a timer if rotation must apply live.
-fn client(ca_file: Option<OsString>) -> Result<reqwest::Client, Failure> {
-    static CLIENTS: OnceLock<Mutex<HashMap<Option<OsString>, reqwest::Client>>> = OnceLock::new();
+/// One pooled client per trust anchor, as in `auth::auth_client`: config read the CA file at
+/// startup, and the TLS roots are loaded when the client is first built, not on every grade read.
+// shortcut: a rotated anchor applies after a restart; re-read on a timer if rotation must apply live.
+fn client(ca: Option<&[u8]>) -> Result<reqwest::Client, Failure> {
+    type Entry = (Option<Vec<u8>>, reqwest::Client);
+    static CLIENTS: OnceLock<Mutex<Vec<Entry>>> = OnceLock::new();
     let unavailable = || failure(StatusCode::SERVICE_UNAVAILABLE);
     let mut clients = CLIENTS
         .get_or_init(Default::default)
         .lock()
         .map_err(|_| unavailable())?;
-    if let Some(client) = clients.get(&ca_file) {
+    if let Some((_, client)) = clients.iter().find(|(pem, _)| pem.as_deref() == ca) {
         return Ok(client.clone());
     }
-    let client = client_builder(ca_file.as_deref().map(Path::new))?
-        .build()
-        .map_err(|_| unavailable())?;
+    let client = client_builder(ca)?.build().map_err(|_| unavailable())?;
     if clients.len() >= 8 {
         clients.clear();
     }
-    clients.insert(ca_file, client.clone());
+    clients.push((ca.map(<[u8]>::to_vec), client.clone()));
     Ok(client)
 }
 #[derive(Deserialize)]
@@ -88,12 +76,18 @@ fn client(ca_file: Option<OsString>) -> Result<reqwest::Client, Failure> {
 struct Envelope {
     data: Export,
 }
-pub async fn read(headers: &HeaderMap, input: &Import) -> Result<Export, Failure> {
-    let origin = std::env::var("LEARNING_SERVICE_ORIGIN")
-        .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+pub async fn read(
+    config: &AppConfig,
+    headers: &HeaderMap,
+    input: &Import,
+) -> Result<Export, Failure> {
+    let origin = config
+        .learning_service_origin
+        .as_deref()
+        .ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))?;
     let mut url =
-        reqwest::Url::parse(&origin).map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
-    let local_test = std::env::var("APP_ENV").as_deref() == Ok("test")
+        reqwest::Url::parse(origin).map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    let local_test = config.local_test
         && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
         && url.scheme() == "http";
     if (url.scheme() != "https" && !local_test)
@@ -120,7 +114,7 @@ pub async fn read(headers: &HeaderMap, input: &Import) -> Result<Export, Failure
             "attempts",
             &input.attempt_id,
         ]);
-    let client = client(std::env::var_os("LEARNING_SERVICE_CA_FILE"))?;
+    let client = client(config.learning_service_ca.as_deref())?;
     let mut response = client
         .get(url)
         .bearer_auth(auth::bearer(headers)?)

@@ -3,19 +3,26 @@ use super::{failure, model::Scope, Failure};
 use axum::http::{HeaderMap, StatusCode};
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
-pub async fn actor(h: &HeaderMap, role: &str, s: &Scope) -> Result<Actor, Failure> {
+pub async fn actor(
+    config: &crate::config::config::AppConfig,
+    h: &HeaderMap,
+    role: &str,
+    s: &Scope,
+) -> Result<Actor, Failure> {
     let mut actor_role = role.to_string();
     let id = match role {
         "admin" => {
             let (id, current_role) =
-                crate::learning_access::administrator_actor(h, &s.tenant_id, &s.school_id).await?;
+                crate::learning_access::administrator_actor(config, h, &s.tenant_id, &s.school_id)
+                    .await?;
             if current_role == "owner" {
                 actor_role = current_role;
             }
             id
         }
         "teacher" => {
-            let m = crate::school_portal::auth::teacher_in(h, &s.school_id, &s.tenant_id).await?;
+            let m = crate::school_portal::auth::teacher_in(config, h, &s.school_id, &s.tenant_id)
+                .await?;
             if !m.school_ids.contains(&s.school_id) || !m.tenant_ids.contains(&s.tenant_id) {
                 return Err(failure(StatusCode::FORBIDDEN));
             }
@@ -24,7 +31,7 @@ pub async fn actor(h: &HeaderMap, role: &str, s: &Scope) -> Result<Actor, Failur
             }
             m.staff_member_id
         }
-        "student" => crate::school_portal::student_identity::actor(h).await?,
+        "student" => crate::school_portal::student_identity::actor(config, h).await?,
         "parent" => {
             #[derive(Deserialize)]
             struct Claims {
@@ -33,8 +40,7 @@ pub async fn actor(h: &HeaderMap, role: &str, s: &Scope) -> Result<Actor, Failur
                 role: Option<String>,
                 scope: Option<String>,
             }
-            let key = std::env::var("JWT_SECRET")
-                .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+            let key = &config.jwt_secret;
             if key.len() < 32 {
                 return Err(failure(StatusCode::SERVICE_UNAVAILABLE));
             }

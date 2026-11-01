@@ -17,7 +17,10 @@ use std::collections::BTreeSet;
 
 /// How the caller's Auth session is checked again once the locks are held.
 pub enum Session<'a> {
-    Headers(&'a axum::http::HeaderMap),
+    Headers(
+        &'a crate::config::config::AppConfig,
+        &'a axum::http::HeaderMap,
+    ),
     /// Graph tests only: they have no Auth fixture and check the graph rules alone.
     #[cfg(test)]
     Unchecked,
@@ -54,12 +57,14 @@ async fn run(tx: &mut Txn, q: Query) -> Result<(), Failure> {
 
 /// The session still names the same person and role, and still covers the tenant.
 pub async fn live_session(
+    config: &crate::config::config::AppConfig,
     headers: &axum::http::HeaderMap,
     tenant: &str,
 ) -> Result<(String, String), Failure> {
-    let (actor, role, schools, tenants) = crate::learning_access::any_staff_session(headers)
-        .await?
-        .staff_scope();
+    let (actor, role, schools, tenants) =
+        crate::learning_access::any_staff_session(config, headers)
+            .await?
+            .staff_scope();
     let unscoped = role == "owner" && schools.is_empty() && tenants.is_empty();
     if !unscoped && !tenants.iter().any(|t| t == tenant) {
         return Err(forbidden(json!({})));
@@ -77,8 +82,8 @@ async fn guard(tx: &mut Txn, w: &Writer<'_>, fingerprint: &str) -> Result<Option
         .ok_or_else(|| unavailable("No tenant lock"))?;
     // A role revoked while this request waited for the locks does not write.
     match w.session {
-        Session::Headers(headers) => {
-            if live_session(headers, w.tenant).await? != (w.actor.into(), w.role.into()) {
+        Session::Headers(config, headers) => {
+            if live_session(config, headers, w.tenant).await? != (w.actor.into(), w.role.into()) {
                 return Err(forbidden(json!({})));
             }
         }

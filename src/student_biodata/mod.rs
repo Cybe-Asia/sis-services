@@ -51,7 +51,7 @@ async fn read(
     }
     // The session is verified before any lookup; staff of another school see the same 404 as
     // for an unknown Student, so they cannot probe who is enrolled elsewhere.
-    let session = crate::learning_access::staff_session(&h).await?;
+    let session = crate::learning_access::staff_session(&s.config, &h).await?;
     let not_found = || failure(StatusCode::NOT_FOUND);
     let scope = deadline(repository::enrolment(&s.graph, &q.student_id))
         .await?
@@ -73,7 +73,7 @@ async fn change(
     let Json(c) = j.map_err(|_| failure(StatusCode::BAD_REQUEST))?;
     let clean = c.clean().ok_or_else(|| failure(StatusCode::BAD_REQUEST))?;
     let scope = c.scope();
-    let actor = crate::learning_access::administrator(&h, &scope.tenant_id, &scope.school_id).await?;
+    let actor = crate::learning_access::administrator(&s.config, &h, &scope.tenant_id, &scope.school_id).await?;
     match deadline(repository::save(&s.graph, &actor, &clean, &scope, c.expected_version)).await? {
         Saved::Version(version) => Ok(Json(json!({"data":{"version":version}}))),
         Saved::Conflict => Err(failure(StatusCode::CONFLICT)),

@@ -107,8 +107,13 @@ pub(super) async fn context(
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let (actor, _) =
-        super::super::administrator_actor(&headers, &scope.tenant_id, &scope.school_id).await?;
+    let (actor, _) = super::super::administrator_actor(
+        &state.config,
+        &headers,
+        &scope.tenant_id,
+        &scope.school_id,
+    )
+    .await?;
     let authorized = repository::admin().replace("section_id:$class,", "");
     let mut rows=state.graph.execute(query(&format!("{authorized} OPTIONAL MATCH(t:StaffMember {{membershipStatus:'ACTIVE'}}) WHERE 'teacher' IN coalesce(t.roles,[]) AND sec.school_id IN coalesce(t.schoolIds,[]) AND sec.tenant_id IN coalesce(t.tenantIds,[]) AND NOT EXISTS {{MATCH(other:StaffMember {{id:t.id}}) WHERE other<>t}} AND (sec.homeroom_staff_member_id=t.id OR EXISTS {{MATCH(:LearningTeachingGrant {{staff_member_id:t.id,section_id:sec.section_id,school_id:sec.school_id,tenant_id:sec.tenant_id,status:'ACTIVE'}})}}) RETURN sec.section_id AS class,sec.name AS name,coalesce(sec.academic_year,'') AS year,t.id AS teacher,coalesce(t.displayName,t.name,t.id) AS teacher_name ORDER BY class,teacher LIMIT 2001")).param("actor",actor).param("school",scope.school_id.clone()).param("tenant",scope.tenant_id.clone())).await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
     let mut classes = BTreeMap::<String, Value>::new();
@@ -130,7 +135,7 @@ pub(super) async fn context(
             .get::<Option<String>>("teacher")
             .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
         {
-            row["teachers"].as_array_mut().unwrap().push(json!({"id":id,"name":r.get::<String>("teacher_name").map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?}));
+            row["teachers"].as_array_mut().ok_or_else(||failure(StatusCode::SERVICE_UNAVAILABLE))?.push(json!({"id":id,"name":r.get::<String>("teacher_name").map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?}));
         }
         if classes.len() > 200 {
             return Err(failure(StatusCode::SERVICE_UNAVAILABLE));

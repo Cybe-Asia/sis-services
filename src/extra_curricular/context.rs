@@ -24,6 +24,7 @@ pub async fn context(
 ) -> Result<Json<Value>, Failure> {
     let (a, live_schools, live_tenants) = if role == "admin" {
         let (id, actor_role, schools, tenants) = crate::learning_access::calendar_actor(
+            &s.config,
             &h,
             &crate::school_portal::staff_capability::Selection {
                 school_id: q.school_id.clone(),
@@ -40,12 +41,12 @@ pub async fn context(
             tenants,
         )
     } else if role == "teacher" {
-        let m = crate::school_portal::auth::teacher(&h).await?.select(
-            &crate::school_portal::staff_capability::Selection {
+        let m = crate::school_portal::auth::teacher(&s.config, &h)
+            .await?
+            .select(&crate::school_portal::staff_capability::Selection {
                 school_id: q.school_id.clone(),
                 tenant_id: q.tenant_id.clone(),
-            },
-        )?;
+            })?;
         let actor_role = m.role().to_string();
         (
             auth::Actor {
@@ -69,7 +70,11 @@ pub async fn context(
         if !scope.valid() {
             return Err(failure(StatusCode::BAD_REQUEST));
         }
-        (auth::actor(&h, &role, &scope).await?, vec![], vec![])
+        (
+            auth::actor(&s.config, &h, &role, &scope).await?,
+            vec![],
+            vec![],
+        )
     };
     if role != "parent" && q.student_id.is_some() {
         return Err(failure(StatusCode::BAD_REQUEST));

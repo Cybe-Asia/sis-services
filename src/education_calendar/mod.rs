@@ -45,9 +45,10 @@ async fn content_scope(
     h: &HeaderMap,
     selection: &crate::school_portal::staff_capability::Selection,
 ) -> Result<(String, Vec<String>, Vec<String>, Vec<String>), Failure> {
-    let (actor, _, mut schools, mut tenants) = crate::learning_access::any_staff_session(h)
-        .await?
-        .staff_scope();
+    let (actor, _, mut schools, mut tenants) =
+        crate::learning_access::any_staff_session(&s.config, h)
+            .await?
+            .staff_scope();
     if let Some((school, tenant)) = selection
         .pair()
         .map_err(|_| failure(StatusCode::BAD_REQUEST))?
@@ -99,7 +100,7 @@ async fn context(
         tenant_id: q.tenant_id,
     };
     let (actor, schools, tenants, capable) =
-        match crate::learning_access::calendar_membership_for(&h, &selection).await {
+        match crate::learning_access::calendar_membership_for(&s.config, &h, &selection).await {
             Ok((actor, schools, tenants)) => (actor, schools, tenants, vec![]),
             // Not an administrator: the schools where the caller holds `school.content.manage`
             // (ADR 0018 slice 6), so Admin's article editor can name their classes.
@@ -129,7 +130,8 @@ async fn list(
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor = crate::learning_access::administrator(&h, &q.tenant_id, &q.school_id).await?;
+    let actor =
+        crate::learning_access::administrator(&s.config, &h, &q.tenant_id, &q.school_id).await?;
     repository::list(&s.graph, &actor, &q)
         .await
         .map(|data| Json(json!({"data":data})))
@@ -144,10 +146,14 @@ async fn change(
     if !v.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let (actor, role) =
-        crate::learning_access::administrator_actor(&h, &v.entry.tenant_id, &v.entry.school_id)
-            .await?;
-    match repository::change_live(&s.graph, &actor, &role, &v, &h).await? {
+    let (actor, role) = crate::learning_access::administrator_actor(
+        &s.config,
+        &h,
+        &v.entry.tenant_id,
+        &v.entry.school_id,
+    )
+    .await?;
+    match repository::change_live(&s.graph, &actor, &role, &v, &s.config, &h).await? {
         Some(version) => Ok(Json(json!({"data":{"version":version}}))),
         None => Err(failure(StatusCode::CONFLICT)),
     }

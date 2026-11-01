@@ -281,24 +281,6 @@ mod owner_tests {
             atomic::{AtomicUsize, Ordering},
             Arc,
         };
-        struct EnvRestore(Vec<(&'static str, Option<String>)>);
-        impl Drop for EnvRestore {
-            fn drop(&mut self) {
-                for (k, v) in &self.0 {
-                    if let Some(v) = v {
-                        std::env::set_var(k, v);
-                    } else {
-                        std::env::remove_var(k);
-                    }
-                }
-            }
-        }
-        let restore = EnvRestore(
-            ["APP_ENV", "AUTH_SCHOOL_MEMBERSHIP_URL"]
-                .into_iter()
-                .map(|k| (k, std::env::var(k).ok()))
-                .collect(),
-        );
         let uri = std::env::var("SIS_OWNER_TEST_NEO4J_URI").unwrap();
         assert!(matches!(
             uri.as_str(),
@@ -331,11 +313,6 @@ mod owner_tests {
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        std::env::set_var("APP_ENV", "test");
-        std::env::set_var(
-            "AUTH_SCHOOL_MEMBERSHIP_URL",
-            format!("http://{address}/api/v1/auth-service/oauth/membership"),
-        );
         let headers = |role: &str| {
             let mut h = HeaderMap::new();
             h.insert(
@@ -358,6 +335,11 @@ mod owner_tests {
                 neo4j_user: String::new(),
                 neo4j_password: String::new(),
                 jwt_secret: String::new(),
+                local_test: true,
+                auth_school_membership_url: Some(format!(
+                    "http://{address}/api/v1/auth-service/oauth/membership"
+                )),
+                ..Default::default()
             },
             http_client: reqwest::Client::new(),
         };
@@ -574,7 +556,6 @@ mod owner_tests {
         assert_eq!(row.get::<i64>("version").unwrap(), 1);
         assert_eq!(row.get::<String>("teacher").unwrap(), teacher);
         server.abort();
-        drop(restore);
         graph.run(query("MATCH(n) WHERE n.owner_parity_tag=$mark OR (n.school_id=$school AND n.tenant_id=$tenant) DETACH DELETE n").param("mark",mark).param("school",school).param("tenant",tenant)).await.unwrap();
     }
 }

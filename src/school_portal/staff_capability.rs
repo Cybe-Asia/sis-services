@@ -40,6 +40,7 @@ pub fn authority(alias: &str, role: &str, school: &str, tenant: &str) -> String 
 
 /// Carries the actual credential family through a queued Owner write.
 pub struct OwnerSession<'a> {
+    pub config: &'a crate::config::config::AppConfig,
     pub headers: &'a HeaderMap,
     pub actor: &'a str,
     pub school: &'a str,
@@ -64,10 +65,10 @@ pub async fn live_write(
         if locked.next(&mut tx).await.map_err(|_| unavailable())?.is_none() { return Err(super::failure(StatusCode::FORBIDDEN)); }
         while locked.next(&mut tx).await.map_err(|_| unavailable())?.is_some() {}
         let (actor, role) = if session.learning {
-            let member = super::auth::teacher_in(session.headers, session.school, session.tenant).await?;
+            let member = super::auth::teacher_in(session.config, session.headers, session.school, session.tenant).await?;
             (member.staff_member_id.clone(), member.role().to_string())
         } else {
-            crate::learning_access::administrator_actor(session.headers, &session.tenant.to_string(), &session.school.to_string()).await?
+            crate::learning_access::administrator_actor(session.config, session.headers, &session.tenant.to_string(), &session.school.to_string()).await?
         };
         if actor != session.actor || role != "owner" { return Err(super::failure(StatusCode::FORBIDDEN)); }
         let mut rows = tx.execute(write).await.map_err(|_| unavailable())?;

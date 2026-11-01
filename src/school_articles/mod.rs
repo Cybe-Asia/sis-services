@@ -46,7 +46,7 @@ async fn manager(
     tenant: &String,
     school: &String,
 ) -> Result<String, Failure> {
-    let (actor, _) = crate::learning_access::school_staff_actor(h, tenant, school).await?;
+    let (actor, _) = crate::learning_access::school_staff_actor(&s.config, h, tenant, school).await?;
     if crate::authorization::reads::permits(
         &mut crate::authorization::facts::Db::Graph(&s.graph),
         tenant,
@@ -208,7 +208,7 @@ async fn parent_cover(
     h: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Failure> {
-    let sub = crate::school_portal::auth::parent(&h)?;
+    let sub = crate::school_portal::auth::parent(&s.config, &h)?;
     if !crate::school_portal::model::identifier(&id) {
         return Err(failure(StatusCode::BAD_REQUEST));
     }

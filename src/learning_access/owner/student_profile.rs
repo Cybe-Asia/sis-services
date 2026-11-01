@@ -12,7 +12,7 @@ async fn read(s: &AppState, h: &HeaderMap, q: &Scope) -> Result<Value, Failure> 
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let a = actor(h, q).await?;
+    let a = actor(&s.config, h, q).await?;
     if a.role != "student" {
         return Err(failure(StatusCode::FORBIDDEN));
     }
@@ -22,10 +22,10 @@ async fn read(s: &AppState, h: &HeaderMap, q: &Scope) -> Result<Value, Failure> 
         .flat_map(|c| c["students"].as_array().into_iter().flatten())
         .filter_map(|s| s["id"].as_str())
         .collect::<BTreeSet<_>>();
-    if students.len() != 1 {
+    let (1, Some(&student)) = (students.len(), students.first()) else {
         return Err(failure(StatusCode::FORBIDDEN));
-    }
-    let student = (*students.first().unwrap()).to_string();
+    };
+    let student = student.to_string();
     let query_for = |body: &str| {
         query(&format!("{STUDENT} WITH DISTINCT p,s,c {body}"))
             .param("principal", a.id.clone())

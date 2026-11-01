@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, io::Read};
 use thiserror::Error;
 
 // Trimmed from admission-services' AppConfig — SIS doesn't send email
@@ -7,13 +7,34 @@ use thiserror::Error;
 // Only the core triple (port, neo4j, jwt) remains. If SIS ever grows
 // a cross-service call (e.g. to admission-services for Student
 // lookups that can't go direct-to-graph), add it here.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AppConfig {
     pub server_port: u16,
     pub neo4j_uri: String,
     pub neo4j_user: String,
     pub neo4j_password: String,
     pub jwt_secret: String,
+    // Everything below is optional: a route that needs a missing value answers 503, as it did
+    // when it read the environment itself.
+    /// `AUTH_PORTAL_INTROSPECTION_URL`: Admin portal sessions (Learning access, staff routes).
+    pub auth_portal_introspection_url: Option<String>,
+    /// `AUTH_SCHOOL_MEMBERSHIP_URL`: Teacher memberships.
+    pub auth_school_membership_url: Option<String>,
+    /// `AUTH_STUDENT_SESSION_URL`: live Student sessions.
+    pub auth_student_session_url: Option<String>,
+    /// `AUTH_PORTAL_CA_FILE`, read at startup: the private trust anchor for calls to Auth.
+    pub auth_portal_ca: Option<Vec<u8>>,
+    /// `LEARNING_SERVICE_ORIGIN`: Learning grade exports.
+    pub learning_service_origin: Option<String>,
+    /// `LEARNING_SERVICE_CA_FILE`, read at startup: the private trust anchor for Learning.
+    pub learning_service_ca: Option<Vec<u8>>,
+    /// `STAFF_DOWNSTREAM_JWT_SECRET` and `_ISSUER`: Admin's staff-api+jwt credential family.
+    pub staff_downstream_jwt_secret: Option<String>,
+    pub staff_downstream_jwt_issuer: Option<String>,
+    /// `SIS_PARENT_LEARNING_BINDING_ENABLED=true`.
+    pub parent_learning_binding_enabled: bool,
+    /// `APP_ENV=test`: loopback HTTP Auth and Learning endpoints are accepted.
+    pub local_test: bool,
 }
 
 #[derive(Debug, Error)]
@@ -22,6 +43,21 @@ pub enum ConfigError {
     MissingVar(String),
     #[error("invalid port")]
     InvalidPort,
+    #[error("{0} names a file that cannot be read")]
+    UnreadableFile(String),
+}
+
+/// A trust anchor named by `key`, read once here. A configured file that cannot be read stops
+/// start-up: a route must never fall back to default trust. Its content is checked where it is used.
+fn ca_file(key: &str) -> Result<Option<Vec<u8>>, ConfigError> {
+    let Some(path) = env::var_os(key) else {
+        return Ok(None);
+    };
+    let mut pem = Vec::new();
+    std::fs::File::open(&path)
+        .and_then(|file| file.take(262_145).read_to_end(&mut pem))
+        .map_err(|_| ConfigError::UnreadableFile(key.into()))?;
+    Ok(Some(pem))
 }
 
 impl AppConfig {
@@ -56,6 +92,34 @@ impl AppConfig {
             neo4j_user,
             neo4j_password,
             jwt_secret,
+            auth_portal_introspection_url: env::var("AUTH_PORTAL_INTROSPECTION_URL").ok(),
+            auth_school_membership_url: env::var("AUTH_SCHOOL_MEMBERSHIP_URL").ok(),
+            auth_student_session_url: env::var("AUTH_STUDENT_SESSION_URL").ok(),
+            auth_portal_ca: ca_file("AUTH_PORTAL_CA_FILE")?,
+            learning_service_origin: env::var("LEARNING_SERVICE_ORIGIN").ok(),
+            learning_service_ca: ca_file("LEARNING_SERVICE_CA_FILE")?,
+            staff_downstream_jwt_secret: env::var("STAFF_DOWNSTREAM_JWT_SECRET").ok(),
+            staff_downstream_jwt_issuer: env::var("STAFF_DOWNSTREAM_JWT_ISSUER").ok(),
+            parent_learning_binding_enabled: env::var("SIS_PARENT_LEARNING_BINDING_ENABLED")
+                .as_deref()
+                == Ok("true"),
+            local_test: env::var("APP_ENV").as_deref() == Ok("test"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_configured_trust_anchor_that_cannot_be_read_stops_start_up() {
+        // Unique names: no other test reads them.
+        std::env::set_var(
+            "SIS_TEST_MISSING_CA_FILE",
+            "/nonexistent/sis-private-ca.pem",
+        );
+        std::env::set_var("SIS_TEST_EMPTY_CA_FILE", "");
+        assert!(super::ca_file("SIS_TEST_MISSING_CA_FILE").is_err());
+        assert!(super::ca_file("SIS_TEST_EMPTY_CA_FILE").is_err());
+        assert!(super::ca_file("SIS_TEST_UNSET_CA_FILE").unwrap().is_none());
     }
 }

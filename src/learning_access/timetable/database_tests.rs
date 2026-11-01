@@ -170,6 +170,7 @@ async fn timetable_concurrency_lifecycle_current_rights_and_publication() -> Res
             neo4j_user: String::new(),
             neo4j_password: String::new(),
             jwt_secret: String::new(),
+            ..Default::default()
         },
         http_client: reqwest::Client::new(),
     };

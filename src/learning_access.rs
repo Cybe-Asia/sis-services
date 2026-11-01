@@ -1,6 +1,6 @@
 //! SIS-owned, governed references to Auth identity and Admission enrolment.
 //! Grants never create accounts, change roles, or infer identity from contact data.
-use crate::AppState;
+use crate::{config::config::AppConfig, AppState};
 use axum::{
     extract::{rejection::JsonRejection, Query, State},
     http::{HeaderMap, StatusCode},
@@ -47,23 +47,29 @@ struct Membership {
     tenant_ids: Option<Vec<String>>,
     school_ids: Option<Vec<String>>,
 }
-async fn membership(headers: &HeaderMap) -> Result<Membership, Failure> {
-    verified(headers, true).await
+async fn membership(config: &AppConfig, headers: &HeaderMap) -> Result<Membership, Failure> {
+    verified(config, headers, true).await
 }
 /// The Auth portal session, verified. `administrators` keeps today's rule (an Owner or school
 /// administrator); without it any active staff member passes, for routes that then decide from
 /// the caller's own capabilities.
-async fn verified(headers: &HeaderMap, administrators: bool) -> Result<Membership, Failure> {
+async fn verified(
+    config: &AppConfig,
+    headers: &HeaderMap,
+    administrators: bool,
+) -> Result<Membership, Failure> {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .filter(|s| !s.is_empty() && s.len() <= 8192)
         .ok_or_else(|| failure(StatusCode::UNAUTHORIZED))?;
-    let endpoint = std::env::var("AUTH_PORTAL_INTROSPECTION_URL")
-        .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    let endpoint = config
+        .auth_portal_introspection_url
+        .as_deref()
+        .ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))?;
     let url =
-        reqwest::Url::parse(&endpoint).map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+        reqwest::Url::parse(endpoint).map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
     if url.scheme() != "https"
         || !url.username().is_empty()
         || url.password().is_some()
@@ -73,7 +79,7 @@ async fn verified(headers: &HeaderMap, administrators: bool) -> Result<Membershi
     {
         return Err(failure(StatusCode::SERVICE_UNAVAILABLE));
     }
-    let client = crate::school_portal::auth::auth_client(false)?;
+    let client = crate::school_portal::auth::auth_client(config, false)?;
     let response = client
         .post(url)
         .bearer_auth(token)
@@ -116,8 +122,9 @@ async fn verified(headers: &HeaderMap, administrators: bool) -> Result<Membershi
         .roles
         .as_ref()
         .is_some_and(|roles| roles.iter().any(|r| r == "owner"));
-    let schools = member.school_ids.as_ref().unwrap();
-    let tenants = member.tenant_ids.as_ref().unwrap();
+    let (Some(schools), Some(tenants)) = (&member.school_ids, &member.tenant_ids) else {
+        return Err(failure(StatusCode::FORBIDDEN));
+    };
     if !(owner && schools.is_empty() && tenants.is_empty())
         && (schools.is_empty() || tenants.is_empty())
     {
@@ -126,17 +133,19 @@ async fn verified(headers: &HeaderMap, administrators: bool) -> Result<Membershi
     Ok(member)
 }
 pub(crate) async fn calendar_membership_for(
+    config: &AppConfig,
     headers: &HeaderMap,
     selection: &crate::school_portal::staff_capability::Selection,
 ) -> Result<(String, Vec<String>, Vec<String>), Failure> {
-    let (id, _, schools, tenants) = calendar_actor(headers, selection).await?;
+    let (id, _, schools, tenants) = calendar_actor(config, headers, selection).await?;
     Ok((id, schools, tenants))
 }
 pub(crate) async fn calendar_actor(
+    config: &AppConfig,
     headers: &HeaderMap,
     selection: &crate::school_portal::staff_capability::Selection,
 ) -> Result<(String, String, Vec<String>, Vec<String>), Failure> {
-    let m = membership(headers).await?;
+    let m = membership(config, headers).await?;
     let owner = m
         .roles
         .as_ref()
@@ -166,40 +175,49 @@ pub(crate) async fn calendar_actor(
     ))
 }
 pub(crate) async fn administrator(
+    config: &AppConfig,
     headers: &HeaderMap,
     tenant_id: &String,
     school_id: &String,
 ) -> Result<String, Failure> {
-    Ok(administrator_actor(headers, tenant_id, school_id).await?.0)
+    Ok(administrator_actor(config, headers, tenant_id, school_id).await?.0)
 }
 pub(crate) async fn administrator_actor(
+    config: &AppConfig,
     headers: &HeaderMap,
     tenant_id: &String,
     school_id: &String,
 ) -> Result<(String, String), Failure> {
-    staff_session(headers).await?.administrator(tenant_id, school_id)
+    staff_session(config, headers).await?.administrator(tenant_id, school_id)
 }
 /// A verified staff session whose school scope is decided later, for routes that first look up
 /// which school a record belongs to.
 pub(crate) struct StaffSession(Membership);
-pub(crate) async fn staff_session(headers: &HeaderMap) -> Result<StaffSession, Failure> {
-    Ok(StaffSession(membership(headers).await?))
+pub(crate) async fn staff_session(
+    config: &AppConfig,
+    headers: &HeaderMap,
+) -> Result<StaffSession, Failure> {
+    Ok(StaffSession(membership(config, headers).await?))
 }
 /// Any active staff member's session, whatever their Auth role (ADR 0018): only for routes that
 /// decide everything from the caller's capabilities, as the authorization routes do.
-pub(crate) async fn any_staff_session(headers: &HeaderMap) -> Result<StaffSession, Failure> {
-    Ok(StaffSession(verified(headers, false).await?))
+pub(crate) async fn any_staff_session(
+    config: &AppConfig,
+    headers: &HeaderMap,
+) -> Result<StaffSession, Failure> {
+    Ok(StaffSession(verified(config, headers, false).await?))
 }
 /// Any active staff member whose session covers the school (ADR 0018 slice 6): actor and role as
 /// Auth has it (`owner`, `school_admin` or `staff`). The route then decides from the caller's
 /// capabilities at the school, which Owners and school administrators hold on day one; this check
 /// alone lets nobody read or write.
 pub(crate) async fn school_staff_actor(
+    config: &AppConfig,
     headers: &HeaderMap,
     tenant_id: &String,
     school_id: &String,
 ) -> Result<(String, String), Failure> {
-    let (actor, role, schools, tenants) = any_staff_session(headers).await?.staff_scope();
+    let (actor, role, schools, tenants) = any_staff_session(config, headers).await?.staff_scope();
     if !crate::school_portal::staff_capability::live_scope(
         role == "owner",
         &schools,
@@ -253,10 +271,13 @@ impl StaffSession {
             .roles
             .as_ref()
             .is_some_and(|rs| rs.iter().any(|r| r == "owner"));
+        let (Some(schools), Some(tenants)) = (&member.school_ids, &member.tenant_ids) else {
+            return Err(failure(StatusCode::FORBIDDEN));
+        };
         if !crate::school_portal::staff_capability::live_scope(
             owner,
-            member.school_ids.as_ref().unwrap(),
-            member.tenant_ids.as_ref().unwrap(),
+            schools,
+            tenants,
             school_id,
             tenant_id,
         ) {
@@ -331,7 +352,7 @@ async fn update(
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let (actor, actor_role) =
-        administrator_actor(&headers, &input.tenant_id, &input.school_id).await?;
+        administrator_actor(&state.config, &headers, &input.tenant_id, &input.school_id).await?;
     ensure_schema(&state.graph).await?;
     // One implicit transaction commits state and immutable evidence together. CAS protects unknown HTTP outcomes.
     let q = query(&format!(
@@ -356,7 +377,7 @@ async fn update(
     let row = if actor_role=="owner" {
         let binding_lock=if student {"MATCH (u:User {id:$target}) MERGE (lock:LearningBindingLock {key:'user|'+$target}) ON CREATE SET lock.version=0 SET lock.version=lock.version+1 WITH sec"} else {"WITH sec"};
         let lock=query(&format!("{SCOPE} {binding_lock} RETURN sec.section_id AS id")).param("actor",actor.clone()).param("school",input.school_id.clone()).param("tenant",input.tenant_id.clone()).param("section",input.section_id.clone()).param("target",input.target_id.clone());
-        crate::school_portal::staff_capability::live_write(&state.graph,crate::school_portal::staff_capability::OwnerSession{headers:&headers,actor:&actor,school:&input.school_id,tenant:&input.tenant_id,learning:false},lock,q).await?
+        crate::school_portal::staff_capability::live_write(&state.graph,crate::school_portal::staff_capability::OwnerSession{config:&state.config,headers:&headers,actor:&actor,school:&input.school_id,tenant:&input.tenant_id,learning:false},lock,q).await?
     } else {
         let mut rows=state.graph.execute(q).await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
         let row=rows.next().await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
@@ -430,7 +451,7 @@ async fn list(
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor = administrator(&headers, &input.tenant_id, &input.school_id).await?;
+    let actor = administrator(&state.config, &headers, &input.tenant_id, &input.school_id).await?;
     ensure_schema(&state.graph).await?;
     let mut rows = state
         .graph

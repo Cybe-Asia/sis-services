@@ -43,20 +43,28 @@ fn scope(member: &auth::Teacher, section: &str, export: &Export, lock: bool) -> 
 }
 pub async fn import(
     graph: Graph,
+    config: &crate::config::config::AppConfig,
     headers: HeaderMap,
     section: String,
     input: Import,
     command: String,
 ) -> Result<Value, Failure> {
-    let _ = auth::teacher(&headers).await?;
-    let observed = learning::read(&headers, &input).await?;
-    let member = auth::teacher_in(&headers, &observed.school_id, &observed.tenant_id).await?;
+    let _ = auth::teacher(config, &headers).await?;
+    let observed = learning::read(config, &headers, &input).await?;
+    let member =
+        auth::teacher_in(config, &headers, &observed.school_id, &observed.tenant_id).await?;
     if !observed.matches_for(&input, &section, &member.staff_member_id, member.is_owner()) {
         return Err(failure(StatusCode::CONFLICT));
     }
     let mut tx = graph.start_txn().await.map_err(unavailable)?;
     let outcome = locked(
-        &mut tx, &headers, &section, &input, &command, &member, &observed,
+        &mut tx,
+        (config, &headers),
+        &section,
+        &input,
+        &command,
+        &member,
+        &observed,
     )
     .await;
     match outcome {
@@ -72,7 +80,7 @@ pub async fn import(
 }
 async fn locked(
     tx: &mut neo4rs::Txn,
-    headers: &HeaderMap,
+    (config, headers): (&crate::config::config::AppConfig, &HeaderMap),
     section: &str,
     input: &Import,
     command: &str,
@@ -87,11 +95,12 @@ async fn locked(
         return Err(failure(StatusCode::FORBIDDEN));
     }
     // Live Auth and Learning are rechecked AFTER node locks, even for exact replay.
-    let current = auth::teacher_in(headers, &observed.school_id, &observed.tenant_id).await?;
+    let current =
+        auth::teacher_in(config, headers, &observed.school_id, &observed.tenant_id).await?;
     if current.staff_member_id != member.staff_member_id || current.role() != member.role() {
         return Err(failure(StatusCode::FORBIDDEN));
     }
-    let export = learning::read(headers, input).await?;
+    let export = learning::read(config, headers, input).await?;
     if export != *observed
         || !export.matches_for(input, section, &current.staff_member_id, current.is_owner())
     {

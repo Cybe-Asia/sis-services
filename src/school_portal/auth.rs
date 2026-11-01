@@ -1,9 +1,9 @@
 use super::{model::identifier, Failure};
+use crate::config::config::AppConfig;
 use axum::http::{HeaderMap, StatusCode};
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use serde::Deserialize;
 use std::{
-    collections::HashMap,
     sync::{Mutex, OnceLock},
     time::Duration,
 };
@@ -22,9 +22,8 @@ struct ParentClaims {
     exp: usize,
     scope: Option<String>,
 }
-pub fn parent(headers: &HeaderMap) -> Result<String, Failure> {
-    let key =
-        std::env::var("JWT_SECRET").map_err(|_| super::failure(StatusCode::SERVICE_UNAVAILABLE))?;
+pub fn parent(config: &AppConfig, headers: &HeaderMap) -> Result<String, Failure> {
+    let key = &config.jwt_secret;
     if key.len() < 32 {
         return Err(super::failure(StatusCode::SERVICE_UNAVAILABLE));
     }
@@ -98,11 +97,12 @@ impl Teacher {
     }
 }
 pub async fn teacher_in(
+    config: &AppConfig,
     headers: &HeaderMap,
     school: &str,
     tenant: &str,
 ) -> Result<Teacher, Failure> {
-    teacher(headers)
+    teacher(config, headers)
         .await?
         .select(&super::staff_capability::Selection {
             school_id: Some(school.into()),
@@ -112,19 +112,22 @@ pub async fn teacher_in(
 /// One pooled client per trust anchor for calls to Auth. A client built per request loaded the
 /// TLS roots and opened a new TLS connection each time: about 100 ms of SIS CPU and a full
 /// handshake on Auth's 250m TLS proxy for every Learning read, so concurrent reads queued into
-/// 503s (QA B5, 2026-10-23). Keyed by the `AUTH_PORTAL_CA_FILE` path, so the file is read once
-/// when its client is built and never on the request path.
-// shortcut: a rotated anchor at the same path applies after a restart; re-read on a timer if rotation must apply live.
-pub(crate) fn auth_client(no_proxy: bool) -> Result<reqwest::Client, Failure> {
-    type Key = (Option<String>, bool);
-    static CLIENTS: OnceLock<Mutex<HashMap<Key, reqwest::Client>>> = OnceLock::new();
+/// 503s (QA B5, 2026-10-23). Keyed by the `AUTH_PORTAL_CA_FILE` anchor, which config read at
+/// startup, so no file is read on the request path.
+// shortcut: a rotated anchor applies after a restart; re-read on a timer if rotation must apply live.
+pub(crate) fn auth_client(config: &AppConfig, no_proxy: bool) -> Result<reqwest::Client, Failure> {
+    type Entry = (Option<Vec<u8>>, bool, reqwest::Client);
+    static CLIENTS: OnceLock<Mutex<Vec<Entry>>> = OnceLock::new();
     let unavailable = || super::failure(StatusCode::SERVICE_UNAVAILABLE);
-    let key = (std::env::var("AUTH_PORTAL_CA_FILE").ok(), no_proxy);
+    let anchor = config.auth_portal_ca.as_deref();
     let mut clients = CLIENTS
         .get_or_init(Default::default)
         .lock()
         .map_err(|_| unavailable())?;
-    if let Some(client) = clients.get(&key) {
+    if let Some((_, _, client)) = clients
+        .iter()
+        .find(|(pem, proxy, _)| pem.as_deref() == anchor && *proxy == no_proxy)
+    {
         return Ok(client.clone());
     }
     let mut builder = reqwest::Client::builder()
@@ -136,24 +139,22 @@ pub(crate) fn auth_client(no_proxy: bool) -> Result<reqwest::Client, Failure> {
     if no_proxy {
         builder = builder.no_proxy();
     }
-    if let Some(path) = &key.0 {
-        let metadata = std::fs::metadata(path).map_err(|_| unavailable())?;
-        if !metadata.is_file() || metadata.len() > 65_536 {
+    if let Some(pem) = anchor {
+        if pem.len() > 65_536 {
             return Err(unavailable());
         }
-        let pem = std::fs::read(path).map_err(|_| unavailable())?;
         builder = builder
-            .add_root_certificate(reqwest::Certificate::from_pem(&pem).map_err(|_| unavailable())?);
+            .add_root_certificate(reqwest::Certificate::from_pem(pem).map_err(|_| unavailable())?);
     }
     let client = builder.build().map_err(|_| unavailable())?;
     // Old anchors after rotations never accumulate.
     if clients.len() >= 8 {
         clients.clear();
     }
-    clients.insert(key, client.clone());
+    clients.push((anchor.map(<[u8]>::to_vec), no_proxy, client.clone()));
     Ok(client)
 }
-pub async fn teacher(headers: &HeaderMap) -> Result<Teacher, Failure> {
+pub async fn teacher(config: &AppConfig, headers: &HeaderMap) -> Result<Teacher, Failure> {
     let token = bearer(headers)?;
     // Audience prefilter grants no authority: Auth checks signature, exact registration and live session.
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -170,13 +171,14 @@ pub async fn teacher(headers: &HeaderMap) -> Result<Teacher, Failure> {
     {
         return Err(super::failure(StatusCode::UNAUTHORIZED));
     }
-    let endpoint = std::env::var("AUTH_SCHOOL_MEMBERSHIP_URL")
-        .map_err(|_| super::failure(StatusCode::SERVICE_UNAVAILABLE))?;
-    let url = reqwest::Url::parse(&endpoint)
+    let endpoint = config
+        .auth_school_membership_url
+        .as_deref()
+        .ok_or_else(|| super::failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    let url = reqwest::Url::parse(endpoint)
         .map_err(|_| super::failure(StatusCode::SERVICE_UNAVAILABLE))?;
     let loopback = matches!(url.host_str(), Some("127.0.0.1" | "localhost"));
-    let local_test =
-        std::env::var("APP_ENV").as_deref() == Ok("test") && loopback && url.scheme() == "http";
+    let local_test = config.local_test && loopback && url.scheme() == "http";
     if (url.scheme() != "https" && !local_test)
         || !url.username().is_empty()
         || url.password().is_some()
@@ -186,7 +188,7 @@ pub async fn teacher(headers: &HeaderMap) -> Result<Teacher, Failure> {
     {
         return Err(super::failure(StatusCode::SERVICE_UNAVAILABLE));
     }
-    let client = auth_client(false)?;
+    let client = auth_client(config, false)?;
     let mut response = client
         .post(url)
         .bearer_auth(token)
@@ -222,7 +224,7 @@ pub async fn teacher(headers: &HeaderMap) -> Result<Teacher, Failure> {
 }
 #[cfg(test)]
 mod client_tests {
-    use super::auth_client;
+    use super::{auth_client, AppConfig};
     use std::{
         io::{BufRead, BufReader, Write},
         sync::{
@@ -266,7 +268,7 @@ mod client_tests {
     async fn auth_calls_share_one_pooled_connection() {
         let (origin, connections) = server();
         for _ in 0..3 {
-            let client = auth_client(true).unwrap();
+            let client = auth_client(&AppConfig::default(), true).unwrap();
             let response = client
                 .post(format!("{origin}/session"))
                 .send()

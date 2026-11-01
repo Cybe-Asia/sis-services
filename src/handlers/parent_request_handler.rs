@@ -28,14 +28,17 @@ struct Claims {
     exp: usize,
     scope: Option<String>,
 }
-fn subject(headers: &HeaderMap) -> Result<String, Error> {
+fn subject(
+    config: &crate::config::config::AppConfig,
+    headers: &HeaderMap,
+) -> Result<String, Error> {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .filter(|v| v.len() <= 8192)
         .ok_or(error(StatusCode::UNAUTHORIZED))?;
-    let key = std::env::var("JWT_SECRET").map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE))?;
+    let key = &config.jwt_secret;
     if key.is_empty() {
         return Err(error(StatusCode::SERVICE_UNAVAILABLE));
     }
@@ -55,7 +58,7 @@ pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<ParentRequest>>>, Error> {
-    let sub = subject(&headers)?;
+    let sub = subject(&state.config, &headers)?;
     repo::list(&state.graph, &sub)
         .await
         .map(|data| Json(ApiResponse::success(data)))
@@ -66,7 +69,7 @@ pub async fn create(
     headers: HeaderMap,
     Json(input): Json<ParentRequestInput>,
 ) -> Result<Json<ApiResponse<ParentRequest>>, Error> {
-    let sub = subject(&headers)?;
+    let sub = subject(&state.config, &headers)?;
     if !input.valid() {
         return Err(error(StatusCode::BAD_REQUEST));
     }

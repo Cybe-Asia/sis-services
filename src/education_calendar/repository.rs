@@ -92,6 +92,7 @@ pub async fn change_live(
     actor: &str,
     role: &str,
     input: &Change,
+    config: &crate::config::config::AppConfig,
     headers: &axum::http::HeaderMap,
 ) -> Result<Option<i64>, crate::school_portal::Failure> {
     let e = &input.entry;
@@ -100,7 +101,7 @@ pub async fn change_live(
     let result=async {
         crate::learning_access::timetable::repository::lock_school(&mut tx,&e.school_id,&e.tenant_id).await?;
         crate::learning_access::timetable::repository::one(&mut tx,query("MATCH(a:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) SET a.calendar_write_lock=coalesce(a.calendar_write_lock,0)+1 RETURN a.id AS id").param("actor",actor)).await?.ok_or_else(||super::failure(axum::http::StatusCode::FORBIDDEN))?;
-        let current=crate::learning_access::administrator_actor(headers,&e.tenant_id,&e.school_id).await?;
+        let current=crate::learning_access::administrator_actor(config,headers,&e.tenant_id,&e.school_id).await?;
         if current!=(actor.to_string(),role.to_string()){return Err(super::failure(axum::http::StatusCode::FORBIDDEN));}
         crate::learning_access::timetable::calendar_guard::check(&mut tx,input).await?;
         let q=change_query(actor,input).map_err(|_|unavailable())?;

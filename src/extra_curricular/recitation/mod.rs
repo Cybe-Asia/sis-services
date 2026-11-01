@@ -51,7 +51,7 @@ async fn list(
     if !matches!(role.as_str(), "student" | "teacher") || !q.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor = auth::actor(&h, &role, &q.scope()).await?;
+    let actor = auth::actor(&s.config, &h, &role, &q.scope()).await?;
     match repository::list(&s.graph, &actor, &q).await {
         Ok(Some(data)) => Ok(Json(json!({"data":data}))),
         Ok(None) => Err(failure(StatusCode::FORBIDDEN)),
@@ -85,7 +85,7 @@ async fn submit(
     if audio.len() > model::MAX_AUDIO_BYTES || !model::looks_like(&v.mime, &audio) {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor = auth::actor(&h, &role, &v.scope).await?;
+    let actor = auth::actor(&s.config, &h, &role, &v.scope).await?;
     let store = store()?;
     done(repository::submit(&s.graph, store, &actor, &v, audio).await)
 }
@@ -98,7 +98,7 @@ async fn audio(
     if !matches!(role.as_str(), "student" | "teacher") || !q.valid() || q.verse.is_none() || q.student_id.is_none() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor = auth::actor(&h, &role, &q.scope()).await?;
+    let actor = auth::actor(&s.config, &h, &role, &q.scope()).await?;
     let store = store()?;
     let clip = done(repository::audio(&s.graph, store, &actor, &q).await)?.0;
     let mime = clip["data"]["mime"].as_str().unwrap_or("application/octet-stream").to_string();
@@ -130,7 +130,7 @@ async fn review(
     if !v.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor = auth::actor(&h, &role, &v.scope).await?;
+    let actor = auth::actor(&s.config, &h, &role, &v.scope).await?;
     done(repository::review(&s.graph, &actor, &v).await)
 }
 pub fn router() -> Router<AppState> {

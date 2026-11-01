@@ -61,7 +61,7 @@ async fn save_inner(
     principal: &str,
     scope: &Scope,
     input: &Preferences,
-    headers: Option<&HeaderMap>,
+    live: Option<(&crate::config::config::AppConfig, &HeaderMap)>,
 ) -> Result<Option<Value>, Error> {
     // Lock current binding/enrollment as well as the account before rechecking.
     // Directory, binding and enrollment revocation cannot race a queued save.
@@ -71,8 +71,8 @@ async fn save_inner(
         let mut locked = tx.execute(scoped(&lock, principal, scope)).await?;
         if locked.next(&mut tx).await?.is_none() { return Ok(None); }
         while locked.next(&mut tx).await?.is_some() {}
-        if let Some(headers) = headers {
-            let current = super::student_identity::actor(headers).await.map_err(|error| {
+        if let Some((config, headers)) = live {
+            let current = super::student_identity::actor(config, headers).await.map_err(|error| {
                 Box::new(super::staff_capability::SessionFailure(error)) as Error
             })?;
             if current != principal { return Err(Box::new(super::staff_capability::SessionFailure(failure(StatusCode::FORBIDDEN))) as Error); }
@@ -119,7 +119,7 @@ pub(super) async fn read(
     if !identifier(&scope.school_id) || !identifier(&scope.tenant_id) {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let principal = super::student_identity::actor(&h).await?;
+    let principal = super::student_identity::actor(&s.config, &h).await?;
     load(&s.graph, &principal, &scope)
         .await
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
@@ -136,7 +136,7 @@ pub(super) async fn write(
     if !identifier(&scope.school_id) || !identifier(&scope.tenant_id) || !input.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let principal = super::student_identity::actor(&h).await?;
+    let principal = super::student_identity::actor(&s.config, &h).await?;
     if load(&s.graph, &principal, &scope)
         .await
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
@@ -144,7 +144,7 @@ pub(super) async fn write(
     {
         return Err(failure(StatusCode::FORBIDDEN));
     }
-    save_inner(&s.graph, &principal, &scope, &input, Some(&h))
+    save_inner(&s.graph, &principal, &scope, &input, Some((&s.config, &h)))
         .await
         .map_err(
             |error| match error.downcast::<super::staff_capability::SessionFailure>() {

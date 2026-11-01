@@ -23,16 +23,17 @@ pub async fn change_live(
     g: &Graph,
     a: &Actor,
     v: &Change,
+    config: &crate::config::config::AppConfig,
     h: &axum::http::HeaderMap,
     path_role: &str,
 ) -> Result<Option<Value>, Error> {
-    change_inner(g, a, v, Some((h, path_role))).await
+    change_inner(g, a, v, Some((config, h, path_role))).await
 }
 async fn change_inner(
     g: &Graph,
     a: &Actor,
     v: &Change,
-    live: Option<(&axum::http::HeaderMap, &str)>,
+    live: Option<(&crate::config::config::AppConfig, &axum::http::HeaderMap, &str)>,
 ) -> Result<Option<Value>, Error> {
     let key = activity_key(&v.scope, &v.activity_id);
     let mut store = GraphChange {
@@ -48,8 +49,8 @@ async fn change_inner(
     }
     store.row(query("MERGE(l:ExtraCurricularLock {key:$key}) ON CREATE SET l.version=0 SET l.version=l.version+1 RETURN l.version AS version").param("key",store.key.clone())).await?.ok_or("lock missing")?;
     if matches!(a.role.as_str(), "owner" | "student") {
-        if let Some((h, path_role)) = live {
-            let current = match crate::extra_curricular::auth::actor(h, path_role, &v.scope).await {
+        if let Some((config, h, path_role)) = live {
+            let current = match crate::extra_curricular::auth::actor(config, h, path_role, &v.scope).await {
                 Ok(current) => current,
                 Err(error) => {
                     let _ = store.tx.rollback().await;

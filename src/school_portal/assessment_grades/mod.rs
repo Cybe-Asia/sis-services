@@ -30,7 +30,7 @@ pub async fn import(
     let task = tokio::spawn(async move {
         tokio::time::timeout(
             std::time::Duration::from_secs(25),
-            repository::import(s.graph, headers, section, input, command),
+            repository::import(s.graph, &s.config, headers, section, input, command),
         )
         .await
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?

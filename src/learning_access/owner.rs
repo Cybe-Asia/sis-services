@@ -31,15 +31,18 @@ struct Actor {
     id: String,
     role: String,
 }
-async fn actor(headers: &HeaderMap, scope: &Scope) -> Result<Actor, Failure> {
+async fn actor(
+    config: &crate::config::config::AppConfig,
+    headers: &HeaderMap,
+    scope: &Scope,
+) -> Result<Actor, Failure> {
     let token = crate::school_portal::auth::bearer(headers)?;
     match decode_header(token)
         .map_err(|_| failure(StatusCode::UNAUTHORIZED))?
         .alg
     {
         Algorithm::HS256 => {
-            let secret = std::env::var("JWT_SECRET")
-                .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+            let secret = &config.jwt_secret;
             if secret.len() < 32 {
                 return Err(failure(StatusCode::SERVICE_UNAVAILABLE));
             }
@@ -61,7 +64,7 @@ async fn actor(headers: &HeaderMap, scope: &Scope) -> Result<Actor, Failure> {
             }
             if claims.role == "student" {
                 return Ok(Actor {
-                    id: crate::school_portal::student_identity::actor(headers).await?,
+                    id: crate::school_portal::student_identity::actor(config, headers).await?,
                     role: claims.role,
                 });
             }
@@ -71,9 +74,13 @@ async fn actor(headers: &HeaderMap, scope: &Scope) -> Result<Actor, Failure> {
             })
         }
         Algorithm::RS256 => {
-            let member =
-                crate::school_portal::auth::teacher_in(headers, &scope.school_id, &scope.tenant_id)
-                    .await?;
+            let member = crate::school_portal::auth::teacher_in(
+                config,
+                headers,
+                &scope.school_id,
+                &scope.tenant_id,
+            )
+            .await?;
             if !member.school_ids.contains(&scope.school_id)
                 || !member.tenant_ids.contains(&scope.tenant_id)
             {
@@ -102,7 +109,7 @@ pub(super) async fn class_actor(
         student_id: None,
         access: None,
     };
-    let a = actor(headers, &scope).await?;
+    let a = actor(&state.config, headers, &scope).await?;
     if !matches!(a.role.as_str(), "teacher" | "owner" | "student")
         || !projection(state, &a, &scope)
             .await?
@@ -128,7 +135,7 @@ pub(crate) async fn school_reader(
         student_id: None,
         access: None,
     };
-    let a = actor(headers, &scope).await?;
+    let a = actor(&state.config, headers, &scope).await?;
     if matches!(a.role.as_str(), "student" | "parent")
         && projection(state, &a, &scope).await?.is_empty()
     {
@@ -230,7 +237,7 @@ async fn context(
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let a = actor(&h, &q).await?;
+    let a = actor(&s.config, &h, &q).await?;
     let classes = projection(&s, &a, &q).await?;
     Ok(Json(
         json!({"data":{"contractVersion":1,"databaseId":identity(&s.graph).await?,"actor":{"id":a.id,"role":a.role},"schoolId":q.school_id,"tenantId":q.tenant_id,"classes":classes}}),
@@ -290,7 +297,7 @@ async fn authorize(
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let a = actor(&h, &q).await?;
+    let a = actor(&s.config, &h, &q).await?;
     permitted(&s, &a, &q).await?;
     let mut data = json!({"contractVersion":1,"databaseId":identity(&s.graph).await?,"actor":{"id":a.id,"role":a.role},"schoolId":q.school_id,"tenantId":q.tenant_id,"allowed":true});
     // ADR 0018: what the staff member may do in the class, for Learning to move to
@@ -327,7 +334,7 @@ async fn capabilities(
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let a = actor(&h, &q).await?;
+    let a = actor(&s.config, &h, &q).await?;
     if !matches!(a.role.as_str(), "teacher" | "owner") {
         return Err(failure(StatusCode::FORBIDDEN));
     }
@@ -386,7 +393,7 @@ async fn mastery_roster(
         student_id: None,
         access: None,
     };
-    let a = actor(&h, &scope).await?;
+    let a = actor(&s.config, &h, &scope).await?;
     if !matches!(a.role.as_str(), "teacher" | "owner") {
         return Err(failure(StatusCode::FORBIDDEN));
     }

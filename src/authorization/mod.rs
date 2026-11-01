@@ -30,10 +30,15 @@ fn invalid() -> Failure {
 
 /// The caller's session, which must cover the tenant. Any active staff member passes; what they
 /// may read is decided from their own holdings.
-async fn reader(headers: &HeaderMap, tenant: &str) -> Result<Reader, Failure> {
-    let (actor, role, schools, tenants) = crate::learning_access::any_staff_session(headers)
-        .await?
-        .staff_scope();
+async fn reader(
+    config: &crate::config::config::AppConfig,
+    headers: &HeaderMap,
+    tenant: &str,
+) -> Result<Reader, Failure> {
+    let (actor, role, schools, tenants) =
+        crate::learning_access::any_staff_session(config, headers)
+            .await?
+            .staff_scope();
     if role == "owner" && schools.is_empty() && tenants.is_empty() {
         return Ok(Reader {
             actor,
@@ -50,7 +55,12 @@ async fn reader(headers: &HeaderMap, tenant: &str) -> Result<Reader, Failure> {
 }
 
 /// Session, the read, then the session again, as the other Admin reads do.
-async fn guarded<F, Fut>(headers: &HeaderMap, tenant: &str, read: F) -> Result<Json<Value>, Failure>
+async fn guarded<F, Fut>(
+    config: &crate::config::config::AppConfig,
+    headers: &HeaderMap,
+    tenant: &str,
+    read: F,
+) -> Result<Json<Value>, Failure>
 where
     F: FnOnce(Reader) -> Fut,
     Fut: std::future::Future<Output = Result<Value, Failure>>,
@@ -58,12 +68,12 @@ where
     if !identifier(tenant) {
         return Err(invalid());
     }
-    let first = reader(headers, tenant).await?;
+    let first = reader(config, headers, tenant).await?;
     let actor = first.actor.clone();
     let data = tokio::time::timeout(Duration::from_secs(8), read(first))
         .await
         .map_err(unavailable)??;
-    if reader(headers, tenant).await?.actor != actor {
+    if reader(config, headers, tenant).await?.actor != actor {
         return Err(refuse(StatusCode::FORBIDDEN, "FORBIDDEN", json!({})));
     }
     Ok(Json(json!({ "data": data })))
@@ -94,7 +104,7 @@ async fn capabilities(
 ) -> Result<Json<Value>, Failure> {
     let Query(q) = q.map_err(|_| invalid())?;
     let tenant = q.tenant_id.clone();
-    guarded(&headers, &q.tenant_id, |r| async move {
+    guarded(&state.config, &headers, &q.tenant_id, |r| async move {
         reads::view(
             &state.graph,
             &r,
@@ -115,7 +125,7 @@ async fn templates(
 ) -> Result<Json<Value>, Failure> {
     let Query(q) = q.map_err(|_| invalid())?;
     let tenant = q.tenant_id.clone();
-    guarded(&headers, &q.tenant_id, |r| async move {
+    guarded(&state.config, &headers, &q.tenant_id, |r| async move {
         reads::templates(&state.graph, &r, &tenant).await
     })
     .await
@@ -131,7 +141,7 @@ async fn template_history(
         return Err(invalid());
     }
     let (tenant, code) = (q.tenant_id.clone(), q.code.clone());
-    guarded(&headers, &q.tenant_id, |r| async move {
+    guarded(&state.config, &headers, &q.tenant_id, |r| async move {
         reads::history(&state.graph, &r, &tenant, &code).await
     })
     .await
@@ -147,7 +157,7 @@ async fn template_impact(
         return Err(invalid());
     }
     let (tenant, code) = (q.tenant_id.clone(), q.code.clone());
-    guarded(&headers, &q.tenant_id, |r| async move {
+    guarded(&state.config, &headers, &q.tenant_id, |r| async move {
         reads::impact(&state.graph, &r, &tenant, &code).await
     })
     .await
@@ -174,7 +184,7 @@ async fn assignments(
         return Err(invalid());
     }
     let tenant = f.tenant_id.clone();
-    guarded(&headers, &tenant, |r| async move {
+    guarded(&state.config, &headers, &tenant, |r| async move {
         reads::assignments(&state.graph, &r, &f).await
     })
     .await
@@ -199,7 +209,7 @@ async fn expiring(
         return Err(invalid());
     }
     let tenant = q.tenant_id.clone();
-    guarded(&headers, &q.tenant_id, |r| async move {
+    guarded(&state.config, &headers, &q.tenant_id, |r| async move {
         reads::expiring(&state.graph, &r, &tenant, days, q.school_id.as_deref()).await
     })
     .await
@@ -215,7 +225,7 @@ async fn effective(
         return Err(invalid());
     }
     let (tenant, staff) = (q.tenant_id.clone(), q.staff_member_id.clone());
-    guarded(&headers, &q.tenant_id, |r| async move {
+    guarded(&state.config, &headers, &q.tenant_id, |r| async move {
         if staff == r.actor {
             reads::own(&state.graph, &r, &tenant).await
         } else {
@@ -235,7 +245,7 @@ async fn check(
         return Err(invalid());
     }
     let tenant = request.tenant_id.clone();
-    guarded(&headers, &tenant, |r| async move {
+    guarded(&state.config, &headers, &tenant, |r| async move {
         reads::check(&state.graph, &r, &request).await
     })
     .await
@@ -248,7 +258,7 @@ async fn audit(
 ) -> Result<Json<Value>, Failure> {
     let Query(q) = q.map_err(|_| invalid())?;
     let tenant = q.tenant_id.clone();
-    guarded(&headers, &q.tenant_id, |r| async move {
+    guarded(&state.config, &headers, &q.tenant_id, |r| async move {
         reads::audit(&state.graph, &r, &tenant).await
     })
     .await
@@ -274,15 +284,15 @@ async fn write<T, F, Fut>(
 ) -> Result<Json<Value>, Failure>
 where
     T: Send + Sync + 'static,
-    F: FnOnce(neo4rs::Graph, HeaderMap, String, String, String, String, T) -> Fut + Send + 'static,
+    F: FnOnce(AppState, HeaderMap, String, String, String, String, T) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<Value, Failure>> + Send,
 {
     let command = command_key(&headers)?;
-    let (actor, role) = commands::live_session(&headers, &tenant).await?;
+    let (actor, role) = commands::live_session(&state.config, &headers, &tenant).await?;
     let task = tokio::spawn(async move {
         tokio::time::timeout(
             Duration::from_secs(20),
-            work(state.graph, headers, actor, role, tenant, command, input),
+            work(state, headers, actor, role, tenant, command, input),
         )
         .await
         .map_err(unavailable)?
@@ -306,15 +316,15 @@ async fn template_commands(
         headers,
         tenant,
         batch,
-        |g, h, actor, role, tenant, command, batch| async move {
+        |s, h, actor, role, tenant, command, batch| async move {
             let w = Writer {
-                session: Session::Headers(&h),
+                session: Session::Headers(&s.config, &h),
                 actor: &actor,
                 role: &role,
                 tenant: &tenant,
                 command: &command,
             };
-            commands::templates(&g, &w, &batch).await
+            commands::templates(&s.graph, &w, &batch).await
         },
     )
     .await
@@ -335,15 +345,15 @@ async fn assignment_commands(
         headers,
         tenant,
         batch,
-        |g, h, actor, role, tenant, command, batch| async move {
+        |s, h, actor, role, tenant, command, batch| async move {
             let w = Writer {
-                session: Session::Headers(&h),
+                session: Session::Headers(&s.config, &h),
                 actor: &actor,
                 role: &role,
                 tenant: &tenant,
                 command: &command,
             };
-            commands::assignments(&g, &w, &batch).await
+            commands::assignments(&s.graph, &w, &batch).await
         },
     )
     .await
@@ -386,8 +396,8 @@ async fn held(
     {
         return Err(invalid());
     }
-    let actor = crate::enrollment_handover::auth::actor(&headers, &state.config.jwt_secret)
-        .map_err(|e| match e {
+    let actor =
+        crate::enrollment_handover::auth::actor(&headers, &state.config).map_err(|e| match e {
             crate::enrollment_handover::auth::Error::Unavailable => refuse(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "DEPENDENCY_UNAVAILABLE",

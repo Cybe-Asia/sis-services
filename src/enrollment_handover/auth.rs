@@ -23,11 +23,20 @@ pub enum Error {
     Unavailable,
     Unauthorized,
 }
-pub fn actor(headers: &HeaderMap, parent_key: &str) -> Result<Actor, Error> {
-    let key = std::env::var("STAFF_DOWNSTREAM_JWT_SECRET").map_err(|_| Error::Unavailable)?;
-    let issuer = std::env::var("STAFF_DOWNSTREAM_JWT_ISSUER").map_err(|_| Error::Unavailable)?;
+pub fn actor(
+    headers: &HeaderMap,
+    config: &crate::config::config::AppConfig,
+) -> Result<Actor, Error> {
+    let key = config
+        .staff_downstream_jwt_secret
+        .as_deref()
+        .ok_or(Error::Unavailable)?;
+    let issuer = config
+        .staff_downstream_jwt_issuer
+        .as_deref()
+        .ok_or(Error::Unavailable)?;
     if key.len() < 32
-        || key == parent_key
+        || key == config.jwt_secret
         || !issuer.starts_with("https://")
         || issuer.contains(['?', '#'])
     {
@@ -39,7 +48,7 @@ pub fn actor(headers: &HeaderMap, parent_key: &str) -> Result<Actor, Error> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .filter(|v| !v.is_empty() && v.len() <= 8192)
         .ok_or(Error::Unauthorized)?;
-    verify(token, &key, &issuer)
+    verify(token, key, issuer)
 }
 fn verify(token: &str, key: &str, issuer: &str) -> Result<Actor, Error> {
     if decode_header(token)

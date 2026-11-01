@@ -106,15 +106,14 @@ async fn isolated_import_replay_conflict_scope_and_parent_publication() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    std::env::set_var("APP_ENV", "test");
-    std::env::set_var(
-        "AUTH_SCHOOL_MEMBERSHIP_URL",
-        format!("http://127.0.0.1:{port}/api/v1/auth-service/oauth/membership"),
-    );
-    std::env::set_var(
-        "LEARNING_SERVICE_ORIGIN",
-        format!("http://127.0.0.1:{port}"),
-    );
+    let config = crate::config::config::AppConfig {
+        local_test: true,
+        auth_school_membership_url: Some(format!(
+            "http://127.0.0.1:{port}/api/v1/auth-service/oauth/membership"
+        )),
+        learning_service_origin: Some(format!("http://127.0.0.1:{port}")),
+        ..Default::default()
+    };
     // Audience-only transport stub; authority is the test membership endpoint.
     // This is a mock boundary test, never an Auth token or runtime acceptance credential.
     use base64::Engine;
@@ -128,6 +127,7 @@ async fn isolated_import_replay_conflict_scope_and_parent_publication() {
     graph.run(query("CREATE(t:StaffMember {id:$run,email:$email,membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:[$run],tenantIds:[$run],grade_test_run:$run}) CREATE(sec:Section {section_id:$run,name:'Test class',year_group:'7',school_id:$run,tenant_id:$run,status:'active',homeroom_staff_member_id:$run,grade_test_run:$run}) CREATE(u:User {id:$run,email:$parent,role:'parent',grade_test_run:$run})-[:HAS_APPLICATION]->(l:Lead {lead_id:$run,email:$parent,status:'verified',grade_test_run:$run})-[:HAS_STUDENT]->(s:Student {studentId:$run,fullName:'Isolated child',grade_test_run:$run})-[:ENROLLED_AS]->(en:EnrolledStudent {status:'active',school_id:$run,tenant_id:$run,grade_test_run:$run})-[:ENROLLED_IN]->(sec) CREATE(g:GradeEntry {entry_id:$run,section_id:$run,applicant_student_id:$run,subject:'mathematics',term:'Term 1',score:17.0,max_score:20.0,grade_test_run:$run}) CREATE(s)-[:HAS_GRADE]->(g)").param("run",run.clone()).param("email",format!("{run}@teacher.test")).param("parent",format!("{run}@parent.test"))).await.unwrap();
     let first = repository::import(
         graph.clone(),
+        &config,
         headers.clone(),
         run.clone(),
         input(),
@@ -138,6 +138,7 @@ async fn isolated_import_replay_conflict_scope_and_parent_publication() {
     let (a, b) = tokio::join!(
         repository::import(
             graph.clone(),
+            &config,
             headers.clone(),
             run.clone(),
             input(),
@@ -145,6 +146,7 @@ async fn isolated_import_replay_conflict_scope_and_parent_publication() {
         ),
         repository::import(
             graph.clone(),
+            &config,
             headers.clone(),
             run.clone(),
             input(),
@@ -158,6 +160,7 @@ async fn isolated_import_replay_conflict_scope_and_parent_publication() {
     assert_eq!(
         repository::import(
             graph.clone(),
+            &config,
             headers.clone(),
             run.clone(),
             changed,
@@ -173,6 +176,7 @@ async fn isolated_import_replay_conflict_scope_and_parent_publication() {
     assert_eq!(
         repository::import(
             graph.clone(),
+            &config,
             headers.clone(),
             run.clone(),
             changed,
@@ -262,6 +266,7 @@ async fn isolated_import_replay_conflict_scope_and_parent_publication() {
     assert_eq!(
         repository::import(
             graph.clone(),
+            &config,
             headers.clone(),
             run.clone(),
             input(),
@@ -283,6 +288,7 @@ async fn isolated_import_replay_conflict_scope_and_parent_publication() {
     assert_eq!(
         repository::import(
             graph.clone(),
+            &config,
             headers,
             run.clone(),
             input(),

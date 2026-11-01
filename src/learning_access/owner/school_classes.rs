@@ -82,7 +82,7 @@ pub(super) async fn handler(
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let a = actor(&h, &q).await?;
+    let a = actor(&s.config, &h, &q).await?;
     let classes = read(&s, &a, &q).await?;
     Ok(Json(
         json!({"data":{"contractVersion":1,"databaseId":identity(&s.graph).await?,"actor":{"id":a.id,"role":a.role},"schoolId":q.school_id,"tenantId":q.tenant_id,"classes":classes}}),

@@ -423,8 +423,9 @@ async fn guard(tx: &mut Txn, w: &Writer<'_>, fingerprint: &str) -> Result<Option
         return Err(forbidden());
     }
     match w.session {
-        Session::Headers(headers) => {
+        Session::Headers(config, headers) => {
             let (actor, role) = crate::learning_access::administrator_actor(
+                config,
                 headers,
                 &w.tenant.to_string(),
                 &w.school.to_string(),

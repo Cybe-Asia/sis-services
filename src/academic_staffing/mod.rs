@@ -64,8 +64,13 @@ where
     if !q.valid() {
         return Err(invalid());
     }
-    let session =
-        crate::learning_access::school_staff_actor(headers, &q.tenant_id, &q.school_id).await?;
+    let session = crate::learning_access::school_staff_actor(
+        &state.config,
+        headers,
+        &q.tenant_id,
+        &q.school_id,
+    )
+    .await?;
     let data = tokio::time::timeout(Duration::from_secs(8), async {
         if !crate::authorization::reads::permits(
             &mut crate::authorization::facts::Db::Graph(&state.graph),
@@ -82,7 +87,13 @@ where
     })
     .await
     .map_err(unavailable)??;
-    if crate::learning_access::school_staff_actor(headers, &q.tenant_id, &q.school_id).await?
+    if crate::learning_access::school_staff_actor(
+        &state.config,
+        headers,
+        &q.tenant_id,
+        &q.school_id,
+    )
+    .await?
         != session
     {
         return Err(refuse(StatusCode::FORBIDDEN, "FORBIDDEN", json!({})));
@@ -156,27 +167,19 @@ async fn write<T, F, Fut>(
 ) -> Result<Json<Value>, Failure>
 where
     T: Send + Sync + 'static,
-    F: FnOnce(neo4rs::Graph, HeaderMap, String, String, String, String, String, T) -> Fut
+    F: FnOnce(AppState, HeaderMap, String, String, String, String, String, T) -> Fut
         + Send
         + 'static,
     Fut: std::future::Future<Output = Result<Value, Failure>> + Send,
 {
     let command = command_key(&headers)?;
     let (actor, role) =
-        crate::learning_access::school_staff_actor(&headers, &tenant, &school).await?;
+        crate::learning_access::school_staff_actor(&state.config, &headers, &tenant, &school)
+            .await?;
     let task = tokio::spawn(async move {
         tokio::time::timeout(
             Duration::from_secs(20),
-            work(
-                state.graph,
-                headers,
-                actor,
-                role,
-                school,
-                tenant,
-                command,
-                input,
-            ),
+            work(state, headers, actor, role, school, tenant, command, input),
         )
         .await
         .map_err(unavailable)?
@@ -201,9 +204,9 @@ async fn save_plan(
         school,
         tenant,
         change,
-        |g, h, actor, role, school, tenant, command, change| async move {
+        |s, h, actor, role, school, tenant, command, change| async move {
             let w = Writer {
-                session: Session::Headers(&h),
+                session: Session::Headers(&s.config, &h),
                 actor: &actor,
                 role: &role,
                 school: &school,
@@ -211,7 +214,7 @@ async fn save_plan(
                 command: &command,
                 capability: SUBJECT_PLAN_MANAGE,
             };
-            repository::save_plan(&g, &w, &change).await
+            repository::save_plan(&s.graph, &w, &change).await
         },
     )
     .await
@@ -233,9 +236,9 @@ async fn copy_plan(
         school,
         tenant,
         copy,
-        |g, h, actor, role, school, tenant, command, copy| async move {
+        |s, h, actor, role, school, tenant, command, copy| async move {
             let w = Writer {
-                session: Session::Headers(&h),
+                session: Session::Headers(&s.config, &h),
                 actor: &actor,
                 role: &role,
                 school: &school,
@@ -243,7 +246,7 @@ async fn copy_plan(
                 command: &command,
                 capability: SUBJECT_PLAN_MANAGE,
             };
-            repository::copy_plan(&g, &w, &copy).await
+            repository::copy_plan(&s.graph, &w, &copy).await
         },
     )
     .await
@@ -265,9 +268,9 @@ async fn commands(
         school,
         tenant,
         batch,
-        |g, h, actor, role, school, tenant, command, batch| async move {
+        |s, h, actor, role, school, tenant, command, batch| async move {
             let w = Writer {
-                session: Session::Headers(&h),
+                session: Session::Headers(&s.config, &h),
                 actor: &actor,
                 role: &role,
                 school: &school,
@@ -275,7 +278,7 @@ async fn commands(
                 command: &command,
                 capability: STAFFING_MANAGE,
             };
-            repository::run_commands(&g, &w, &batch).await
+            repository::run_commands(&s.graph, &w, &batch).await
         },
     )
     .await
@@ -317,9 +320,9 @@ async fn save_grade_weights(
         school,
         tenant,
         change,
-        |g, h, actor, role, school, tenant, command, change| async move {
+        |s, h, actor, role, school, tenant, command, change| async move {
             let w = Writer {
-                session: Session::Headers(&h),
+                session: Session::Headers(&s.config, &h),
                 actor: &actor,
                 role: &role,
                 school: &school,
@@ -327,7 +330,7 @@ async fn save_grade_weights(
                 command: &command,
                 capability: SUBJECT_PLAN_MANAGE,
             };
-            repository::weights::save(&g, &w, &change).await
+            repository::weights::save(&s.graph, &w, &change).await
         },
     )
     .await
@@ -366,11 +369,23 @@ async fn learning_subject_plans(
     {
         return Err(invalid());
     }
-    match crate::school_portal::auth::teacher_in(&headers, &q.school_id, &q.tenant_id).await {
+    match crate::school_portal::auth::teacher_in(
+        &state.config,
+        &headers,
+        &q.school_id,
+        &q.tenant_id,
+    )
+    .await
+    {
         Ok(m) if m.school_ids.contains(&q.school_id) && m.tenant_ids.contains(&q.tenant_id) => {}
         _ => {
-            crate::learning_access::administrator_actor(&headers, &q.tenant_id, &q.school_id)
-                .await?;
+            crate::learning_access::administrator_actor(
+                &state.config,
+                &headers,
+                &q.tenant_id,
+                &q.school_id,
+            )
+            .await?;
         }
     }
     let mut data = tokio::time::timeout(
@@ -401,17 +416,28 @@ async fn learning_grade_weights(
     {
         return Err(invalid());
     }
-    let actor =
-        match crate::school_portal::auth::teacher_in(&headers, &q.school_id, &q.tenant_id).await {
-            Ok(m) if m.school_ids.contains(&q.school_id) && m.tenant_ids.contains(&q.tenant_id) => {
-                m.staff_member_id
-            }
-            _ => {
-                crate::learning_access::administrator_actor(&headers, &q.tenant_id, &q.school_id)
-                    .await?
-                    .0
-            }
-        };
+    let actor = match crate::school_portal::auth::teacher_in(
+        &state.config,
+        &headers,
+        &q.school_id,
+        &q.tenant_id,
+    )
+    .await
+    {
+        Ok(m) if m.school_ids.contains(&q.school_id) && m.tenant_ids.contains(&q.tenant_id) => {
+            m.staff_member_id
+        }
+        _ => {
+            crate::learning_access::administrator_actor(
+                &state.config,
+                &headers,
+                &q.tenant_id,
+                &q.school_id,
+            )
+            .await?
+            .0
+        }
+    };
     let data = tokio::time::timeout(
         Duration::from_secs(8),
         repository::weights::for_section(

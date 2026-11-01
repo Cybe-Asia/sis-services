@@ -12,7 +12,6 @@ fn private_ca_configuration_fails_closed_without_disabling_default_trust() {
         assert!(private_roots(malformed).is_err());
     }
     assert!(private_roots(&vec![b'x'; 262_145]).is_err());
-    assert!(client_builder(Some(Path::new("/nonexistent/sis-learning-private-ca.pem"))).is_err());
     assert!(client_builder(None).unwrap().build().is_ok());
 }
 #[tokio::test]
@@ -38,7 +37,7 @@ async fn private_ca_https_success_hostname_failure_and_no_redirect() {
         assert!(private_roots(&bad).is_err());
     }
     let port = parsed.port_or_known_default().unwrap();
-    let trusted = client_builder(Some(Path::new(&ca)))
+    let trusted = client_builder(Some(&pem))
         .unwrap()
         .no_proxy()
         .build()
@@ -52,7 +51,7 @@ async fn private_ca_https_success_hostname_failure_and_no_redirect() {
         .is_success());
     let untrusted = client_builder(None).unwrap().no_proxy().build().unwrap();
     assert!(untrusted.get(&origin).send().await.is_err());
-    let wrong_host = client_builder(Some(Path::new(&ca)))
+    let wrong_host = client_builder(Some(&pem))
         .unwrap()
         .no_proxy()
         .resolve(
@@ -66,9 +65,11 @@ async fn private_ca_https_success_hostname_failure_and_no_redirect() {
         .send()
         .await
         .is_err());
-    std::env::set_var("LEARNING_SERVICE_ORIGIN", &origin);
-    std::env::set_var("LEARNING_SERVICE_CA_FILE", &ca);
-    std::env::set_var("APP_ENV", "staging");
+    let config = crate::config::config::AppConfig {
+        learning_service_origin: Some(origin.clone()),
+        learning_service_ca: Some(pem.clone()),
+        ..Default::default()
+    };
     let input = Import {
         course_id: "course".into(),
         assessment_id: "assessment".into(),
@@ -83,31 +84,25 @@ async fn private_ca_https_success_hostname_failure_and_no_redirect() {
             .parse()
             .unwrap(),
     );
-    let exported = read(&headers, &input).await.unwrap();
+    let exported = read(&config, &headers, &input).await.unwrap();
     assert_eq!(exported.course_id, "course");
     let mut redirect = input.clone();
     redirect.course_id = "redirect".into();
     assert_eq!(
-        read(&headers, &redirect).await.err().unwrap().0,
+        read(&config, &headers, &redirect).await.err().unwrap().0,
         StatusCode::SERVICE_UNAVAILABLE
     );
-    std::env::set_var(
-        "LEARNING_SERVICE_CA_FILE",
-        "/nonexistent/sis-learning-private-ca.pem",
-    );
+    // Without the private anchor the default roots refuse the synthetic certificate.
+    let default_trust = crate::config::config::AppConfig {
+        learning_service_ca: None,
+        ..config.clone()
+    };
     assert_eq!(
-        read(&headers, &input).await.err().unwrap().0,
+        read(&default_trust, &headers, &input)
+            .await
+            .err()
+            .unwrap()
+            .0,
         StatusCode::SERVICE_UNAVAILABLE
     );
-    std::env::set_var("LEARNING_SERVICE_CA_FILE", "");
-    assert_eq!(
-        read(&headers, &input).await.err().unwrap().0,
-        StatusCode::SERVICE_UNAVAILABLE
-    );
-    std::env::remove_var("LEARNING_SERVICE_CA_FILE");
-    assert_eq!(
-        read(&headers, &input).await.err().unwrap().0,
-        StatusCode::SERVICE_UNAVAILABLE
-    );
-    std::env::remove_var("LEARNING_SERVICE_ORIGIN");
 }

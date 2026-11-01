@@ -1,26 +1,12 @@
 //! Disposable graph + synthetic Auth adapter evidence, never genuine SSO acceptance.
 use super::*;
 use axum::{routing::post, Router};
-use std::{
-    ffi::OsString,
-    sync::{
-        atomic::{AtomicI64, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicI64, Ordering},
+    Arc,
 };
 
 const TEST_KEY: &str = "synthetic-sis-student-session-integration-key";
-struct EnvRestore(Vec<(&'static str, Option<OsString>)>);
-impl Drop for EnvRestore {
-    fn drop(&mut self) {
-        for (key, value) in &self.0 {
-            match value {
-                Some(v) => std::env::set_var(key, v),
-                None => std::env::remove_var(key),
-            }
-        }
-    }
-}
 fn credential(id: &str, version: Option<i64>) -> String {
     let mut claims = json!({"sub":id,"role":"student","exp":chrono::Utc::now().timestamp()+3600});
     if let Some(v) = version {
@@ -77,28 +63,18 @@ async fn student_routes_and_queued_writes_require_current_auth() -> Result<(), E
     let auth_task = tokio::spawn(async move {
         axum::serve(listener, auth).await.unwrap();
     });
-    let _restore = EnvRestore(
-        [
-            "JWT_SECRET",
-            "AUTH_STUDENT_SESSION_URL",
-            "AUTH_PORTAL_CA_FILE",
-        ]
-        .into_iter()
-        .map(|key| (key, std::env::var_os(key)))
-        .collect(),
-    );
-    std::env::set_var("JWT_SECRET", TEST_KEY);
-    std::env::set_var("AUTH_STUDENT_SESSION_URL", &auth_url);
-    std::env::remove_var("AUTH_PORTAL_CA_FILE");
+    let config = crate::config::config::AppConfig {
+        server_port: 0,
+        neo4j_uri: uri,
+        neo4j_user: user,
+        neo4j_password: password,
+        jwt_secret: TEST_KEY.into(),
+        auth_student_session_url: Some(auth_url.clone()),
+        ..Default::default()
+    };
     let state = AppState {
         graph: graph.clone(),
-        config: crate::config::config::AppConfig {
-            server_port: 0,
-            neo4j_uri: uri,
-            neo4j_user: user,
-            neo4j_password: password,
-            jwt_secret: TEST_KEY.into(),
-        },
+        config: config.clone(),
         http_client: reqwest::Client::new(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -137,18 +113,16 @@ async fn student_routes_and_queued_writes_require_current_auth() -> Result<(), E
                 if response.status().as_u16()!=expected.as_u16() {return Err(format!("Student guard mismatch: {path} status {} expected {expected}",response.status()).into());}
             }
         }
-        std::env::remove_var("AUTH_STUDENT_SESSION_URL");
-        for path in &reads {
-            if client.get(format!("{origin}{path}")).bearer_auth(&token).send().await?.status().as_u16()!=503 {return Err("Missing Student Auth configuration must deny".into());}
-        }
-        std::env::set_var("AUTH_STUDENT_SESSION_URL",&auth_url); mode.store(1,Ordering::SeqCst);
-        let input=Preferences {version:0,locale:"id".into(),theme:"dark".into(),notifications:false,notification_categories:None};
         let mut headers=HeaderMap::new(); headers.insert("authorization",format!("Bearer {token}").parse()?);
+        let missing=crate::config::config::AppConfig {auth_student_session_url:None,..config.clone()};
+        if super::super::student_identity::actor(&missing,&headers).await.err().map(|e|e.0)!=Some(StatusCode::SERVICE_UNAVAILABLE) {return Err("Missing Student Auth configuration must deny".into());}
+        mode.store(1,Ordering::SeqCst);
+        let input=Preferences {version:0,locale:"id".into(),theme:"dark".into(),notifications:false,notification_categories:None};
         // A request passed its first current-session check before waiting for a resource.
-        super::super::student_identity::actor(&headers).await.map_err(|_|"Initial current session rejected")?;
+        super::super::student_identity::actor(&config,&headers).await.map_err(|_|"Initial current session rejected")?;
         let mut lock=graph.start_txn().await?;
         lock.run(query("MATCH(b:LearningStudentBinding {user_id:$mark}) SET b.guard_test_lock=coalesce(b.guard_test_lock,0)+1").param("mark",mark.clone())).await?;
-        let mut queued=Box::pin(save_inner(&graph,&mark,&scope,&input,Some(&headers)));
+        let mut queued=Box::pin(save_inner(&graph,&mark,&scope,&input,Some((&config,&headers))));
         if tokio::time::timeout(std::time::Duration::from_millis(80),&mut queued).await.is_ok() {return Err("Preference write did not wait for binding lock".into());}
         mode.store(2,Ordering::SeqCst); lock.commit().await?;
         match queued.await {Err(error)=>denied(error)?,Ok(_)=>return Err("Queued preference write accepted rotated credential".into())}
@@ -159,9 +133,9 @@ async fn student_routes_and_queued_writes_require_current_auth() -> Result<(), E
         let mut lock=graph.start_txn().await?;
         lock.run(query("MATCH(l:ExtraCurricularLock {key:$key}) SET l.guard_test_lock=1").param("key",key.clone())).await?;
         mode.store(1,Ordering::SeqCst);
-        let actor=crate::extra_curricular::model::Actor {id:super::super::student_identity::actor(&headers).await.map_err(|_|"Initial extras session rejected")?,role:"student".into()};
+        let actor=crate::extra_curricular::model::Actor {id:super::super::student_identity::actor(&config,&headers).await.map_err(|_|"Initial extras session rejected")?,role:"student".into()};
         let change=crate::extra_curricular::model::Change {scope:extra_scope,activity_id:mark.clone(),revision:0,request_id:uuid::Uuid::new_v4().to_string(),command:crate::extra_curricular::model::Command::Enroll {}};
-        let mut queued=Box::pin(crate::extra_curricular::repository::change_live(&graph,&actor,&change,&headers,"student"));
+        let mut queued=Box::pin(crate::extra_curricular::repository::change_live(&graph,&actor,&change,&config,&headers,"student"));
         if tokio::time::timeout(std::time::Duration::from_millis(80),&mut queued).await.is_ok() {return Err("Extras write did not wait for activity lock".into());}
         mode.store(2,Ordering::SeqCst); lock.commit().await?;
         match queued.await {Err(error)=>denied(error)?,Ok(_)=>return Err("Queued extras write accepted rotated credential".into())}
@@ -171,7 +145,7 @@ async fn student_routes_and_queued_writes_require_current_auth() -> Result<(), E
         // A positive write retains CAS/retry behavior under the same current session.
         mode.store(1,Ordering::SeqCst);
         for _ in 0..2 {
-            let saved=save_inner(&graph,&mark,&scope,&input,Some(&headers)).await?.ok_or("Current preferences failed")?;
+            let saved=save_inner(&graph,&mark,&scope,&input,Some((&config,&headers))).await?.ok_or("Current preferences failed")?;
             if saved["preferences"]["version"]!=1 {return Err("Preference CAS/replay changed".into());}
         }
         // Current local enrollment is still required even when Auth says active.

@@ -139,7 +139,8 @@ async fn list(
     if !identifier(&q.tenant_id) || !identifier(&q.school_id) {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor = crate::learning_access::administrator(&h, &q.tenant_id, &q.school_id).await?;
+    let actor =
+        crate::learning_access::administrator(&s.config, &h, &q.tenant_id, &q.school_id).await?;
     rooms(&s.graph, &actor, &q.tenant_id, &q.school_id)
         .await
         .map(|data| Json(json!({"data":data})))
@@ -154,7 +155,8 @@ async fn change(
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let actor =
-        crate::learning_access::administrator(&h, &c.room.tenant_id, &c.room.school_id).await?;
+        crate::learning_access::administrator(&s.config, &h, &c.room.tenant_id, &c.room.school_id)
+            .await?;
     match save(&s.graph, &actor, &c).await? {
         Some(version) => Ok(Json(json!({"data":{"version":version}}))),
         None => Err(failure(StatusCode::CONFLICT)),

@@ -29,7 +29,7 @@ async fn handover(
     headers: HeaderMap,
     body: Result<Json<model::Command>, JsonRejection>,
 ) -> Result<(HeaderMap, Json<Value>), Failure> {
-    let actor = auth::actor(&headers, &state.config.jwt_secret).map_err(|e| {
+    let actor = auth::actor(&headers, &state.config).map_err(|e| {
         failure(match e {
             auth::Error::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             auth::Error::Unauthorized => StatusCode::UNAUTHORIZED,
@@ -61,7 +61,7 @@ async fn context(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<(HeaderMap, Json<Value>), Failure> {
-    let actor = auth::actor(&headers, &state.config.jwt_secret).map_err(|e| {
+    let actor = auth::actor(&headers, &state.config).map_err(|e| {
         failure(match e {
             auth::Error::Unauthorized => StatusCode::UNAUTHORIZED,
             auth::Error::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
@@ -81,7 +81,7 @@ async fn billing_families(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<(HeaderMap, Json<Value>), Failure> {
-    let actor = auth::actor(&headers, &state.config.jwt_secret).map_err(|e| {
+    let actor = auth::actor(&headers, &state.config).map_err(|e| {
         failure(match e {
             auth::Error::Unauthorized => StatusCode::UNAUTHORIZED,
             auth::Error::Unavailable => StatusCode::SERVICE_UNAVAILABLE,

@@ -31,7 +31,7 @@ async fn current_child(
     headers: HeaderMap,
     Query(input): Query<Selection>,
 ) -> Result<Json<Value>, Failure> {
-    let subject = crate::school_portal::auth::parent(&headers)?;
+    let subject = crate::school_portal::auth::parent(&state.config, &headers)?;
     if !crate::school_portal::model::identifier(&input.student_id) {
         return Err(fail(StatusCode::BAD_REQUEST));
     }

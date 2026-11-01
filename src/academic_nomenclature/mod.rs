@@ -39,11 +39,13 @@ struct Lookup {
 /// Who reads: an administrator or Owner of the school, else a teacher of it. The administrator's
 /// refusal is the answer when neither session fits.
 async fn reader(
+    config: &crate::config::config::AppConfig,
     headers: &HeaderMap,
     tenant: &str,
     school: &str,
 ) -> Result<(String, String), Failure> {
     match crate::learning_access::administrator_actor(
+        config,
         headers,
         &tenant.to_string(),
         &school.to_string(),
@@ -51,17 +53,18 @@ async fn reader(
     .await
     {
         Ok(actor) => Ok(actor),
-        Err(refused) => match crate::school_portal::auth::teacher_in(headers, school, tenant).await
-        {
-            Ok(m)
-                if m.active
-                    && m.school_ids.iter().any(|s| s == school)
-                    && m.tenant_ids.iter().any(|t| t == tenant) =>
-            {
-                Ok((m.staff_member_id, "teacher".into()))
+        Err(refused) => {
+            match crate::school_portal::auth::teacher_in(config, headers, school, tenant).await {
+                Ok(m)
+                    if m.active
+                        && m.school_ids.iter().any(|s| s == school)
+                        && m.tenant_ids.iter().any(|t| t == tenant) =>
+                {
+                    Ok((m.staff_member_id, "teacher".into()))
+                }
+                _ => Err(refused),
             }
-            _ => Err(refused),
-        },
+        }
     }
 }
 
@@ -76,7 +79,7 @@ async fn list(
     if !(identifier(&q.school_id) && identifier(&q.tenant_id)) {
         return Err(invalid());
     }
-    let (actor, role) = reader(&headers, &q.tenant_id, &q.school_id).await?;
+    let (actor, role) = reader(&state.config, &headers, &q.tenant_id, &q.school_id).await?;
     let known = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|h| h.to_str().ok())
@@ -109,7 +112,11 @@ async fn list(
     })
     .await
     .map_err(unavailable)??;
-    if reader(&headers, &q.tenant_id, &q.school_id).await?.0 != actor {
+    if reader(&state.config, &headers, &q.tenant_id, &q.school_id)
+        .await?
+        .0
+        != actor
+    {
         return Err(refuse(StatusCode::FORBIDDEN, "FORBIDDEN", json!({})));
     }
     let cache = if q.include_archived {
@@ -199,12 +206,16 @@ async fn save(
         .filter(|k| crate::academic_staffing::model::command_key(k))
         .map(str::to_string)
         .ok_or_else(invalid)?;
-    let (actor, role) =
-        crate::learning_access::administrator_actor(&headers, &change.tenant_id, &change.school_id)
-            .await?;
+    let (actor, role) = crate::learning_access::administrator_actor(
+        &state.config,
+        &headers,
+        &change.tenant_id,
+        &change.school_id,
+    )
+    .await?;
     let task = tokio::spawn(async move {
         let w = Writer {
-            session: Session::Headers(&headers),
+            session: Session::Headers(&state.config, &headers),
             actor: &actor,
             role: &role,
             school: &change.school_id,
