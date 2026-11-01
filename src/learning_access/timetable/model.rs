@@ -78,7 +78,7 @@ impl Meeting {
         issues
     }
     /// A class started on the spot (an open house, a replacement class) may fall on a weekend
-    /// or a school holiday, and the Teacher who starts it has decided to be in this class now:
+    /// or a school holiday, or run past midnight, and the Teacher who starts it has decided to be in this class now:
     /// their own other meeting and the room inherited from the timetable do not block it (a live
     /// class is online). The class itself still cannot have two meetings at once. In exchange the
     /// meeting has to start within minutes and stay short, so the waiver cannot be used to plan
@@ -89,7 +89,11 @@ impl Meeting {
             .filter(|code| {
                 !matches!(
                     *code,
-                    "NON_SCHOOL_DAY" | "SCHOOL_HOLIDAY" | "TEACHER_CONFLICT" | "ROOM_CONFLICT"
+                    "NON_SCHOOL_DAY"
+                        | "SCHOOL_HOLIDAY"
+                        | "CROSSES_SCHOOL_DAY"
+                        | "TEACHER_CONFLICT"
+                        | "ROOM_CONFLICT"
                 )
             })
             .collect();

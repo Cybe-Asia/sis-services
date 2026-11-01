@@ -122,7 +122,7 @@ fn material_link_is_optional_and_lesson_needs_its_chapter() {
     assert_eq!(linked.lesson_id.as_deref(), Some("lesson-1"));
 }
 #[test]
-fn a_class_started_now_may_fall_on_a_weekend_or_holiday_but_only_within_minutes() {
+fn a_class_started_now_may_fall_on_a_weekend_or_holiday_or_past_midnight_but_only_within_minutes() {
     let mut m = meeting();
     // Saturday 2030-01-12 09:00-09:45 WIB.
     m.starts_at = chrono::DateTime::parse_from_rfc3339("2030-01-12T02:00:00Z")
@@ -136,7 +136,7 @@ fn a_class_started_now_may_fall_on_a_weekend_or_holiday_but_only_within_minutes(
         .ad_hoc_issues(vec!["NON_SCHOOL_DAY", "SCHOOL_HOLIDAY"], now)
         .is_empty());
     // The Teacher's own other meeting and the inherited room do not block a class started now;
-    // every other rule stays: a second meeting of the class, a past start, crossing midnight.
+    // every other rule stays: a second meeting of the class, a past start.
     assert_eq!(
         m.ad_hoc_issues(
             vec![
@@ -152,8 +152,19 @@ fn a_class_started_now_may_fall_on_a_weekend_or_holiday_but_only_within_minutes(
     );
     assert_eq!(
         m.ad_hoc_issues(vec!["CROSSES_SCHOOL_DAY", "OUTSIDE_ACADEMIC_YEAR"], now),
-        vec!["CROSSES_SCHOOL_DAY", "OUTSIDE_ACADEMIC_YEAR"]
+        vec!["OUTSIDE_ACADEMIC_YEAR"]
     );
+    // Started at 23:30 WIB, ends after midnight: allowed when started now, not when planned.
+    let mut late = meeting();
+    late.starts_at = chrono::DateTime::parse_from_rfc3339("2030-01-14T16:30:00Z")
+        .unwrap()
+        .timestamp_millis() as u64;
+    late.ends_at = late.starts_at + 45 * 60_000;
+    let late_now = late.starts_at - 60_000;
+    assert_eq!(late.time_issues(late_now), vec!["CROSSES_SCHOOL_DAY"]);
+    assert!(late
+        .ad_hoc_issues(late.time_issues(late_now), late_now)
+        .is_empty());
     // Not a way to plan ahead or to book a long slot.
     assert_eq!(
         m.ad_hoc_issues(vec![], m.starts_at - 16 * 60_000),
