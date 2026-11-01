@@ -173,7 +173,7 @@ async fn main() {
     }
 
     // Recordings past their retention date are removed on a timer; nothing else in this process schedules work.
-    extra_curricular::recitation::start_retention(graph.clone());
+    extra_curricular::recitation::start_retention(graph.clone(), &cfg);
 
     let state = AppState {
         graph,

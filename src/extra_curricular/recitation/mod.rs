@@ -27,8 +27,8 @@ fn failure(s: StatusCode) -> Failure {
         ),
     )
 }
-fn store() -> Result<&'static crate::school_articles::cover::Store, Failure> {
-    crate::school_articles::cover::store().ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))
+fn store(config: &crate::config::config::AppConfig) -> Result<&'static crate::school_articles::cover::Store, Failure> {
+    crate::school_articles::cover::store(config).ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))
 }
 fn done(outcome: Result<Outcome, crate::extra_curricular::repository::Error>) -> Result<Json<Value>, Failure> {
     match outcome {
@@ -86,7 +86,7 @@ async fn submit(
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let actor = auth::actor(&s.config, &h, &role, &v.scope).await?;
-    let store = store()?;
+    let store = store(&s.config)?;
     done(repository::submit(&s.graph, store, &actor, &v, audio).await)
 }
 async fn audio(
@@ -99,7 +99,7 @@ async fn audio(
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let actor = auth::actor(&s.config, &h, &role, &q.scope()).await?;
-    let store = store()?;
+    let store = store(&s.config)?;
     let clip = done(repository::audio(&s.graph, store, &actor, &q).await)?.0;
     let mime = clip["data"]["mime"].as_str().unwrap_or("application/octet-stream").to_string();
     let bytes: Vec<u8> = clip["data"]["bytes"]
@@ -160,8 +160,8 @@ pub fn router() -> Router<AppState> {
 }
 /// Every six hours, clips past their retention date are removed. Without an object store there is
 /// nothing to remove.
-pub fn start_retention(graph: neo4rs::Graph) {
-    let Some(store) = crate::school_articles::cover::store() else {
+pub fn start_retention(graph: neo4rs::Graph, config: &crate::config::config::AppConfig) {
+    let Some(store) = crate::school_articles::cover::store(config) else {
         return;
     };
     tokio::spawn(async move {

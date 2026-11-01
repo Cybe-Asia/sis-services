@@ -3,6 +3,7 @@
 //! and kept in the object store this deployment already runs.
 use image::{codecs::jpeg::JpegEncoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
+use crate::config::config::{AppConfig, ObjectStoreSettings};
 use std::{io::Cursor, sync::OnceLock, time::Duration};
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -76,20 +77,13 @@ pub enum Store {
     Memory(std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>),
 }
 impl Store {
-    /// The store named by this deployment's `MINIO_*` settings, or `None` when it names none.
-    fn from_env() -> Option<Store> {
-        let var = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
-        let endpoint = reqwest::Url::parse(&var("MINIO_ENDPOINT")?).ok()?;
+    /// The store named by this deployment's `MINIO_*` settings, or `None` when they do not name a usable one.
+    fn from_settings(settings: &ObjectStoreSettings) -> Option<Store> {
+        let endpoint = reqwest::Url::parse(&settings.endpoint).ok()?;
         if !matches!(endpoint.scheme(), "http" | "https") {
             return None;
         }
-        let bucket = Bucket::new(
-            endpoint,
-            UrlStyle::Path,
-            var("MINIO_BUCKET")?,
-            var("MINIO_REGION").unwrap_or_else(|| "us-east-1".into()),
-        )
-        .ok()?;
+        let bucket = Bucket::new(endpoint, UrlStyle::Path, settings.bucket.clone(), settings.region.clone()).ok()?;
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(15))
@@ -97,7 +91,7 @@ impl Store {
             .ok()?;
         Some(Store::S3 {
             bucket,
-            credentials: Credentials::new(var("MINIO_ACCESS_KEY")?, var("MINIO_SECRET_KEY")?),
+            credentials: Credentials::new(&settings.access_key, &settings.secret_key),
             http,
         })
     }
@@ -161,12 +155,9 @@ impl Store {
                 Ok(bytes)
             }
             #[cfg(test)]
-            Store::Memory(objects) => objects
-                .lock()
-                .unwrap()
-                .get(key)
-                .cloned()
-                .ok_or_else(|| "cover missing".into()),
+            Store::Memory(objects) => {
+                objects.lock().unwrap().get(key).cloned().ok_or_else(|| "cover missing".into())
+            }
         }
     }
     /// Removes one object; a key that is already gone is not an error.
@@ -198,10 +189,12 @@ impl Store {
         Store::Memory(Default::default())
     }
 }
-/// This process's store, read from the environment once.
-pub fn store() -> Option<&'static Store> {
+/// This process's store, built once from its configuration.
+pub fn store(config: &AppConfig) -> Option<&'static Store> {
     static STORE: OnceLock<Option<Store>> = OnceLock::new();
-    STORE.get_or_init(Store::from_env).as_ref()
+    STORE
+        .get_or_init(|| config.object_store.as_ref().and_then(Store::from_settings))
+        .as_ref()
 }
 
 #[cfg(test)]
@@ -250,15 +243,14 @@ mod tests {
     async fn a_cover_survives_the_object_store() {
         let endpoint = std::env::var("SCHOOL_ARTICLES_TEST_S3").unwrap();
         assert_eq!(endpoint, "http://127.0.0.1:3224");
-        for (name, value) in [
-            ("MINIO_ENDPOINT", endpoint.as_str()),
-            ("MINIO_BUCKET", "ds-documents"),
-            ("MINIO_ACCESS_KEY", "fixture"),
-            ("MINIO_SECRET_KEY", "fixture-secret"),
-        ] {
-            std::env::set_var(name, value);
-        }
-        let store = Store::from_env().unwrap();
+        let store = Store::from_settings(&ObjectStoreSettings {
+            endpoint,
+            bucket: "ds-documents".into(),
+            region: "us-east-1".into(),
+            access_key: "fixture".into(),
+            secret_key: "fixture-secret".into(),
+        })
+        .unwrap();
         let Store::S3 {
             bucket,
             credentials,

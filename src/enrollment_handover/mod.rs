@@ -49,12 +49,12 @@ async fn handover(
             })
         })?;
     let mut headers = HeaderMap::new();
-    headers.insert("cache-control", "no-store".parse().unwrap());
+    headers.insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
     Ok((headers, Json(json!({"data":receipt}))))
 }
 fn no_store(data: Value) -> (HeaderMap, Json<Value>) {
     let mut headers = HeaderMap::new();
-    headers.insert("cache-control", "no-store".parse().unwrap());
+    headers.insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
     (headers, Json(json!({"data":data})))
 }
 async fn context(

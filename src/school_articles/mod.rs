@@ -160,7 +160,7 @@ async fn upload_cover(
     }
     let source = body.map_err(|_| failure(StatusCode::PAYLOAD_TOO_LARGE))?;
     let actor = manager(&s, &h, &q.tenant_id, &q.school_id).await?;
-    let store = cover::store().ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    let store = cover::store(&s.config).ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))?;
     let stored = tokio::task::spawn_blocking(move || cover::normalize(&source))
         .await
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
@@ -189,7 +189,7 @@ async fn admin_cover(
         return Err(failure(StatusCode::BAD_REQUEST));
     };
     let actor = manager(&s, &h, &q.tenant_id, &q.school_id).await?;
-    let store = cover::store().ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    let store = cover::store(&s.config).ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))?;
     found(
         repository::admin_cover(
             &s.graph,
@@ -212,7 +212,7 @@ async fn parent_cover(
     if !crate::school_portal::model::identifier(&id) {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let store = cover::store().ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    let store = cover::store(&s.config).ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))?;
     found(crate::school_portal::repository::article_cover(&s.graph, store, &sub, &id).await)
 }
 pub fn router() -> Router<AppState> {

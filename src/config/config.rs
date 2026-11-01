@@ -35,6 +35,29 @@ pub struct AppConfig {
     pub parent_learning_binding_enabled: bool,
     /// `APP_ENV=test`: loopback HTTP Auth and Learning endpoints are accepted.
     pub local_test: bool,
+    /// `MINIO_*`: the object store for article covers and recitation clips.
+    pub object_store: Option<ObjectStoreSettings>,
+}
+
+/// The object store this deployment names; `None` when any required `MINIO_*` value is missing or blank.
+#[derive(Debug, Clone)]
+pub struct ObjectStoreSettings {
+    pub endpoint: String,
+    pub bucket: String,
+    pub region: String,
+    pub access_key: String,
+    pub secret_key: String,
+}
+
+fn object_store() -> Option<ObjectStoreSettings> {
+    let var = |name: &str| env::var(name).ok().filter(|v| !v.trim().is_empty());
+    Some(ObjectStoreSettings {
+        endpoint: var("MINIO_ENDPOINT")?,
+        bucket: var("MINIO_BUCKET")?,
+        region: var("MINIO_REGION").unwrap_or_else(|| "us-east-1".into()),
+        access_key: var("MINIO_ACCESS_KEY")?,
+        secret_key: var("MINIO_SECRET_KEY")?,
+    })
 }
 
 #[derive(Debug, Error)]
@@ -104,6 +127,7 @@ impl AppConfig {
                 .as_deref()
                 == Ok("true"),
             local_test: env::var("APP_ENV").as_deref() == Ok("test"),
+            object_store: object_store(),
         })
     }
 }
