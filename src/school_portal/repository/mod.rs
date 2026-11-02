@@ -6,7 +6,14 @@ const HOMEROOM: &str = "coalesce(sec.homeroom_staff_member_id=t.id,false)";
 const TEACHER_BASE: &str = "MATCH(t:StaffMember {id:$actor}),(sec:Section)";
 const GRANT: &str = "EXISTS { MATCH(g:LearningTeachingGrant {staff_member_id:t.id,section_id:sec.section_id,school_id:sec.school_id,tenant_id:sec.tenant_id,status:'ACTIVE'}) }";
 pub(super) const ENROLLED: &str = "MATCH(s:Student)-[:ENROLLED_AS]->(e:EnrolledStudent {status:'active',school_id:sec.school_id,tenant_id:sec.tenant_id})-[:ENROLLED_IN]->(sec)";
-pub(crate) const PARENT: &str = "MATCH(u:User)-[:HAS_APPLICATION]->(l:Lead)-[:HAS_STUDENT]->(s:Student) WHERE (u.id=$sub OR l.lead_id=$sub) AND coalesce(u.role,'parent')='parent' AND coalesce(u.staffMemberId,'')='' AND all(role IN coalesce(u.roles,[]) WHERE role='parent') AND all(role IN coalesce(u.marketingRoles,[]) WHERE role='parent') AND NOT (u)-[:STAFF_PROFILE]->() AND NOT EXISTS { MATCH(staff:StaffMember) WHERE toLower(staff.email)=toLower(u.email) } AND l.status IN ['verified','paid'] AND toLower(u.email)=toLower(l.email)";
+macro_rules! parent_eligible {
+    () => {
+        "coalesce(u.role,'parent')='parent' AND coalesce(u.staffMemberId,'')='' AND all(role IN coalesce(u.roles,[]) WHERE role='parent') AND all(role IN coalesce(u.marketingRoles,[]) WHERE role='parent') AND NOT (u)-[:STAFF_PROFILE]->() AND NOT EXISTS { MATCH(staff:StaffMember) WHERE toLower(staff.email)=toLower(u.email) } AND l.status IN ['verified','paid'] AND toLower(u.email)=toLower(l.email)"
+    };
+}
+/// The rules that make a User (`u`) with a Lead (`l`) a Parent of that Lead's Students.
+pub(crate) const PARENT_ELIGIBLE: &str = parent_eligible!();
+pub(crate) const PARENT: &str = concat!("MATCH(u:User)-[:HAS_APPLICATION]->(l:Lead)-[:HAS_STUDENT]->(s:Student) WHERE (u.id=$sub OR l.lead_id=$sub) AND ", parent_eligible!());
 fn parent_write_prefix() -> String {
     format!("{PARENT} WITH collect(DISTINCT u) AS owners WHERE size(owners)=1 UNWIND owners AS owner SET owner.school_portal_lock=coalesce(owner.school_portal_lock,0)+1 WITH owner {PARENT} AND u=owner")
 }

@@ -1,6 +1,7 @@
 //! School-owned classroom operations. Staff Auth and canonical class assignment are both required.
 pub mod assessment_grades;
 pub(crate) mod auth;
+mod messaging;
 pub mod model;
 pub mod repository;
 pub(crate) mod staff_capability;
@@ -336,6 +337,7 @@ pub fn router() -> Router<AppState> {
             "/api/leads/v1/teacher/school/classes/:section/assessment-grades",
             post(assessment_grades::import),
         )
+        .route("/api/leads/v1/messaging/members", get(messaging::members))
         .route("/api/leads/v1/me/school", get(parent))
         .route(
             "/api/leads/v1/me/school/growth/:student",
