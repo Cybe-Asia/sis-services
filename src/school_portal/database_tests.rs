@@ -467,3 +467,35 @@ async fn teacher_parent_school_journey_and_scope() {
         .unwrap());
     g.run(query("MATCH(n) DETACH DELETE n")).await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable SCHOOL_PORTAL_TEST_BOLT graph"]
+async fn approved_leave_excuses_school_days_without_overwriting() {
+    let uri = std::env::var("SCHOOL_PORTAL_TEST_BOLT").unwrap();
+    assert_eq!(uri, "127.0.0.1:3223");
+    let g = Graph::new(uri, "neo4j", "parent-otp-fixture-password").await.unwrap();
+    g.run(query("MATCH(n) DETACH DELETE n")).await.unwrap();
+    repo::init(&g).await.unwrap();
+    // Friday 6 Nov to Tuesday 10 Nov 2026: a weekend, a school holiday on Monday and a record already entered on Tuesday.
+    g.run(query("CREATE(t:StaffMember {id:'teacher',email:'teacher@example.test',membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:['school'],tenantIds:['tenant']}) \
+        CREATE(sec:Section {section_id:'class',name:'7A',school_id:'school',tenant_id:'tenant',status:'active',homeroom_staff_member_id:'teacher'}) \
+        CREATE(u:User {id:'parent',email:'parent@example.test',role:'parent'})-[:HAS_APPLICATION]->(:Lead {lead_id:'LEAD-P',email:'parent@example.test',status:'verified'})-[:HAS_STUDENT]->(s:Student {studentId:'child',fullName:'Aisha'})-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:'school',tenant_id:'tenant'})-[:ENROLLED_IN]->(sec) \
+        CREATE(u)-[:CREATED_SCHOOL_REQUEST]->(:ParentSchoolRequest {id:'leave',public_id:'leave-public',section_id:'class',school_id:'school',tenant_id:'tenant',kind:'leave',date:'2026-11-06',date_to:'2026-11-10',reason:'sick',note:'Demam',status:'pending_review',createdAt:datetime()})-[:FOR_STUDENT]->(s) \
+        CREATE(s)-[:HAS_ATTENDANCE]->(:AttendanceRecord {record_id:'ATT-kept',section_id:'class',applicant_student_id:'child',date:'2026-11-10',status:'present'}) \
+        CREATE(:EducationCalendarEntry {key:'h',school_id:'school',tenant_id:'tenant',status:'published',audience:'school',section_ids:[],start_date:'2026-11-09',end_date:'2026-11-09',payload:'{\"kind\":\"holiday\",\"title\":\"Libur\"}'})")).await.unwrap();
+    let teacher = Teacher { active: true, staff_member_id: "teacher".into(), roles: vec!["teacher".into()], school_ids: vec!["school".into()], tenant_ids: vec!["tenant".into()] };
+    let approve = Review { expected_status: "pending_review".into(), status: "approved".into(), note: "Lekas sembuh".into() };
+    assert!(repo::review(&g, &teacher, "class", "leave-public", &approve).await.unwrap());
+    // Running it again (a retried request) changes nothing.
+    assert!(repo::review(&g, &teacher, "class", "leave-public", &approve).await.unwrap());
+    let mut rows = g.execute(query("MATCH(:Student {studentId:'child'})-[:HAS_ATTENDANCE]->(a:AttendanceRecord) RETURN a.date AS date,a.status AS status,coalesce(a.source_request,'') AS source ORDER BY date")).await.unwrap();
+    let mut seen = vec![];
+    while let Some(r) = rows.next().await.unwrap() {
+        seen.push((r.get::<String>("date").unwrap(), r.get::<String>("status").unwrap(), r.get::<String>("source").unwrap()));
+    }
+    assert_eq!(seen, vec![
+        ("2026-11-06".into(), "excused".into(), "leave-public".into()),
+        ("2026-11-10".into(), "present".into(), String::new()),
+    ]);
+    g.run(query("MATCH(n) DETACH DELETE n")).await.unwrap();
+}

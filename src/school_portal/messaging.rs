@@ -25,7 +25,7 @@ fn members_tail() -> String {
          CALL {{ WITH s MATCH(u:User)-[:HAS_APPLICATION]->(l:Lead)-[:HAS_STUDENT]->(s) WHERE {PARENT_ELIGIBLE} \
            WITH u,collect(l.parent_name) AS names ORDER BY u.id \
            RETURN collect('parent:'+u.id) AS guardian_ids,collect(coalesce(u.fullName,names[0],'')) AS guardian_names }} \
-         RETURN DISTINCT s.studentId AS student,coalesce(s.fullName,'') AS name,sec.school_id AS school,sec.tenant_id AS tenant, \
+         RETURN DISTINCT s.studentId AS student,coalesce(s.fullName,'') AS name,sec.school_id AS school,sec.tenant_id AS tenant,sec.section_id AS section, \
            CASE WHEN h IS NULL THEN null ELSE 'staff:'+h.id END AS homeroom_id,coalesce(h.displayName,h.fullName,'') AS homeroom_name, \
            guardian_ids,guardian_names ORDER BY name,student LIMIT 500"
     )
@@ -50,6 +50,7 @@ async fn students(graph: &Graph, q: Query) -> Result<Vec<Value>, Error> {
             "studentName": r.get::<String>("name")?,
             "schoolId": r.get::<String>("school")?,
             "tenantId": r.get::<String>("tenant")?,
+            "sectionId": r.get::<String>("section")?,
             "homeroom": homeroom,
             "guardians": ids.into_iter().zip(names).map(|(id, name)| json!({"id": id, "name": name})).collect::<Vec<_>>(),
         }));

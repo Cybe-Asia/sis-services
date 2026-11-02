@@ -8,6 +8,7 @@ const ELIGIBLE:&str="coalesce(u.role,'parent')='parent' AND coalesce(u.staffMemb
 fn row(r: Row) -> Result<ParentRequest, RepoError> {
     Ok(ParentRequest {
         id: r.get("id")?,
+        public_id: r.get("publicId")?,
         student_id: r.get("studentId")?,
         kind: r.get("kind")?,
         date: r.get("date")?,
@@ -21,9 +22,11 @@ fn row(r: Row) -> Result<ParentRequest, RepoError> {
         status: r.get("status")?,
         created_at: r.get("createdAt")?,
         review_note: r.get::<String>("reviewNote").ok(),
+        date_to: r.get::<String>("dateTo").ok().filter(|s| !s.is_empty()),
+        attachment_id: r.get::<String>("attachmentId").ok().filter(|s| !s.is_empty()),
     })
 }
-const PROJECTION:&str="r.id AS id,s.studentId AS studentId,r.kind AS kind,r.date AS date,r.time AS time,r.teacherEmail AS teacherEmail,r.reason AS reason,r.note AS note,r.status AS status,toString(r.createdAt) AS createdAt,r.review_note AS reviewNote";
+const PROJECTION:&str="r.id AS id,r.public_id AS publicId,r.date_to AS dateTo,r.attachment_id AS attachmentId,s.studentId AS studentId,r.kind AS kind,r.date AS date,r.time AS time,r.teacherEmail AS teacherEmail,r.reason AS reason,r.note AS note,r.status AS status,toString(r.createdAt) AS createdAt,r.review_note AS reviewNote";
 pub async fn list(graph: &Graph, sub: &str) -> Result<Vec<ParentRequest>, RepoError> {
     let q=format!("MATCH (u:User)-[:HAS_APPLICATION]->(l:Lead)-[:HAS_STUDENT]->(s:Student)<-[:FOR_STUDENT]-(r:ParentSchoolRequest)<-[:CREATED_SCHOOL_REQUEST]-(u) WHERE (u.id=$sub OR l.lead_id=$sub) AND {ELIGIBLE} RETURN DISTINCT {PROJECTION} ORDER BY createdAt DESC LIMIT 100");
     let mut rows = graph.execute(query(&q).param("sub", sub)).await?;
@@ -39,7 +42,7 @@ pub async fn create(
     input: &ParentRequestInput,
 ) -> Result<Option<ParentRequest>, RepoError> {
     // Idempotency is per owning User and locked on that User before read/create.
-    let q=format!("MATCH (u:User)-[:HAS_APPLICATION]->(l:Lead)-[:HAS_STUDENT]->(s:Student {{studentId:$studentId}})-[:ENROLLED_AS]->(enrolled:EnrolledStudent)-[:ENROLLED_IN]->(section:Section) WHERE (u.id=$sub OR l.lead_id=$sub) WITH DISTINCT u,l,s,section,enrolled SET u.parentRequestLock=coalesce(u.parentRequestLock,0)+1 WITH u,l,s,section,enrolled WHERE {ELIGIBLE} AND enrolled.status='active' AND section.status='active' AND enrolled.school_id=section.school_id AND enrolled.tenant_id=section.tenant_id AND coalesce(section.school_id,'')<>'' AND coalesce(section.tenant_id,'')<>'' AND ($kind='leave' OR EXISTS {{ MATCH(homeroom:StaffMember {{id:section.homeroom_staff_member_id,membershipStatus:'ACTIVE'}}) WHERE 'teacher' IN coalesce(homeroom.roles,[]) AND section.school_id IN coalesce(homeroom.schoolIds,[]) AND section.tenant_id IN coalesce(homeroom.tenantIds,[]) AND toLower(coalesce(homeroom.primaryEmail,homeroom.email))=toLower($teacherEmail) }}) WITH DISTINCT u,s,section MERGE (u)-[:CREATED_SCHOOL_REQUEST]->(r:ParentSchoolRequest {{id:$id}}) ON CREATE SET r.public_id=randomUUID(),r.school_id=section.school_id,r.tenant_id=section.tenant_id,r.section_id=section.section_id,r.kind=$kind,r.date=$date,r.time=$time,r.teacherEmail=$teacherEmail,r.reason=$reason,r.note=$note,r.status=$pending,r.createdAt=datetime() WITH u,s,r WHERE r.kind=$kind AND r.date=$date AND coalesce(r.time,'')=$time AND coalesce(r.teacherEmail,'')=$teacherEmail AND coalesce(r.reason,'')=$reason AND r.note=$note AND (NOT (r)-[:FOR_STUDENT]->() OR (r)-[:FOR_STUDENT]->(s)) MERGE (r)-[:FOR_STUDENT]->(s) RETURN {PROJECTION}");
+    let q=format!("MATCH (u:User)-[:HAS_APPLICATION]->(l:Lead)-[:HAS_STUDENT]->(s:Student {{studentId:$studentId}})-[:ENROLLED_AS]->(enrolled:EnrolledStudent)-[:ENROLLED_IN]->(section:Section) WHERE (u.id=$sub OR l.lead_id=$sub) WITH DISTINCT u,l,s,section,enrolled SET u.parentRequestLock=coalesce(u.parentRequestLock,0)+1 WITH u,l,s,section,enrolled WHERE {ELIGIBLE} AND enrolled.status='active' AND section.status='active' AND enrolled.school_id=section.school_id AND enrolled.tenant_id=section.tenant_id AND coalesce(section.school_id,'')<>'' AND coalesce(section.tenant_id,'')<>'' AND ($kind='leave' OR EXISTS {{ MATCH(homeroom:StaffMember {{id:section.homeroom_staff_member_id,membershipStatus:'ACTIVE'}}) WHERE 'teacher' IN coalesce(homeroom.roles,[]) AND section.school_id IN coalesce(homeroom.schoolIds,[]) AND section.tenant_id IN coalesce(homeroom.tenantIds,[]) AND toLower(coalesce(homeroom.primaryEmail,homeroom.email))=toLower($teacherEmail) }}) WITH DISTINCT u,s,section MERGE (u)-[:CREATED_SCHOOL_REQUEST]->(r:ParentSchoolRequest {{id:$id}}) ON CREATE SET r.public_id=randomUUID(),r.school_id=section.school_id,r.tenant_id=section.tenant_id,r.section_id=section.section_id,r.kind=$kind,r.date=$date,r.time=$time,r.teacherEmail=$teacherEmail,r.reason=$reason,r.note=$note,r.date_to=$dateTo,r.attachment_id=$attachment,r.status=$pending,r.createdAt=datetime() WITH u,s,r WHERE r.kind=$kind AND r.date=$date AND coalesce(r.time,'')=$time AND coalesce(r.teacherEmail,'')=$teacherEmail AND coalesce(r.reason,'')=$reason AND r.note=$note AND coalesce(r.date_to,'')=$dateTo AND coalesce(r.attachment_id,'')=$attachment AND (NOT (r)-[:FOR_STUDENT]->() OR (r)-[:FOR_STUDENT]->(s)) MERGE (r)-[:FOR_STUDENT]->(s) RETURN {PROJECTION}");
     let q = query(&q)
         .param("sub", sub)
         .param("studentId", input.student_id.as_str())
@@ -50,6 +53,8 @@ pub async fn create(
         .param("teacherEmail", input.teacher_email.as_deref().unwrap_or(""))
         .param("reason", input.reason.as_deref().unwrap_or(""))
         .param("note", input.note.trim())
+        .param("dateTo", input.date_to.as_deref().unwrap_or(""))
+        .param("attachment", input.attachment_id.as_deref().unwrap_or(""))
         .param("pending", PENDING_REVIEW);
     graph.execute(q).await?.next().await?.map(row).transpose()
 }
@@ -99,6 +104,8 @@ mod tests {
             teacher_email: Some("legacy@example.test".into()),
             reason: None,
             note: mark.clone(),
+            date_to: None,
+            attachment_id: None,
         };
         assert!(create(&graph, &mark, &input).await.unwrap().is_none());
         input.teacher_email = Some(format!("{mark}@teacher.test"));
@@ -167,6 +174,8 @@ mod tests {
             teacher_email: None,
             reason: Some("sick".into()),
             note: "test note".into(),
+            date_to: None,
+            attachment_id: None,
         };
         assert!(create(&graph, "foreign", &input).await.unwrap().is_none());
         let r = create(&graph, "parent-test", &input)

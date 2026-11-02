@@ -663,6 +663,8 @@ async fn homeroom_link(g: &Graph, f: &Fixture) {
         teacher_email: Some(teacher.into()),
         reason: None,
         note: "Synthetic appointment".into(),
+        date_to: None,
+        attachment_id: None,
     };
     let parent = format!("{}-parent", f.tag);
     assert!(crate::repositories::parent_request_repository::create(g, &parent, &appointment("nobody@teacher.example.test")).await.unwrap().is_none());

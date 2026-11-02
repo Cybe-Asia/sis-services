@@ -27,6 +27,12 @@ pub struct ParentRequestInput {
     pub teacher_email: Option<String>,
     pub reason: Option<String>,
     pub note: String,
+    /// Leave only: the last day away, at most 14 days after `date`. Absent means one day.
+    #[serde(default)]
+    pub date_to: Option<String>,
+    /// Leave only: a doctor's note or other document the parent sent through messaging (its attachment id).
+    #[serde(default)]
+    pub attachment_id: Option<String>,
 }
 impl ParentRequestInput {
     pub fn valid(&self) -> bool {
@@ -45,15 +51,26 @@ impl ParentRequestInput {
         }
         match self.kind {
             RequestKind::Leave => {
+                let to = self
+                    .date_to
+                    .as_deref()
+                    .map(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d"));
                 self.teacher_email.is_none()
                     && self.time.is_none()
+                    && to.is_none_or(|to| to.is_ok_and(|to| to >= date && to <= date + chrono::Duration::days(13)))
+                    && self
+                        .attachment_id
+                        .as_deref()
+                        .is_none_or(|a| uuid::Uuid::parse_str(a).is_ok())
                     && self
                         .reason
                         .as_deref()
                         .is_some_and(|r| ["sick", "other"].contains(&r))
             }
             RequestKind::Appointment => {
-                self.reason.is_none()
+                self.date_to.is_none()
+                    && self.attachment_id.is_none()
+                    && self.reason.is_none()
                     && !self.note.trim().is_empty()
                     && self
                         .teacher_email
@@ -71,6 +88,8 @@ impl ParentRequestInput {
 #[serde(rename_all = "camelCase")]
 pub struct ParentRequest {
     pub id: String,
+    /// The id a homeroom teacher reviews it by.
+    pub public_id: String,
     pub student_id: String,
     pub kind: String,
     pub date: String,
@@ -81,6 +100,8 @@ pub struct ParentRequest {
     pub status: String,
     pub created_at: String,
     pub review_note: Option<String>,
+    pub date_to: Option<String>,
+    pub attachment_id: Option<String>,
 }
 #[cfg(test)]
 mod tests {
@@ -96,6 +117,8 @@ mod tests {
             teacher_email: None,
             reason: Some("sick".into()),
             note: "".into(),
+            date_to: None,
+            attachment_id: None,
         };
         assert!(input.valid());
         input.date = "2000-01-01".into();

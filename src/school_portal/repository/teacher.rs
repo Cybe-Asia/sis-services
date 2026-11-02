@@ -227,6 +227,22 @@ async fn publish_write(
     }
     execute_write(graph, member, section, q, live).await
 }
+/// An approved leave marks the Student `excused` for each school day it covers (Monday to Friday, outside published
+/// holidays) that has no record yet; a record the teacher already entered is never changed. Records it creates carry
+/// the request's id. Runs with `t`, `sec`, `r` (the request) and `s` (the Student) in scope and keeps the row.
+// shortcut: holidays are read from the published entry payload's kind; give EducationCalendarEntry a `kind` property
+// if more readers need it.
+const EXCUSE: &str = "CALL { WITH t,sec,r,s WITH t,sec,r,s WHERE r.kind='leave' AND r.status='approved' \
+  UNWIND range(0, duration.inDays(date(r.date), date(CASE WHEN coalesce(r.date_to,'')='' THEN r.date ELSE r.date_to END)).days) AS offset \
+  WITH t,sec,r,s, date(r.date) + duration({days: offset}) AS day WHERE day.dayOfWeek <= 5 \
+  AND NOT EXISTS { MATCH(h:EducationCalendarEntry {school_id:sec.school_id,tenant_id:sec.tenant_id,status:'published'}) \
+    WHERE h.payload CONTAINS '\"kind\":\"holiday\"' AND h.start_date <= toString(day) AND h.end_date >= toString(day) \
+    AND (h.audience='school' OR (h.audience='sections' AND sec.section_id IN h.section_ids)) } \
+  MERGE(a:AttendanceRecord {section_id:sec.section_id,applicant_student_id:s.studentId,date:toString(day)}) \
+  ON CREATE SET a.record_id='ATT-'+randomUUID(),a.status='excused',a.notes=CASE r.reason WHEN 'sick' THEN 'Sakit' \
+    ELSE 'Izin' END,a.source_request=r.public_id,a.recorded_at=datetime(),a.recorded_by=t.id \
+  MERGE(s)-[:HAS_ATTENDANCE]->(a) RETURN count(a) AS excused }";
+
 async fn review_write(
     graph: &Graph,
     member: &Teacher,
@@ -235,7 +251,7 @@ async fn review_write(
     input: &Review,
     live: Option<(&crate::config::config::AppConfig, &HeaderMap)>,
 ) -> Result<bool, Error> {
-    let body=format!("{ENROLLED} MATCH(r:ParentSchoolRequest {{public_id:$id,section_id:sec.section_id,school_id:sec.school_id,tenant_id:sec.tenant_id}})-[:FOR_STUDENT]->(s) MATCH(u:User)-[:CREATED_SCHOOL_REQUEST]->(r) WHERE r.status=$expected OR (r.status=$status AND r.reviewed_by=t.id AND r.review_note=$note) WITH DISTINCT t,sec,r,u SET r.status=$status,r.review_note=$note,r.reviewed_by=t.id,r.reviewed_at=coalesce(r.reviewed_at,datetime()) MERGE(n:SchoolNotice {{id:'school-request:'+r.public_id}}) ON CREATE SET n.title='School request reviewed',n.body=$notice,n.created_at=datetime(),n.is_read=false MERGE(u)-[:HAS_SCHOOL_NOTICE]->(n) MERGE(a:SchoolPortalAudit {{id:'review|'+r.public_id}}) ON CREATE SET a.actor_id=t.id,a.actor_role=$actor_role,a.school_id=sec.school_id,a.tenant_id=sec.tenant_id,a.section_id=sec.section_id,a.kind='request_review',a.status=$status,a.created_at=datetime() RETURN true AS saved");
+    let body=format!("{ENROLLED} MATCH(r:ParentSchoolRequest {{public_id:$id,section_id:sec.section_id,school_id:sec.school_id,tenant_id:sec.tenant_id}})-[:FOR_STUDENT]->(s) MATCH(u:User)-[:CREATED_SCHOOL_REQUEST]->(r) WHERE r.status=$expected OR (r.status=$status AND r.reviewed_by=t.id AND r.review_note=$note) WITH DISTINCT t,sec,r,u,s SET r.status=$status,r.review_note=$note,r.reviewed_by=t.id,r.reviewed_at=coalesce(r.reviewed_at,datetime()) WITH t,sec,r,u,s {EXCUSE} WITH t,sec,r,u MERGE(n:SchoolNotice {{id:'school-request:'+r.public_id}}) ON CREATE SET n.title='School request reviewed',n.body=$notice,n.created_at=datetime(),n.is_read=false MERGE(u)-[:HAS_SCHOOL_NOTICE]->(n) MERGE(a:SchoolPortalAudit {{id:'review|'+r.public_id}}) ON CREATE SET a.actor_id=t.id,a.actor_role=$actor_role,a.school_id=sec.school_id,a.tenant_id=sec.tenant_id,a.section_id=sec.section_id,a.kind='request_review',a.status=$status,a.created_at=datetime() RETURN true AS saved");
     let q = teacher_query(member, &body, Some(section), true, true)
         .param("id", id)
         .param("expected", input.expected_status.clone())
