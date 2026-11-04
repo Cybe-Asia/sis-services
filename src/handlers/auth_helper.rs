@@ -46,6 +46,24 @@ pub async fn resolve_lead_id_from_bearer(
 /// Only Auth's typed downstream staff credential is accepted. Email, Lead and
 /// token role claims do not grant academic authority; each repository operation
 /// rechecks the live canonical directory under its transaction locks.
+/// A verified staff credential only. Class routes use it: the academic boundary decides in its
+/// transaction from the role (Owner, school admin) or from a capability held at the class's school.
+pub async fn require_staff(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<AdminActor, (StatusCode, String)> {
+    crate::enrollment_handover::auth::actor(headers, &state.config).map_err(|e| match e {
+        crate::enrollment_handover::auth::Error::Unavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Staff authentication unavailable".into(),
+        ),
+        crate::enrollment_handover::auth::Error::Unauthorized => (
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired staff credential".into(),
+        ),
+    })
+}
+
 pub async fn require_admin(
     state: &AppState,
     headers: &HeaderMap,

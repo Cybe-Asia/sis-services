@@ -624,6 +624,29 @@ async fn run(g: Graph, f: Fixture) {
             .status,
         "active"
     );
+    capability_path(&g, &f).await;
+}
+/// ADR 0018: a teacher the school gave `academic.section.manage` (and nothing else) manages the
+/// classes of that school only, cannot move students, and loses it when the assignment ends.
+async fn capability_path(g: &Graph, f: &Fixture) {
+    let t = |q: neo4rs::Query| f.params(q).param("teacher", f.teacher.staff.clone());
+    g.run(t(query("CREATE(:AuthorizationRoleTemplate {tenant_id:$tenant,code:'class_desk',name_id:'Meja kelas',name_en:'Class desk',version:1,capabilities:['academic.section.manage'],allowed_scopes:['SCHOOL'],status:'active',updated_at:datetime(),sis_academic_test:$tag}),(:AuthorizationAssignment {id:$tag+'-class-desk',tenant_id:$tenant,staff_member_id:$teacher,template_code:'class_desk',scope_type:'SCHOOL',school_id:$school,status:'active',version:1,updated_at:datetime(),sis_academic_test:$tag})"))).await.unwrap();
+    let made = r::create_section(g, &f.teacher, &f.input()).await.unwrap();
+    assert_eq!(made.schoolId, f.school);
+    let elsewhere = r::CreateSectionInput { school_id: f.other.clone(), ..f.input() };
+    denied(r::create_section(g, &f.teacher, &elsewhere).await);
+    let list = r::list_sections(g, &f.teacher, &r::ListSectionFilters::default()).await.unwrap();
+    assert!(!list.is_empty() && list.iter().all(|s| s.schoolId == f.school));
+    assert!(r::find_section_by_id(g, &f.teacher, &f.next).await.unwrap().is_some());
+    denied(r::find_section_by_id(g, &f.teacher, &f.foreign).await);
+    r::set_homeroom_teacher(g, &f.teacher, &made.sectionId, Some("Ibu Wali"), None).await.unwrap();
+    // Moving students needs `academic.enrolment.manage`; marks and attendance stay with administrators.
+    denied(r::assign_students(g, &f.teacher, &f.next, std::slice::from_ref(&f.child)).await);
+    denied(r::list_attendance_for_date(g, &f.teacher, &f.next, "2026-10-05").await);
+    assert_eq!(count(g, f, "MATCH(a:SISAcademicAudit {school_id:$school,actor_role:'staff',action:'section.created'}) RETURN count(a) AS n").await, 1);
+    g.run(t(query("MATCH(a:AuthorizationAssignment {id:$tag+'-class-desk'}) SET a.status='revoked'"))).await.unwrap();
+    denied(r::create_section(g, &f.teacher, &f.input()).await);
+    denied(r::list_sections(g, &f.teacher, &r::ListSectionFilters::default()).await);
 }
 /// Saving the homeroom panel links exactly one active teacher of the school by email, and nobody otherwise.
 async fn homeroom_link(g: &Graph, f: &Fixture) {

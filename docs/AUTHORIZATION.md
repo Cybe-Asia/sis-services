@@ -26,7 +26,8 @@ A bad file stops the service. Admin cannot add a capability. Each entry has:
 `learning.class.homeroom` and `learning.report_card.publish`. Holding it for one subject of a class holds it for the class, as a teaching grant per
 class does today.
 
-Sensitive capabilities are `student.biodata.manage`, `billing.payment.manage` and `authorization.manage`. An
+Sensitive capabilities are `student.biodata.manage`, `academic.enrolment.manage`, `billing.payment.manage` and
+`authorization.manage`. An
 unknown code counts as sensitive.
 
 ## Seed templates
@@ -37,7 +38,8 @@ The seeds are in `src/authorization/templates.json`. They are defaults the schoo
   `seeded: true`.
 - The first save of a seed stores the seed at that version and the change as the next one.
 - A change to a seed in this file raises its `version`, so audit rows and caches tell the two defaults apart.
-  `principal` is version 2 since 2026-10-30; the others are version 1.
+  `principal` is version 2 since 2026-10-30, `school_admin` version 2 since 2026-11-04 (class and enrolment
+  capabilities); the others are version 1.
 - No migration Job is needed. A tenant that already saved its own revision of a seed keeps that revision.
 
 | Code | Allowed scopes | Capabilities |
@@ -46,7 +48,7 @@ The seeds are in `src/authorization/templates.json`. They are defaults the schoo
 | `admin_teacher` | `SCHOOL`, `SCHOOL_SUBJECT`, `SECTION` | Regular teacher + `learning.module.review`, `learning.module.manage_any`, `academic.staffing.read` |
 | `subject_lead` | `SCHOOL_SUBJECT` | `learning.module.review`, `learning.module.manage_any`, `learning.plan.manage`, `learning.question_bank.manage` |
 | `curriculum_coordinator` | `SCHOOL` | `learning.curriculum.manage`, `learning.plan.manage`, `learning.module.review`, `learning.module.manage_any`, `learning.mastery.read`, `learning.report_card.publish` |
-| `school_admin` | `SCHOOL` | `academic.staffing.read`, `academic.staffing.manage`, `academic.subject_plan.manage`, `academic.calendar.manage`, `academic.class_access.manage`, `academic.extracurricular.manage`, `academic.nomenclature.manage`, `school.content.manage`, `staff.directory.manage`, `student.biodata.manage`, `authorization.read` |
+| `school_admin` (v2) | `SCHOOL` | `academic.staffing.read`, `academic.staffing.manage`, `academic.subject_plan.manage`, `academic.calendar.manage`, `academic.class_access.manage`, `academic.section.manage`, `academic.enrolment.manage`, `academic.extracurricular.manage`, `academic.nomenclature.manage`, `school.content.manage`, `staff.directory.manage`, `student.biodata.manage`, `authorization.read` |
 | `principal` (v2) | `SCHOOL` | `authorization.manage`, `authorization.read`, `academic.staffing.read`, `learning.curriculum.read`, `learning.mastery.read`, `learning.module.review`, `learning.report_card.publish` |
 
 Two seeds go further than spec §3, so that day-one access equals today:
@@ -516,6 +518,10 @@ transaction it reads the facts under the caller's locks, so an assignment or tem
 | `GET /academic/teachers/context` (slice 6) | lists the schools where the caller holds `academic.staffing.read` |
 | `GET/POST /school-articles`, `POST /school-articles/cover`, `GET /school-articles/cover` (`school_articles`, slice 6) | `school.content.manage` |
 | `GET /education-calendar/context` for a caller who is not an administrator (slice 6) | the classes of schools where they hold `school.content.manage` |
+| `POST /admin/sis/sections`, `POST /admin/sis/sections/{id}/homeroom`, `PATCH` section status (2026-11-04) | `academic.section.manage` |
+| `POST /admin/sis/sections/{id}/assign` (2026-11-04) | `academic.enrolment.manage` (sensitive: only an Owner grants it) |
+| `GET /admin/sis/sections`, `GET /admin/sis/sections/{id}` (2026-11-04) | either of the two; the list shows only the schools where the caller holds one |
+| Admin attendance and grade rosters of a class | still Owner and `school_admin` by role |
 
 **Session gate (slice 6, 2026-10-30).** The `academic_staffing`, `academic_teachers` and `school_articles` routes
 above take **any active staff portal session whose school and tenant lists cover the school**

@@ -128,13 +128,22 @@ fn authorization_catalogue_and_seeds_load_and_keep_manage_with_owners() {
         assert!(principal.capabilities.iter().any(|c| c == code), "{code}");
     }
     // Version 2 since the master thread's Principal change (2026-10-30): an unsaved seed reads
-    // at the version its default carries; the others are still at 1.
+    // at the version its default carries. School admin is version 2 since it took the class and
+    // enrolment capabilities (2026-11-04); the others are still at 1.
     assert_eq!(principal.version, 2);
     assert_eq!(Template::from_seed(principal).version, 2);
+    let admin_seed = r.seeds.iter().find(|s| s.code == SCHOOL_ADMIN).unwrap();
+    assert_eq!(admin_seed.version, 2);
+    for code in ["academic.section.manage", "academic.enrolment.manage"] {
+        assert!(admin_seed.capabilities.iter().any(|c| c == code), "{code}");
+    }
+    // Moving a student changes their access, attendance and billing: only Owners grant it.
+    assert!(r.sensitive("academic.enrolment.manage"));
+    assert!(!r.sensitive("academic.section.manage"));
     assert!(r
         .seeds
         .iter()
-        .filter(|s| s.code != PRINCIPAL)
+        .filter(|s| s.code != PRINCIPAL && s.code != SCHOOL_ADMIN)
         .all(|s| s.version == 1));
     assert!(r
         .seeds

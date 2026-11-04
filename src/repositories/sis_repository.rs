@@ -12,7 +12,7 @@
 
 mod admin_boundary;
 use crate::handlers::auth_helper::AdminActor;
-use admin_boundary::{execute, invalid, Resource, CHILD};
+use admin_boundary::{execute, invalid, Resource, CHILD, CLASS_READ, ENROLMENT_MANAGE, SECTION_MANAGE};
 pub(crate) async fn check_admin(graph: &Graph, actor: &AdminActor) -> Result<(), RepositoryError> {
     admin_boundary::check(graph, actor).await
 }
@@ -107,6 +107,7 @@ pub async fn create_section(
     let rs = execute(
         graph,
         actor,
+        &[SECTION_MANAGE],
         Resource::School(&input.school_id, &tenant),
         q,
         Some(("section.created", &section_id)),
@@ -136,6 +137,8 @@ pub async fn list_sections(
     filters: &ListSectionFilters,
 ) -> Result<Vec<Section>, RepositoryError> {
     let mut wheres: Vec<String> = vec!["EXISTS {MATCH(school:School {school_id:s.school_id,tenant_id:s.tenant_id}) WHERE NOT EXISTS {MATCH(other:School {school_id:s.school_id}) WHERE other<>school}}".into(), "NOT EXISTS {MATCH(other:Section {section_id:s.section_id}) WHERE other<>s}".into(), "(('owner' IN coalesce(a.roles,[]) AND size(coalesce(a.schoolIds,[]))=0 AND size(coalesce(a.tenantIds,[]))=0) OR (s.school_id IN coalesce(a.schoolIds,[]) AND s.tenant_id IN coalesce(a.tenantIds,[])))".into()];
+    // Staff let in by a capability see the classes of the schools where they hold it.
+    wheres.push("(any(role IN coalesce(a.roles,[]) WHERE role IN ['owner','school_admin']) OR s.school_id IN $capable_schools)".into());
     if filters.school.is_some() {
         wheres.push("s.school_id = $school".to_string());
     }
@@ -177,6 +180,7 @@ pub async fn list_sections(
     let rs = execute(
         graph,
         actor,
+        CLASS_READ,
         Resource::List(filters.school.as_deref()),
         q,
         None,
@@ -205,7 +209,7 @@ pub async fn find_section_by_id(
          RETURN s, count(DISTINCT e) AS enrolledCount"
     )
     .param("id", section_id.to_string());
-    let rs = execute(graph, actor, Resource::Section(section_id), q, None, None).await?;
+    let rs = execute(graph, actor, CLASS_READ, Resource::Section(section_id), q, None, None).await?;
     if let Some(row) = rs.into_iter().next() {
         let node: Node = row
             .get("s")
@@ -265,6 +269,7 @@ pub async fn set_homeroom_teacher(
     let rs = execute(
         graph,
         actor,
+        &[SECTION_MANAGE],
         Resource::Section(section_id),
         q,
         Some(("section.homeroom.set", section_id)),
@@ -302,6 +307,7 @@ pub async fn set_section_status(
     let rs = execute(
         graph,
         actor,
+        &[SECTION_MANAGE],
         Resource::Section(section_id),
         q,
         Some(("section.status.set", section_id)),
@@ -352,6 +358,7 @@ pub async fn assign_students(
     let rs = execute(
         graph,
         actor,
+        &[ENROLMENT_MANAGE],
         Resource::Section(section_id),
         q,
         Some(("section.assign", section_id)),
@@ -394,7 +401,7 @@ pub async fn list_section_members(
          ORDER BY s.fullName"
     ))
     .param("id", section_id.to_string());
-    let rs = execute(graph, actor, Resource::Section(section_id), q, None, None).await?;
+    let rs = execute(graph, actor, CLASS_READ, Resource::Section(section_id), q, None, None).await?;
     let mut out = Vec::new();
     for row in rs {
         out.push(SectionMemberRow {
@@ -561,6 +568,7 @@ pub async fn upsert_attendance_batch(
     let rs = execute(
         graph,
         actor,
+        &[],
         Resource::Section(section_id),
         q,
         Some(("attendance.recorded", section_id)),
@@ -614,7 +622,7 @@ pub async fn list_attendance_for_date(
     ))
     .param("section_id", section_id.to_string())
     .param("date", date.to_string());
-    let rs = execute(graph, actor, Resource::Section(section_id), q, None, None).await?;
+    let rs = execute(graph, actor, &[], Resource::Section(section_id), q, None, None).await?;
     let mut out = Vec::new();
     for row in rs {
         out.push(AttendanceRosterRow {
@@ -778,6 +786,7 @@ pub async fn upsert_grades_batch(
     let rs = execute(
         graph,
         actor,
+        &[],
         Resource::Section(section_id),
         q,
         Some(("grades.recorded", section_id)),
@@ -836,7 +845,7 @@ pub async fn list_grades_for_subject_term(
     .param("section_id", section_id.to_string())
     .param("subject", subject.to_string())
     .param("term", term.to_string());
-    let rs = execute(graph, actor, Resource::Section(section_id), q, None, None).await?;
+    let rs = execute(graph, actor, &[], Resource::Section(section_id), q, None, None).await?;
     let mut out = Vec::new();
     for row in rs {
         out.push(GradeRosterRow {

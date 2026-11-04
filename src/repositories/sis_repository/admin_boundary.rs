@@ -3,7 +3,7 @@ use super::RepositoryError;
 use crate::handlers::auth_helper::AdminActor;
 use neo4rs::{query, Graph, Query, Row, Txn};
 
-pub(super) const ACTOR: &str = "MATCH(u:User {id:$subject})-[link:STAFF_MEMBER]->(a:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) WHERE u.staffMemberId=a.id AND any(role IN coalesce(a.roles,[]) WHERE role IN ['owner','school_admin']) AND size(coalesce(a.teamIds,[]))=0 AND datetime.realtime().epochSeconds<$expires AND ((size(coalesce(a.schoolIds,[]))>0 AND size(coalesce(a.tenantIds,[]))>0) OR ('owner' IN coalesce(a.roles,[]) AND size(coalesce(a.schoolIds,[]))=0 AND size(coalesce(a.tenantIds,[]))=0)) AND NOT EXISTS {MATCH(other:User {id:u.id}) WHERE other<>u} AND NOT EXISTS {MATCH(other:StaffMember {id:a.id}) WHERE other<>a} AND NOT EXISTS {MATCH(u)-[other:STAFF_MEMBER]->() WHERE other<>link} AND NOT EXISTS {MATCH(other:User)-[:STAFF_MEMBER]->(a) WHERE other<>u}";
+pub(super) const ACTOR: &str = "MATCH(u:User {id:$subject})-[link:STAFF_MEMBER]->(a:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) WHERE u.staffMemberId=a.id AND (any(role IN coalesce(a.roles,[]) WHERE role IN ['owner','school_admin']) OR $capable) AND size(coalesce(a.teamIds,[]))=0 AND datetime.realtime().epochSeconds<$expires AND ((size(coalesce(a.schoolIds,[]))>0 AND size(coalesce(a.tenantIds,[]))>0) OR ('owner' IN coalesce(a.roles,[]) AND size(coalesce(a.schoolIds,[]))=0 AND size(coalesce(a.tenantIds,[]))=0)) AND NOT EXISTS {MATCH(other:User {id:u.id}) WHERE other<>u} AND NOT EXISTS {MATCH(other:StaffMember {id:a.id}) WHERE other<>a} AND NOT EXISTS {MATCH(u)-[other:STAFF_MEMBER]->() WHERE other<>link} AND NOT EXISTS {MATCH(other:User)-[:STAFF_MEMBER]->(a) WHERE other<>u}";
 pub(super) const SCHOOL: &str = "MATCH(school:School {school_id:$school,tenant_id:$tenant}) WHERE coalesce(school.school_id,'')<>'' AND coalesce(school.tenant_id,'')<>'' AND NOT EXISTS {MATCH(other:School {school_id:school.school_id}) WHERE other<>school} AND (('owner' IN coalesce(a.roles,[]) AND size(coalesce(a.schoolIds,[]))=0 AND size(coalesce(a.tenantIds,[]))=0) OR (school.school_id IN coalesce(a.schoolIds,[]) AND school.tenant_id IN coalesce(a.tenantIds,[])))";
 // Orphan/foreign/ambiguous enrollment edges cannot expose a child's records.
 pub(super) const CHILD: &str = "e.status='active' AND coalesce(e.student_id,'')<>'' AND coalesce(e.applicant_student_id,s.studentId)=s.studentId AND NOT EXISTS {MATCH(other:EnrolledStudent {applicant_student_id:s.studentId}) WHERE other<>e} AND e.school_id=sec.school_id AND e.tenant_id=sec.tenant_id AND coalesce(e.academic_year,sec.academic_year)=sec.academic_year AND coalesce(e.year_group,sec.year_group)=sec.year_group AND NOT EXISTS {MATCH(other:Student {studentId:s.studentId}) WHERE other<>s} AND NOT EXISTS {MATCH(s)-[:ENROLLED_AS]->(other:EnrolledStudent) WHERE other<>e} AND NOT EXISTS {MATCH(other:Student)-[:ENROLLED_AS]->(e) WHERE other<>s} AND NOT EXISTS {MATCH(other:EnrolledStudent {student_id:e.student_id}) WHERE other<>e} AND NOT EXISTS {MATCH(e)-[:ENROLLED_IN]->(other:Section) WHERE other<>sec}";
@@ -21,6 +21,50 @@ pub(super) fn parameters(q: Query, actor: &AdminActor) -> Query {
     q.param("subject", actor.subject.clone())
         .param("actor", actor.staff.clone())
         .param("expires", actor.expires)
+        .param("capable", false)
+        .param("capable_schools", Vec::<String>::new())
+}
+/// Class records (ADR 0018): Owners and school admins by role, as before, and anyone holding
+/// `academic.section.manage` for writes to a class.
+pub(super) const SECTION_MANAGE: &str = "academic.section.manage";
+/// Adding students to a class or moving them between classes.
+pub(super) const ENROLMENT_MANAGE: &str = "academic.enrolment.manage";
+/// Reading classes and their members: either of the two.
+pub(super) const CLASS_READ: &[&str] = &[SECTION_MANAGE, ENROLMENT_MANAGE];
+/// The schools where `staff` holds any of `capabilities`, read in the transaction. A school
+/// resource asks about that school only; a list without one asks about every school the staff
+/// member belongs to (one tenant only, as the directory allows).
+async fn capable_schools(
+    tx: &mut Txn,
+    actor: &AdminActor,
+    capabilities: &[&str],
+    scope: Option<&(String, String)>,
+) -> Result<Vec<String>, RepositoryError> {
+    if capabilities.is_empty() {
+        return Ok(vec![]);
+    }
+    let (tenant, schools) = match scope {
+        Some((school, tenant)) => (tenant.clone(), vec![school.clone()]),
+        None => {
+            let row = one(tx, query("MATCH(a:StaffMember {id:$actor}) RETURN coalesce(a.schoolIds,[]) AS schools,coalesce(a.tenantIds,[]) AS tenants").param("actor", actor.staff.clone())).await?;
+            let tenants: Vec<String> = row.get("tenants").map_err(|_| unavailable())?;
+            let Ok([tenant]) = <[String; 1]>::try_from(tenants) else {
+                return Ok(vec![]);
+            };
+            (tenant, row.get("schools").map_err(|_| unavailable())?)
+        }
+    };
+    let mut out = Vec::new();
+    for capability in capabilities {
+        let mut db = crate::authorization::facts::Db::Tx(&mut *tx);
+        let found = crate::authorization::reads::permitted_schools(&mut db, &tenant, &schools, &actor.staff, capability)
+            .await
+            .map_err(|_| unavailable())?;
+        out.extend(found);
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
 }
 async fn rows(tx: &mut Txn, q: Query) -> Result<Vec<Row>, RepositoryError> {
     let mut stream = tx.execute(q).await.map_err(|_| unavailable())?;
@@ -67,13 +111,14 @@ pub(super) enum Resource<'a> {
 pub(super) async fn execute(
     graph: &Graph,
     actor: &AdminActor,
+    capabilities: &[&str],
     resource: Resource<'_>,
     q: Query,
     action: Option<(&str, &str)>,
     students: Option<(&[String], bool)>,
 ) -> Result<Vec<Row>, RepositoryError> {
     let mut tx = graph.start_txn().await.map_err(|_| unavailable())?;
-    let result = locked(&mut tx, actor, resource, q, action, students).await;
+    let result = locked(&mut tx, actor, capabilities, resource, q, action, students).await;
     match result {
         Ok(value) => {
             tx.commit().await.map_err(|_| unavailable())?;
@@ -88,6 +133,7 @@ pub(super) async fn execute(
 async fn locked(
     tx: &mut Txn,
     actor: &AdminActor,
+    capabilities: &[&str],
     resource: Resource<'_>,
     q: Query,
     action: Option<(&str, &str)>,
@@ -95,7 +141,7 @@ async fn locked(
 ) -> Result<Vec<Row>, RepositoryError> {
     one(
         tx,
-        parameters(query(&format!("{ACTOR} RETURN a.id AS id")), actor),
+        parameters(query(&format!("{ACTOR} RETURN a.id AS id")), actor).param("capable", true),
     )
     .await?;
     let scope = match resource {
@@ -130,8 +176,15 @@ async fn locked(
         }
         Resource::List(None) => None,
     };
+    let schools = capable_schools(tx, actor, capabilities, scope.as_ref()).await?;
+    let capable = !schools.is_empty();
+    let with_capability = |q: Query| {
+        parameters(q, actor)
+            .param("capable", capable)
+            .param("capable_schools", schools.clone())
+    };
     let scoped = |body: &str| {
-        let mut q = parameters(query(body), actor);
+        let mut q = with_capability(query(body));
         if let Some((school, tenant)) = &scope {
             q = q
                 .param("school", school.clone())
@@ -174,7 +227,7 @@ async fn locked(
     } else {
         ACTOR.into()
     };
-    let current=one(tx,scoped(&format!("{authority} RETURN CASE WHEN 'owner' IN coalesce(a.roles,[]) THEN 'owner' ELSE 'school_admin' END AS role"))).await?;
+    let current=one(tx,scoped(&format!("{authority} RETURN CASE WHEN 'owner' IN coalesce(a.roles,[]) THEN 'owner' WHEN 'school_admin' IN coalesce(a.roles,[]) THEN 'school_admin' ELSE 'staff' END AS role"))).await?;
     if let Resource::Section(id) = resource {
         let (school, tenant) = scope.as_ref().ok_or_else(unavailable)?;
         one(tx,query("MATCH(sec:Section {section_id:$id,school_id:$school,tenant_id:$tenant}) RETURN sec.section_id AS id").param("id",id).param("school",school.clone()).param("tenant",tenant.clone())).await?;
@@ -200,7 +253,7 @@ async fn locked(
             }
         }
     }
-    let result = rows(tx, parameters(q, actor)).await?;
+    let result = rows(tx, with_capability(q)).await?;
     if action.is_some() {
         if result.len() != 1 {
             return Err(unavailable());

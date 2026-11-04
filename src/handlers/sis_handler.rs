@@ -11,7 +11,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::handlers::auth_helper::{require_admin, resolve_lead_id_from_bearer};
+use crate::handlers::auth_helper::{require_admin, require_staff, resolve_lead_id_from_bearer};
 use crate::models::section_model::Section;
 use crate::repositories::{sis_repository, user_repository};
 use crate::utils::response::ApiResponse;
@@ -35,7 +35,7 @@ pub async fn admin_create_section_handler(
     headers: HeaderMap,
     Json(payload): Json<sis_repository::CreateSectionInput>,
 ) -> (StatusCode, Json<ApiResponse<Section>>) {
-    let admin = match require_admin(&state, &headers).await {
+    let admin = match require_staff(&state, &headers).await {
         Ok(id) => id,
         Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
     };
@@ -68,7 +68,7 @@ pub async fn admin_list_sections_handler(
     headers: HeaderMap,
     Query(q): Query<AdminListSectionsQuery>,
 ) -> (StatusCode, Json<ApiResponse<Vec<Section>>>) {
-    let admin = match require_admin(&state, &headers).await {
+    let admin = match require_staff(&state, &headers).await {
         Ok(actor) => actor,
         Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
     };
@@ -115,7 +115,7 @@ pub async fn admin_section_detail_handler(
     headers: HeaderMap,
     Path(section_id): Path<String>,
 ) -> (StatusCode, Json<ApiResponse<AdminSectionDetailResponse>>) {
-    let admin = match require_admin(&state, &headers).await {
+    let admin = match require_staff(&state, &headers).await {
         Ok(actor) => actor,
         Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
     };
@@ -174,7 +174,7 @@ pub async fn admin_assign_students_handler(
     Path(section_id): Path<String>,
     Json(payload): Json<AssignStudentsRequest>,
 ) -> (StatusCode, Json<ApiResponse<AssignStudentsResponse>>) {
-    let admin = match require_admin(&state, &headers).await {
+    let admin = match require_staff(&state, &headers).await {
         Ok(id) => id,
         Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
     };
@@ -223,7 +223,7 @@ pub async fn admin_update_homeroom_teacher_handler(
     Path(section_id): Path<String>,
     Json(payload): Json<UpdateHomeroomTeacherRequest>,
 ) -> (StatusCode, Json<ApiResponse<Section>>) {
-    let admin = match require_admin(&state, &headers).await {
+    let admin = match require_staff(&state, &headers).await {
         Ok(id) => id,
         Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
     };
@@ -265,7 +265,7 @@ pub async fn admin_update_section_status_handler(
     Path(section_id): Path<String>,
     Json(payload): Json<UpdateSectionStatusRequest>,
 ) -> (StatusCode, Json<ApiResponse<Section>>) {
-    let admin = match require_admin(&state, &headers).await {
+    let admin = match require_staff(&state, &headers).await {
         Ok(actor) => actor,
         Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
     };
