@@ -1,20 +1,55 @@
 //! Minimal scoped Section/roster projection for governed learning access.
 use super::*;
 use std::collections::BTreeMap;
-pub(super) const CONTEXT_QUERY:&str="MATCH(actor:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) MATCH(sec:Section {status:'active'}) WHERE sec.school_id IN $schools AND sec.tenant_id IN $tenants AND ((NOT 'owner' IN coalesce(actor.roles,[]) AND 'school_admin' IN coalesce(actor.roles,[]) AND sec.school_id IN coalesce(actor.schoolIds,[]) AND sec.tenant_id IN coalesce(actor.tenantIds,[])) OR ('owner' IN coalesce(actor.roles,[]) AND size(coalesce(actor.teamIds,[]))=0 AND ((size(coalesce(actor.schoolIds,[]))=0 AND size(coalesce(actor.tenantIds,[]))=0) OR (sec.school_id IN coalesce(actor.schoolIds,[]) AND sec.tenant_id IN coalesce(actor.tenantIds,[]))) AND NOT EXISTS {MATCH(other:StaffMember {id:actor.id}) WHERE other<>actor} AND EXISTS {MATCH(:School {school_id:sec.school_id,tenant_id:sec.tenant_id})} AND NOT EXISTS {MATCH(one:School {school_id:sec.school_id,tenant_id:sec.tenant_id}),(two:School {school_id:sec.school_id,tenant_id:sec.tenant_id}) WHERE one<>two})) OPTIONAL MATCH(s:Student)-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:sec.school_id,tenant_id:sec.tenant_id})-[:ENROLLED_IN]->(sec) RETURN DISTINCT sec.section_id AS section,sec.school_id AS school,sec.tenant_id AS tenant,sec.name AS name,s.studentId AS student,s.fullName AS student_name ORDER BY section,student LIMIT 1001";
+pub(super) const CONTEXT_QUERY:&str="MATCH(actor:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) MATCH(sec:Section {status:'active'}) WHERE sec.school_id IN $schools AND sec.tenant_id IN $tenants AND ((NOT 'owner' IN coalesce(actor.roles,[]) AND ('school_admin' IN coalesce(actor.roles,[]) OR sec.school_id IN $capable_schools) AND sec.school_id IN coalesce(actor.schoolIds,[]) AND sec.tenant_id IN coalesce(actor.tenantIds,[])) OR ('owner' IN coalesce(actor.roles,[]) AND size(coalesce(actor.teamIds,[]))=0 AND ((size(coalesce(actor.schoolIds,[]))=0 AND size(coalesce(actor.tenantIds,[]))=0) OR (sec.school_id IN coalesce(actor.schoolIds,[]) AND sec.tenant_id IN coalesce(actor.tenantIds,[]))) AND NOT EXISTS {MATCH(other:StaffMember {id:actor.id}) WHERE other<>actor} AND EXISTS {MATCH(:School {school_id:sec.school_id,tenant_id:sec.tenant_id})} AND NOT EXISTS {MATCH(one:School {school_id:sec.school_id,tenant_id:sec.tenant_id}),(two:School {school_id:sec.school_id,tenant_id:sec.tenant_id}) WHERE one<>two})) OPTIONAL MATCH(s:Student)-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:sec.school_id,tenant_id:sec.tenant_id})-[:ENROLLED_IN]->(sec) RETURN DISTINCT sec.section_id AS section,sec.school_id AS school,sec.tenant_id AS tenant,sec.name AS name,s.studentId AS student,s.fullName AS student_name ORDER BY section,student LIMIT 1001";
 pub(super) async fn context(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(selection): Query<crate::school_portal::staff_capability::Selection>,
 ) -> Result<Json<Value>, Failure> {
-    let member = calendar_membership_for(&state.config, &headers, &selection).await?;
+    let (member, capable_schools) = match calendar_membership_for(&state.config, &headers, &selection).await {
+        Ok(member) => (member, vec![]),
+        // ADR 0018 slice 7: staff who are not administrators see the classes of the schools where
+        // they hold `academic.class_access.manage`.
+        Err(e) if e.0 == StatusCode::FORBIDDEN => {
+            let (actor, role, mut schools, mut tenants) =
+                any_staff_session(&state.config, &headers).await?.staff_scope();
+            if role != "staff" {
+                return Err(failure(StatusCode::FORBIDDEN));
+            }
+            if let Some((school, tenant)) = selection.pair().map_err(|_| failure(StatusCode::BAD_REQUEST))? {
+                if !(schools.iter().any(|x| x == school) && tenants.iter().any(|x| x == tenant)) {
+                    return Err(failure(StatusCode::FORBIDDEN));
+                }
+                (schools, tenants) = (vec![school.into()], vec![tenant.into()]);
+            }
+            let [tenant] = tenants.as_slice() else {
+                return Err(failure(StatusCode::FORBIDDEN));
+            };
+            let held = crate::authorization::reads::permitted_schools(
+                &mut crate::authorization::facts::Db::Graph(&state.graph),
+                tenant,
+                &schools,
+                &actor,
+                CLASS_ACCESS_MANAGE,
+            )
+            .await
+            .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+            if held.is_empty() {
+                return Err(failure(StatusCode::FORBIDDEN));
+            }
+            ((actor, held.clone(), vec![tenant.clone()]), held)
+        }
+        Err(e) => return Err(e),
+    };
     let mut rows = state
         .graph
         .execute(
             query(CONTEXT_QUERY)
                 .param("actor", member.0)
                 .param("schools", member.1)
-                .param("tenants", member.2),
+                .param("tenants", member.2)
+                .param("capable_schools", capable_schools),
         )
         .await
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;

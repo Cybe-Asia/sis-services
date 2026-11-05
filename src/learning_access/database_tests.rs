@@ -291,6 +291,7 @@ async fn grants_binding_cas_revocation_and_atomic_audit() {
             .execute(
                 query(context::CONTEXT_QUERY)
                     .param("actor", actor)
+                    .param("capable_schools", Vec::<String>::new())
                     .param("schools", vec![school])
                     .param("tenants", vec!["tenant-test"]),
             )
@@ -356,4 +357,15 @@ async fn grants_binding_cas_revocation_and_atomic_audit() {
     assert!(!lets_in(&teacher, "school-test", false).await);
     assert!(lets_in(&teacher, "school-test", true).await);
     assert!(!lets_in(&teacher, "school-other", true).await);
+    let classes = |capable: Vec<&str>| {
+        let q = query(context::CONTEXT_QUERY)
+            .param("actor", teacher.clone())
+            .param("schools", vec!["school-test"])
+            .param("tenants", vec!["tenant-test"])
+            .param("capable_schools", capable.into_iter().map(String::from).collect::<Vec<_>>());
+        let graph = graph.clone();
+        async move { graph.execute(q).await.unwrap().next().await.unwrap().is_some() }
+    };
+    assert!(!classes(vec![]).await);
+    assert!(classes(vec!["school-test"]).await);
 }
