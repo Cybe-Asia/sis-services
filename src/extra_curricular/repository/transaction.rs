@@ -48,6 +48,36 @@ async fn change_inner(
         store.row(query("MATCH(actor:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) SET actor.owner_write_lock=coalesce(actor.owner_write_lock,0)+1 RETURN actor.id AS id").param("actor",a.id.clone())).await?.ok_or("Owner lock missing")?;
     }
     store.row(query("MERGE(l:ExtraCurricularLock {key:$key}) ON CREATE SET l.version=0 SET l.version=l.version+1 RETURN l.version AS version").param("key",store.key.clone())).await?.ok_or("lock missing")?;
+    // ADR 0018 slice 7: a capability holder is checked again under the activity lock, through the
+    // same session, with the capability read in this transaction.
+    if a.role == "manager" {
+        if let Some((config, h, _)) = live {
+            let forbidden = || crate::extra_curricular::failure(axum::http::StatusCode::FORBIDDEN);
+            let checked = match crate::learning_access::school_staff_actor(config, h, &v.scope.tenant_id, &v.scope.school_id).await {
+                Ok((id, role)) if id == a.id && role == "staff" => {
+                    match crate::authorization::reads::permits(
+                        &mut crate::authorization::facts::Db::Tx(&mut store.tx),
+                        &v.scope.tenant_id,
+                        &v.scope.school_id,
+                        &a.id,
+                        crate::extra_curricular::auth::EXTRACURRICULAR_MANAGE,
+                    )
+                    .await
+                    {
+                        Ok(true) => Ok(()),
+                        Ok(false) => Err(forbidden()),
+                        Err(_) => Err(crate::extra_curricular::failure(axum::http::StatusCode::SERVICE_UNAVAILABLE)),
+                    }
+                }
+                Ok(_) => Err(forbidden()),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = checked {
+                let _ = store.tx.rollback().await;
+                return Err(Box::new(crate::school_portal::staff_capability::SessionFailure(error)));
+            }
+        }
+    }
     if matches!(a.role.as_str(), "owner" | "student") {
         if let Some((config, h, path_role)) = live {
             let current = match crate::extra_curricular::auth::actor(config, h, path_role, &v.scope).await {

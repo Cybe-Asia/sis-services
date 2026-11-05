@@ -56,7 +56,7 @@ pub async fn list(g: &Graph, a: &Actor, s: &Scope) -> Result<Option<Value>, Erro
     {
         return Ok(None);
     }
-    let filter=match a.role.as_str(){"admin"|"owner"=>"","teacher"=>" AND activity.coach_id=actor.id",_=>" AND ((activity.published=true AND activity.archived=false) OR EXISTS { MATCH(e:ExtraCurricularEnrollment {key:activity.key+'|'+student.studentId}) })"};
+    let filter=match a.role.as_str(){"admin"|"manager"|"owner"=>"","teacher"=>" AND activity.coach_id=actor.id",_=>" AND ((activity.published=true AND activity.archived=false) OR EXISTS { MATCH(e:ExtraCurricularEnrollment {key:activity.key+'|'+student.studentId}) })"};
     let family = matches!(a.role.as_str(), "parent" | "student");
     let body = if family {
         format!("WITH actor,student,activity WHERE {ELIGIBLE} OPTIONAL MATCH(enrollment:ExtraCurricularEnrollment {{key:activity.key+'|'+student.studentId}}) RETURN DISTINCT activity.payload AS payload,activity.revision AS revision,activity.archived AS archived,activity.id AS id,student.studentId AS student,enrollment.payload AS enrollment")

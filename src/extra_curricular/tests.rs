@@ -143,6 +143,34 @@ async fn owner_lifecycle_capacity_consent_retry_release_and_isolation() {
         1
     );
     assert!(list(&g, &administrator, &scope).await.unwrap().is_some());
+    // ADR 0018 slice 7: a member of the school let in by `academic.extracurricular.manage` (role
+    // `manager`) saves and reads like an administrator there, and nowhere else.
+    let manager = Actor {
+        id: coach.clone(),
+        role: "manager".into(),
+    };
+    let club = Change {
+        activity_id: "chess".into(),
+        request_id: "save-chess".into(),
+        command: Command::Save {
+            activity: activity("chess", &coach, &section),
+        },
+        ..v.clone()
+    };
+    assert_eq!(change(&g, &manager, &club).await.unwrap().unwrap()["revision"], 1);
+    assert!(list(&g, &manager, &scope).await.unwrap().is_some());
+    let elsewhere = Scope {
+        school_id: format!("{mark}-other-school"),
+        ..scope.clone()
+    };
+    assert!(list(&g, &manager, &elsewhere).await.unwrap().is_none());
+    let retire = Change {
+        revision: 1,
+        request_id: "archive-chess".into(),
+        command: Command::Archive {},
+        ..club
+    };
+    assert!(change(&g, &manager, &retire).await.unwrap().is_some());
     // Live Auth scopes narrow the graph context and staff projection.
     g.run(query("MATCH(t:StaffMember {id:$coach}) SET t.schoolIds=t.schoolIds+['ungranted-school'],t.tenantIds=t.tenantIds+['ungranted-tenant']").param("coach",coach.clone())).await.unwrap();
     let reader = super::repository::GraphContext(&g);

@@ -73,11 +73,53 @@ pub async fn actor(
         role: actor_role,
     })
 }
+/// Extracurricular management (ADR 0018 slice 7).
+pub const EXTRACURRICULAR_MANAGE: &str = "academic.extracurricular.manage";
+/// The Admin path for staff who are not administrators: role `manager` while they hold
+/// `academic.extracurricular.manage` at the school.
+pub async fn manager(
+    graph: &neo4rs::Graph,
+    config: &crate::config::config::AppConfig,
+    h: &HeaderMap,
+    s: &Scope,
+) -> Result<Actor, Failure> {
+    let (id, role) = crate::learning_access::capable_actor(
+        graph,
+        config,
+        h,
+        &s.tenant_id,
+        &s.school_id,
+        EXTRACURRICULAR_MANAGE,
+    )
+    .await?;
+    if role != "staff" {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    Ok(Actor {
+        id,
+        role: "manager".into(),
+    })
+}
+/// `actor`, and on the Admin path a capability holder when the caller is not an administrator.
+pub async fn admin_or_manager(
+    graph: &neo4rs::Graph,
+    config: &crate::config::config::AppConfig,
+    h: &HeaderMap,
+    role: &str,
+    s: &Scope,
+) -> Result<Actor, Failure> {
+    match actor(config, h, role, s).await {
+        Err(e) if role == "admin" && e.0 == StatusCode::FORBIDDEN => manager(graph, config, h, s).await,
+        other => other,
+    }
+}
 /// Reused inside every transaction after acquiring the activity lock.
 pub fn authority(a: &Actor) -> String {
     match a.role.as_str(){
  "owner"=>format!("MATCH(actor:StaffMember {{id:$actor,membershipStatus:'ACTIVE'}}) WHERE {} WITH DISTINCT actor",crate::school_portal::staff_capability::owner("actor","$school","$tenant")),
  "admin"=>"MATCH(actor:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) WHERE NOT 'owner' IN coalesce(actor.roles,[]) AND 'school_admin' IN coalesce(actor.roles,[]) AND $school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[]) WITH DISTINCT actor".into(),
+ // ADR 0018 slice 7: a member of the school the route found holding `academic.extracurricular.manage`.
+ "manager"=>"MATCH(actor:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) WHERE NOT 'owner' IN coalesce(actor.roles,[]) AND $school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[]) AND NOT EXISTS {MATCH(other:StaffMember {id:actor.id}) WHERE other<>actor} WITH DISTINCT actor".into(),
  "teacher"=>"MATCH(actor:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) WHERE NOT 'owner' IN coalesce(actor.roles,[]) AND 'teacher' IN coalesce(actor.roles,[]) AND $school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[]) WITH DISTINCT actor".into(),
  "student"=>"MATCH(actor:User {id:$actor,role:'student'}) MATCH(b:LearningStudentBinding {user_id:actor.id,status:'ACTIVE',school_id:$school,tenant_id:$tenant}) MATCH(s:Student {studentId:b.student_id})-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',school_id:$school,tenant_id:$tenant})-[:ENROLLED_IN]->(sec:Section {school_id:$school,tenant_id:$tenant,status:'active',academic_year:$year}) WITH actor,collect(DISTINCT s) AS students WHERE size(students)=1 UNWIND students AS student WITH actor,student".into(),
  "parent"=>format!("{} AND u.id=$actor WITH collect(DISTINCT u) AS owners,collect(DISTINCT s) AS children WHERE size(owners)=1 UNWIND children AS student WITH owners[0] AS actor,student WHERE student.studentId=$student MATCH(student)-[:ENROLLED_AS]->(:EnrolledStudent {{status:'active',school_id:$school,tenant_id:$tenant}})-[:ENROLLED_IN]->(:Section {{school_id:$school,tenant_id:$tenant,status:'active',academic_year:$year}}) WITH DISTINCT actor,student",crate::school_portal::repository::PARENT),_=>"WITH 1 AS denied WHERE false".into()}

@@ -14,7 +14,7 @@ pub async fn execute<S: ChangeStore>(
     let current = store.current().await?;
     if current.is_none() && !matches!(input.command, Command::Save { .. })
         || matches!(input.command, Command::Save { .. } | Command::Archive {})
-            && !matches!(actor.role.as_str(), "admin" | "owner")
+            && !matches!(actor.role.as_str(), "admin" | "owner" | "manager")
     {
         return Ok(None);
     }
@@ -246,7 +246,7 @@ pub async fn context<S: ContextReader>(
 ) -> Result<Option<CatalogContext>, S::Error> {
     if !matches!(
         actor.role.as_str(),
-        "admin" | "teacher" | "owner" | "parent" | "student"
+        "admin" | "manager" | "teacher" | "owner" | "parent" | "student"
     ) || (actor.role == "parent") != student.is_some()
     {
         return Ok(None);
@@ -257,7 +257,7 @@ pub async fn context<S: ContextReader>(
     if matches!(actor.role.as_str(), "parent" | "student") && context.classes.is_empty() {
         return Ok(None);
     }
-    if matches!(actor.role.as_str(), "admin" | "teacher" | "owner")
+    if matches!(actor.role.as_str(), "admin" | "manager" | "teacher" | "owner")
         && (context
             .classes
             .iter()

@@ -16,30 +16,77 @@ pub struct Selection {
     #[serde(alias = "tenant_id")]
     tenant_id: Option<String>,
 }
+/// ADR 0018 slice 7: role `manager` over the schools (one tenant) where a staff member who is not an
+/// administrator holds `academic.extracurricular.manage`; `FORBIDDEN` when there is none.
+async fn manager_scope(
+    s: &AppState,
+    h: &HeaderMap,
+    selection: &crate::school_portal::staff_capability::Selection,
+) -> Result<(auth::Actor, Vec<String>, Vec<String>), Failure> {
+    let (actor, role, mut schools, mut tenants) =
+        crate::learning_access::any_staff_session(&s.config, h)
+            .await?
+            .staff_scope();
+    if role != "staff" {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    if let Some((school, tenant)) = selection
+        .pair()
+        .map_err(|_| failure(StatusCode::BAD_REQUEST))?
+    {
+        if !(schools.iter().any(|x| x == school) && tenants.iter().any(|x| x == tenant)) {
+            return Err(failure(StatusCode::FORBIDDEN));
+        }
+        (schools, tenants) = (vec![school.into()], vec![tenant.into()]);
+    }
+    let [tenant] = tenants.as_slice() else {
+        return Err(failure(StatusCode::FORBIDDEN));
+    };
+    let held = crate::authorization::reads::permitted_schools(
+        &mut crate::authorization::facts::Db::Graph(&s.graph),
+        tenant,
+        &schools,
+        &actor,
+        auth::EXTRACURRICULAR_MANAGE,
+    )
+    .await
+    .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    if held.is_empty() {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    Ok((
+        auth::Actor {
+            id: actor,
+            role: "manager".into(),
+        },
+        held,
+        vec![tenant.clone()],
+    ))
+}
 pub async fn context(
     State(s): State<AppState>,
     h: HeaderMap,
     Path(role): Path<String>,
     Query(q): Query<Selection>,
 ) -> Result<Json<Value>, Failure> {
+    let selection = crate::school_portal::staff_capability::Selection {
+        school_id: q.school_id.clone(),
+        tenant_id: q.tenant_id.clone(),
+    };
     let (a, live_schools, live_tenants) = if role == "admin" {
-        let (id, actor_role, schools, tenants) = crate::learning_access::calendar_actor(
-            &s.config,
-            &h,
-            &crate::school_portal::staff_capability::Selection {
-                school_id: q.school_id.clone(),
-                tenant_id: q.tenant_id.clone(),
-            },
-        )
-        .await?;
-        (
-            auth::Actor {
-                id,
-                role: actor_role,
-            },
-            schools,
-            tenants,
-        )
+        match crate::learning_access::calendar_actor(&s.config, &h, &selection).await {
+            Ok((id, actor_role, schools, tenants)) => (
+                auth::Actor {
+                    id,
+                    role: actor_role,
+                },
+                schools,
+                tenants,
+            ),
+            // Not an administrator: the schools where the caller manages extracurriculars.
+            Err(e) if e.0 == StatusCode::FORBIDDEN => manager_scope(&s, &h, &selection).await?,
+            Err(e) => return Err(e),
+        }
     } else if role == "teacher" {
         let m = crate::school_portal::auth::teacher(&s.config, &h)
             .await?

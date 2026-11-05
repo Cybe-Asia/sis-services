@@ -33,7 +33,7 @@ async fn list(
     if !scope.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let a = auth::actor(&s.config, &h, &role, &scope).await?;
+    let a = auth::admin_or_manager(&s.graph, &s.config, &h, &role, &scope).await?;
     match repository::list(&s.graph, &a, &scope).await {
         Ok(Some(data)) => Ok(Json(json!({"data":data}))),
         Ok(None) => Err(failure(StatusCode::FORBIDDEN)),
@@ -50,7 +50,7 @@ async fn change(
     if !v.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let a = auth::actor(&s.config, &h, &role, &v.scope).await?;
+    let a = auth::admin_or_manager(&s.graph, &s.config, &h, &role, &v.scope).await?;
     match repository::change_live(&s.graph, &a, &v, &s.config, &h, &role).await {
         Ok(Some(data)) => Ok(Json(json!({"data":data}))),
         Ok(None) => Err(failure(StatusCode::CONFLICT)),
