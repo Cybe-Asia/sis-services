@@ -808,7 +808,8 @@ async fn staffing_routes_decide_by_capability() {
                         .collect(),
                 ),
                 allowed_scopes: Some(school_admin.allowed_scopes.clone()),
-                expected_version: 1,
+                // The unsaved seed's own version (2 since slice 7).
+                expected_version: school_admin.version,
             }],
         },
     )

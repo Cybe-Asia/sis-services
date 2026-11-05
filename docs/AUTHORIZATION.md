@@ -26,8 +26,8 @@ A bad file stops the service. Admin cannot add a capability. Each entry has:
 `learning.class.homeroom` and `learning.report_card.publish`. Holding it for one subject of a class holds it for the class, as a teaching grant per
 class does today.
 
-Sensitive capabilities are `student.biodata.manage`, `academic.enrolment.manage`, `billing.payment.manage` and
-`authorization.manage`. An
+Sensitive capabilities are `student.biodata.manage`, `academic.enrolment.manage`, `academic.records.manage`,
+`billing.payment.manage` and `authorization.manage`. An
 unknown code counts as sensitive.
 
 ## Seed templates
@@ -48,7 +48,7 @@ The seeds are in `src/authorization/templates.json`. They are defaults the schoo
 | `admin_teacher` | `SCHOOL`, `SCHOOL_SUBJECT`, `SECTION` | Regular teacher + `learning.module.review`, `learning.module.manage_any`, `academic.staffing.read` |
 | `subject_lead` | `SCHOOL_SUBJECT` | `learning.module.review`, `learning.module.manage_any`, `learning.plan.manage`, `learning.question_bank.manage` |
 | `curriculum_coordinator` | `SCHOOL` | `learning.curriculum.manage`, `learning.plan.manage`, `learning.module.review`, `learning.module.manage_any`, `learning.mastery.read`, `learning.report_card.publish` |
-| `school_admin` (v2) | `SCHOOL` | `academic.staffing.read`, `academic.staffing.manage`, `academic.subject_plan.manage`, `academic.calendar.manage`, `academic.class_access.manage`, `academic.section.manage`, `academic.enrolment.manage`, `academic.extracurricular.manage`, `academic.nomenclature.manage`, `school.content.manage`, `staff.directory.manage`, `student.biodata.manage`, `authorization.read` |
+| `school_admin` (v2) | `SCHOOL` | `academic.staffing.read`, `academic.staffing.manage`, `academic.subject_plan.manage`, `academic.calendar.manage`, `academic.class_access.manage`, `academic.section.manage`, `academic.enrolment.manage`, `academic.records.manage`, `academic.extracurricular.manage`, `academic.nomenclature.manage`, `school.content.manage`, `staff.directory.manage`, `student.biodata.manage`, `authorization.read` |
 | `principal` (v2) | `SCHOOL` | `authorization.manage`, `authorization.read`, `academic.staffing.read`, `learning.curriculum.read`, `learning.mastery.read`, `learning.module.review`, `learning.report_card.publish` |
 
 Two seeds go further than spec §3, so that day-one access equals today:
@@ -521,7 +521,20 @@ transaction it reads the facts under the caller's locks, so an assignment or tem
 | `POST /admin/sis/sections`, `POST /admin/sis/sections/{id}/homeroom`, `PATCH` section status (2026-11-04) | `academic.section.manage` |
 | `POST /admin/sis/sections/{id}/assign` (2026-11-04) | `academic.enrolment.manage` (sensitive: only an Owner grants it) |
 | `GET /admin/sis/sections`, `GET /admin/sis/sections/{id}` (2026-11-04) | either of the two; the list shows only the schools where the caller holds one |
-| Admin attendance and grade rosters of a class | still Owner and `school_admin` by role |
+| Admin attendance and grade rosters of a class (2026-11-04) | `academic.records.manage` (sensitive) |
+| `GET/POST /education-calendar`, `GET/POST /school-rooms`, Admin `GET/POST /timetable`, `POST /timetable/weekly`, `GET /timetable/context` (2026-11-04) | `academic.calendar.manage` |
+| Learning access grants and bindings, their reads, `GET /learning/context`, `GET/POST /learning/prework-policy` (2026-11-04) | `academic.class_access.manage` |
+| Admin extracurricular list, save and archive, `GET /activities/context/admin` (2026-11-04) | `academic.extracurricular.manage` (role `manager`) |
+| `GET/POST /admin/student-biodata` (2026-11-04) | `student.biodata.manage` (sensitive) |
+| Placement handover (`enrollment_handover`) | still by role: Owner, school admin, admissions managers |
+
+**Slice 7 gate (2026-11-04).** These routes take any active staff session whose school lists cover the school.
+Owners and school administrators pass **by role**, as before, whatever the tenant later does to the School admin
+template. Anyone else passes only while holding the capability at that school: `learning_access::capable_actor`
+asks `permits` before the statement, and every write reads it again inside its transaction after its locks
+(`recheck_capable`, `capable_write`, `portal_actor`, the activity and biodata transactions), so a revoked
+assignment denies a write already queued. In the graph such staff pass only as members of the school
+(`staff_capability::capable`), and audit rows name them `staff` (extracurriculars: `manager`).
 
 **Session gate (slice 6, 2026-10-30).** The `academic_staffing`, `academic_teachers` and `school_articles` routes
 above take **any active staff portal session whose school and tenant lists cover the school**
