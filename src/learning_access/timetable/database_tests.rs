@@ -796,10 +796,10 @@ async fn capable_admin_statements_plan() {
     let graph = Graph::new("127.0.0.1:3223", "neo4j", "parent-otp-fixture-password")
         .await
         .unwrap();
-    assert_eq!(repository::authority("owner"), repository::admin());
-    assert_eq!(repository::authority("school_admin"), repository::admin());
+    assert_eq!(repository::authority("owner"), repository::admin_as(false));
+    assert_eq!(repository::authority("school_admin"), repository::admin_as(false));
     assert!(repository::authority("staff").contains("(true AND NOT 'owner' IN coalesce(a.roles,[])"));
-    assert!(!repository::admin().contains("(true AND"));
+    assert!(!repository::admin_as(false).contains("(true AND"));
     for body in [
         repository::authority("staff"),
         repository::admin_as(true).replace("section_id:$class,", ""),

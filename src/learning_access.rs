@@ -288,6 +288,49 @@ pub(crate) async fn recheck_capable(
     }
     Ok(())
 }
+/// One write by staff let in through `capability`: the capability is read again in the write's own
+/// transaction, so an assignment revoked meanwhile denies. `None` is a CAS miss.
+pub(crate) async fn capable_write(
+    graph: &neo4rs::Graph,
+    tenant: &str,
+    school: &str,
+    actor: &str,
+    capability: &str,
+    write: neo4rs::Query,
+) -> Result<Option<neo4rs::Row>, Failure> {
+    let unavailable = || failure(StatusCode::SERVICE_UNAVAILABLE);
+    let mut tx = graph.start_txn().await.map_err(|_| unavailable())?;
+    let result = async {
+        if !crate::authorization::reads::permits(
+            &mut crate::authorization::facts::Db::Tx(&mut tx),
+            tenant,
+            school,
+            actor,
+            capability,
+        )
+        .await
+        .map_err(|_| unavailable())?
+        {
+            return Err(failure(StatusCode::FORBIDDEN));
+        }
+        timetable::repository::one(&mut tx, write).await
+    }
+    .await;
+    match result {
+        Ok(Some(row)) => {
+            tx.commit().await.map_err(|_| unavailable())?;
+            Ok(Some(row))
+        }
+        Ok(None) => {
+            let _ = tx.rollback().await;
+            Ok(None)
+        }
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(e)
+        }
+    }
+}
 impl StaffSession {
     /// As `scope`, naming the role as Auth has it: `owner`, `school_admin` or `staff`.
     pub(crate) fn staff_scope(self) -> (String, String, Vec<String>, Vec<String>) {
@@ -358,8 +401,27 @@ mod prework_policy;
 pub(crate) mod timetable;
 
 const SCOPE: &str = "MATCH (sec:Section {section_id:$section,school_id:$school,tenant_id:$tenant}) SET sec.learning_access_lock=coalesce(sec.learning_access_lock,0)+1 WITH sec MATCH (actor:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) WHERE ((NOT 'owner' IN coalesce(actor.roles,[]) AND 'school_admin' IN coalesce(actor.roles,[]) AND $school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[])) OR ('owner' IN coalesce(actor.roles,[]) AND size(coalesce(actor.teamIds,[]))=0 AND ((size(coalesce(actor.schoolIds,[]))=0 AND size(coalesce(actor.tenantIds,[]))=0) OR ($school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[]))) AND NOT EXISTS {MATCH(other:StaffMember {id:actor.id}) WHERE other<>actor} AND EXISTS {MATCH(:School {school_id:$school,tenant_id:$tenant})} AND NOT EXISTS {MATCH(one:School {school_id:$school,tenant_id:$tenant}),(two:School {school_id:$school,tenant_id:$tenant}) WHERE one<>two})) WITH actor,sec";
-pub const TEACHER_QUERY:&str="MATCH (teacher:StaffMember {id:$target}) WHERE $active=false OR (teacher.membershipStatus='ACTIVE' AND 'teacher' IN coalesce(teacher.roles,[]) AND $school IN coalesce(teacher.schoolIds,[]) AND $tenant IN coalesce(teacher.tenantIds,[]) AND sec.status='active') OPTIONAL MATCH (existing:LearningTeachingGrant {key:$key}) WITH actor,sec,existing WHERE (existing IS NULL AND $version=0 AND $active=true) OR (existing.version=$version AND existing.staff_member_id=$target AND existing.section_id=$section AND existing.school_id=$school AND existing.tenant_id=$tenant) MERGE (grant:LearningTeachingGrant {key:$key}) ON CREATE SET grant.version=0,grant.staff_member_id=$target,grant.section_id=$section,grant.school_id=$school,grant.tenant_id=$tenant SET grant.version=grant.version+1,grant.status=$status,grant.updated_at=datetime() CREATE (:LearningAccessAudit {id:$audit,actor_id:$actor,actor_role:CASE WHEN 'owner' IN coalesce(actor.roles,[]) THEN 'owner' ELSE 'school_admin' END,target_id:$target,record_key:$key,kind:'teaching',school_id:$school,tenant_id:$tenant,version:grant.version,status:$status,created_at:datetime()}) RETURN grant.version AS version";
-pub const STUDENT_QUERY:&str="MATCH (u:User {id:$target}) MERGE (lock:LearningBindingLock {key:'user|'+$target}) ON CREATE SET lock.version=0 SET lock.version=lock.version+1 WITH sec,u MATCH (actor:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) WHERE ((NOT 'owner' IN coalesce(actor.roles,[]) AND 'school_admin' IN coalesce(actor.roles,[]) AND $school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[])) OR ('owner' IN coalesce(actor.roles,[]) AND size(coalesce(actor.teamIds,[]))=0 AND ((size(coalesce(actor.schoolIds,[]))=0 AND size(coalesce(actor.tenantIds,[]))=0) OR ($school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[]))) AND NOT EXISTS {MATCH(other:StaffMember {id:actor.id}) WHERE other<>actor} AND EXISTS {MATCH(:School {school_id:$school,tenant_id:$tenant})} AND NOT EXISTS {MATCH(one:School {school_id:$school,tenant_id:$tenant}),(two:School {school_id:$school,tenant_id:$tenant}) WHERE one<>two})) WITH actor,sec,u MATCH (student:Student {studentId:$student}) WHERE $active=false OR (u.role='student' AND sec.status='active' AND EXISTS { MATCH (student)-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',tenant_id:$tenant,school_id:$school})-[:ENROLLED_IN]->(sec) }) OPTIONAL MATCH (existing:LearningStudentBinding {user_id:$target}) OPTIONAL MATCH (other:LearningStudentBinding {student_id:$student}) WITH actor,sec,u,existing,other WHERE ((existing IS NULL AND $version=0 AND $active=true) OR (existing.version=$version AND existing.student_id=$student AND existing.school_id=$school AND existing.tenant_id=$tenant)) AND (other IS NULL OR other.user_id=$target) MERGE (grant:LearningStudentBinding {user_id:$target}) ON CREATE SET grant.version=0,grant.student_id=$student,grant.school_id=$school,grant.tenant_id=$tenant SET grant.version=grant.version+1,grant.status=$status,grant.updated_at=datetime() CREATE (:LearningAccessAudit {id:$audit,actor_id:$actor,actor_role:CASE WHEN 'owner' IN coalesce(actor.roles,[]) THEN 'owner' ELSE 'school_admin' END,target_id:$target,record_key:$target,kind:'student_binding',student_id:$student,school_id:$school,tenant_id:$tenant,version:grant.version,status:$status,created_at:datetime()}) RETURN grant.version AS version";
+/// Class Learning access and the prework rule (ADR 0018 slice 7): Owners and school administrators
+/// by role, and members of the school holding this capability.
+pub(crate) const CLASS_ACCESS_MANAGE: &str = "academic.class_access.manage";
+/// `SCOPE` / `READ_SCOPE` with the capability branch after the administrator predicate (`$capable`).
+fn with_capable(statement: &str, after: &str) -> String {
+    let end = format!("WHERE one<>two}})) {after}");
+    assert_eq!(statement.matches(&end).count(), 1, "scope statement shape");
+    statement.replacen(
+        &end,
+        &format!(
+            "WHERE one<>two}})) OR {} {after}",
+            crate::school_portal::staff_capability::capable("actor")
+        ),
+        1,
+    )
+}
+pub(crate) fn scope() -> String {
+    with_capable(SCOPE, "WITH actor,sec")
+}
+pub const TEACHER_QUERY:&str="MATCH (teacher:StaffMember {id:$target}) WHERE $active=false OR (teacher.membershipStatus='ACTIVE' AND 'teacher' IN coalesce(teacher.roles,[]) AND $school IN coalesce(teacher.schoolIds,[]) AND $tenant IN coalesce(teacher.tenantIds,[]) AND sec.status='active') OPTIONAL MATCH (existing:LearningTeachingGrant {key:$key}) WITH actor,sec,existing WHERE (existing IS NULL AND $version=0 AND $active=true) OR (existing.version=$version AND existing.staff_member_id=$target AND existing.section_id=$section AND existing.school_id=$school AND existing.tenant_id=$tenant) MERGE (grant:LearningTeachingGrant {key:$key}) ON CREATE SET grant.version=0,grant.staff_member_id=$target,grant.section_id=$section,grant.school_id=$school,grant.tenant_id=$tenant SET grant.version=grant.version+1,grant.status=$status,grant.updated_at=datetime() CREATE (:LearningAccessAudit {id:$audit,actor_id:$actor,actor_role:CASE WHEN 'owner' IN coalesce(actor.roles,[]) THEN 'owner' WHEN 'school_admin' IN coalesce(actor.roles,[]) THEN 'school_admin' ELSE 'staff' END,target_id:$target,record_key:$key,kind:'teaching',school_id:$school,tenant_id:$tenant,version:grant.version,status:$status,created_at:datetime()}) RETURN grant.version AS version";
+pub const STUDENT_QUERY:&str="MATCH (u:User {id:$target}) MERGE (lock:LearningBindingLock {key:'user|'+$target}) ON CREATE SET lock.version=0 SET lock.version=lock.version+1 WITH sec,u MATCH (actor:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) WHERE ((NOT 'owner' IN coalesce(actor.roles,[]) AND 'school_admin' IN coalesce(actor.roles,[]) AND $school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[])) OR ('owner' IN coalesce(actor.roles,[]) AND size(coalesce(actor.teamIds,[]))=0 AND ((size(coalesce(actor.schoolIds,[]))=0 AND size(coalesce(actor.tenantIds,[]))=0) OR ($school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[]))) AND NOT EXISTS {MATCH(other:StaffMember {id:actor.id}) WHERE other<>actor} AND EXISTS {MATCH(:School {school_id:$school,tenant_id:$tenant})} AND NOT EXISTS {MATCH(one:School {school_id:$school,tenant_id:$tenant}),(two:School {school_id:$school,tenant_id:$tenant}) WHERE one<>two})) WITH actor,sec,u MATCH (student:Student {studentId:$student}) WHERE $active=false OR (u.role='student' AND sec.status='active' AND EXISTS { MATCH (student)-[:ENROLLED_AS]->(:EnrolledStudent {status:'active',tenant_id:$tenant,school_id:$school})-[:ENROLLED_IN]->(sec) }) OPTIONAL MATCH (existing:LearningStudentBinding {user_id:$target}) OPTIONAL MATCH (other:LearningStudentBinding {student_id:$student}) WITH actor,sec,u,existing,other WHERE ((existing IS NULL AND $version=0 AND $active=true) OR (existing.version=$version AND existing.student_id=$student AND existing.school_id=$school AND existing.tenant_id=$tenant)) AND (other IS NULL OR other.user_id=$target) MERGE (grant:LearningStudentBinding {user_id:$target}) ON CREATE SET grant.version=0,grant.student_id=$student,grant.school_id=$school,grant.tenant_id=$tenant SET grant.version=grant.version+1,grant.status=$status,grant.updated_at=datetime() CREATE (:LearningAccessAudit {id:$audit,actor_id:$actor,actor_role:CASE WHEN 'owner' IN coalesce(actor.roles,[]) THEN 'owner' WHEN 'school_admin' IN coalesce(actor.roles,[]) THEN 'school_admin' ELSE 'staff' END,target_id:$target,record_key:$target,kind:'student_binding',student_id:$student,school_id:$school,tenant_id:$tenant,version:grant.version,status:$status,created_at:datetime()}) RETURN grant.version AS version";
 async fn ensure_schema(graph: &neo4rs::Graph) -> Result<(), Failure> {
     let mut schema = graph.execute(query("SHOW CONSTRAINTS YIELD name WHERE name IN ['learning_teaching_key','learning_student_user','learning_student_identity','learning_access_audit','learning_binding_lock'] RETURN count(*) AS count")).await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
     let count = schema
@@ -410,12 +472,20 @@ async fn update(
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let (actor, actor_role) =
-        administrator_actor(&state.config, &headers, &input.tenant_id, &input.school_id).await?;
+    let (actor, actor_role) = capable_actor(
+        &state.graph,
+        &state.config,
+        &headers,
+        &input.tenant_id,
+        &input.school_id,
+        CLASS_ACCESS_MANAGE,
+    )
+    .await?;
     ensure_schema(&state.graph).await?;
     // One implicit transaction commits state and immutable evidence together. CAS protects unknown HTTP outcomes.
     let q = query(&format!(
-        "{SCOPE} {}",
+        "{} {}",
+        scope(),
         if student {
             STUDENT_QUERY
         } else {
@@ -423,6 +493,7 @@ async fn update(
         }
     ))
     .param("actor", actor.clone())
+    .param("capable", actor_role == "staff")
     .param("tenant", input.tenant_id.clone())
     .param("school", input.school_id.clone())
     .param("section", input.section_id.clone())
@@ -435,8 +506,10 @@ async fn update(
     .param("audit", uuid::Uuid::new_v4().to_string());
     let row = if actor_role=="owner" {
         let binding_lock=if student {"MATCH (u:User {id:$target}) MERGE (lock:LearningBindingLock {key:'user|'+$target}) ON CREATE SET lock.version=0 SET lock.version=lock.version+1 WITH sec"} else {"WITH sec"};
-        let lock=query(&format!("{SCOPE} {binding_lock} RETURN sec.section_id AS id")).param("actor",actor.clone()).param("school",input.school_id.clone()).param("tenant",input.tenant_id.clone()).param("section",input.section_id.clone()).param("target",input.target_id.clone());
+        let lock=query(&format!("{} {binding_lock} RETURN sec.section_id AS id",scope())).param("actor",actor.clone()).param("capable",false).param("school",input.school_id.clone()).param("tenant",input.tenant_id.clone()).param("section",input.section_id.clone()).param("target",input.target_id.clone());
         crate::school_portal::staff_capability::live_write(&state.graph,crate::school_portal::staff_capability::OwnerSession{config:&state.config,headers:&headers,actor:&actor,school:&input.school_id,tenant:&input.tenant_id,learning:false},lock,q).await?
+    } else if actor_role=="staff" {
+        capable_write(&state.graph,&input.tenant_id,&input.school_id,&actor,CLASS_ACCESS_MANAGE,q).await?
     } else {
         let mut rows=state.graph.execute(q).await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
         let row=rows.next().await.map_err(|_|failure(StatusCode::SERVICE_UNAVAILABLE))?;
@@ -481,7 +554,8 @@ const READ_STUDENTS: &str = "MATCH (s:Student)-[:ENROLLED_AS]->(:EnrolledStudent
 const READ_TEACHERS: &str = "MATCH (g:LearningTeachingGrant {section_id:sec.section_id,school_id:$school,tenant_id:$tenant}) WITH g WHERE g.staff_member_id>$after RETURN g.staff_member_id AS target,null AS student,g.version AS version,g.status AS status ORDER BY target LIMIT 201";
 fn read_query(student: bool) -> String {
     format!(
-        "{READ_SCOPE} {}",
+        "{} {}",
+        with_capable(READ_SCOPE, "MATCH (sec:Section"),
         if student {
             READ_STUDENTS
         } else {
@@ -510,13 +584,22 @@ async fn list(
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor = administrator(&state.config, &headers, &input.tenant_id, &input.school_id).await?;
+    let (actor, role) = capable_actor(
+        &state.graph,
+        &state.config,
+        &headers,
+        &input.tenant_id,
+        &input.school_id,
+        CLASS_ACCESS_MANAGE,
+    )
+    .await?;
     ensure_schema(&state.graph).await?;
     let mut rows = state
         .graph
         .execute(
             query(&read_query(student))
                 .param("actor", actor)
+                .param("capable", role == "staff")
                 .param("tenant", input.tenant_id)
                 .param("school", input.school_id)
                 .param("section", input.section_id)

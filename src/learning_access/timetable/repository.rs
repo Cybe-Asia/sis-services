@@ -12,10 +12,7 @@ pub(crate) enum Family {
     Learning,
 }
 
-pub(crate) fn admin() -> String {
-    admin_as(false)
-}
-/// `admin()`, also letting in a member of the school whom the route found holding
+/// The administrator predicate (Owners, school admins), also letting in a member of the school whom the route found holding
 /// `academic.calendar.manage` (role `staff`, ADR 0018 slice 7).
 pub(crate) fn admin_as(capable: bool) -> String {
     let mut current = crate::school_portal::staff_capability::authority(

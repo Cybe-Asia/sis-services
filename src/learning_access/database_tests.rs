@@ -38,7 +38,8 @@ async fn grants_binding_cas_revocation_and_atomic_audit() {
         school: &str,
     ) -> Result<Option<i64>, neo4rs::Error> {
         let cypher = format!(
-            "{SCOPE} {}",
+            "{} {}",
+            scope(),
             if student {
                 STUDENT_QUERY
             } else {
@@ -49,6 +50,7 @@ async fn grants_binding_cas_revocation_and_atomic_audit() {
             .execute(
                 query(&cypher)
                     .param("actor", actor)
+                    .param("capable", false)
                     .param("section", section)
                     .param("target", target)
                     .param("student", pupil)
@@ -244,6 +246,7 @@ async fn grants_binding_cas_revocation_and_atomic_audit() {
             .execute(
                 query(&read_query(student))
                     .param("actor", actor)
+                    .param("capable", false)
                     .param("section", section)
                     .param("school", school)
                     .param("tenant", "tenant-test")
@@ -339,4 +342,18 @@ async fn grants_binding_cas_revocation_and_atomic_audit() {
         rows.next().await.unwrap().unwrap().get::<i64>("n").unwrap(),
         4
     );
+    // ADR 0018 slice 7: the capability branch lets a member of the school in, and nobody else.
+    let lets_in = |actor: &str, school: &str, capable: bool| {
+        let q = query(&format!("{} RETURN actor.id AS id", scope()))
+            .param("actor", actor.to_string())
+            .param("capable", capable)
+            .param("section", section.clone())
+            .param("school", school.to_string())
+            .param("tenant", "tenant-test");
+        let graph = graph.clone();
+        async move { graph.execute(q).await.unwrap().next().await.unwrap().is_some() }
+    };
+    assert!(!lets_in(&teacher, "school-test", false).await);
+    assert!(lets_in(&teacher, "school-test", true).await);
+    assert!(!lets_in(&teacher, "school-other", true).await);
 }
