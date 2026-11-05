@@ -174,14 +174,6 @@ pub(crate) async fn calendar_actor(
         tenants,
     ))
 }
-pub(crate) async fn administrator(
-    config: &AppConfig,
-    headers: &HeaderMap,
-    tenant_id: &String,
-    school_id: &String,
-) -> Result<String, Failure> {
-    Ok(administrator_actor(config, headers, tenant_id, school_id).await?.0)
-}
 pub(crate) async fn administrator_actor(
     config: &AppConfig,
     headers: &HeaderMap,

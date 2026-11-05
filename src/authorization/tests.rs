@@ -134,11 +134,12 @@ fn authorization_catalogue_and_seeds_load_and_keep_manage_with_owners() {
     assert_eq!(Template::from_seed(principal).version, 2);
     let admin_seed = r.seeds.iter().find(|s| s.code == SCHOOL_ADMIN).unwrap();
     assert_eq!(admin_seed.version, 2);
-    for code in ["academic.section.manage", "academic.enrolment.manage"] {
+    for code in ["academic.section.manage", "academic.enrolment.manage", "academic.records.manage"] {
         assert!(admin_seed.capabilities.iter().any(|c| c == code), "{code}");
     }
     // Moving a student changes their access, attendance and billing: only Owners grant it.
     assert!(r.sensitive("academic.enrolment.manage"));
+    assert!(r.sensitive("academic.records.manage"));
     assert!(!r.sensitive("academic.section.manage"));
     assert!(r
         .seeds

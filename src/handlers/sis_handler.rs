@@ -11,7 +11,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::handlers::auth_helper::{require_admin, require_staff, resolve_lead_id_from_bearer};
+use crate::handlers::auth_helper::{require_staff, resolve_lead_id_from_bearer};
 use crate::models::section_model::Section;
 use crate::repositories::{sis_repository, user_repository};
 use crate::utils::response::ApiResponse;
@@ -302,7 +302,7 @@ pub async fn admin_attendance_roster_handler(
     Path(section_id): Path<String>,
     Query(q): Query<AttendanceListQuery>,
 ) -> (StatusCode, Json<ApiResponse<AttendanceListResponse>>) {
-    let admin = match require_admin(&state, &headers).await {
+    let admin = match require_staff(&state, &headers).await {
         Ok(actor) => actor,
         Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
     };
@@ -363,7 +363,7 @@ pub async fn admin_attendance_upsert_handler(
     Path(section_id): Path<String>,
     Json(payload): Json<BulkAttendanceRequest>,
 ) -> (StatusCode, Json<ApiResponse<BulkAttendanceResponse>>) {
-    let admin = match require_admin(&state, &headers).await {
+    let admin = match require_staff(&state, &headers).await {
         Ok(id) => id,
         Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
     };
@@ -440,7 +440,7 @@ pub async fn admin_grade_roster_handler(
     Path(section_id): Path<String>,
     Query(q): Query<GradeListQuery>,
 ) -> (StatusCode, Json<ApiResponse<GradeListResponse>>) {
-    let admin = match require_admin(&state, &headers).await {
+    let admin = match require_staff(&state, &headers).await {
         Ok(actor) => actor,
         Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
     };
@@ -517,7 +517,7 @@ pub async fn admin_grades_upsert_handler(
     Path(section_id): Path<String>,
     Json(payload): Json<BulkGradesRequest>,
 ) -> (StatusCode, Json<ApiResponse<BulkGradesResponse>>) {
-    let admin = match require_admin(&state, &headers).await {
+    let admin = match require_staff(&state, &headers).await {
         Ok(id) => id,
         Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
     };

@@ -64,35 +64,6 @@ pub async fn require_staff(
     })
 }
 
-pub async fn require_admin(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<AdminActor, (StatusCode, String)> {
-    let actor = crate::enrollment_handover::auth::actor(headers, &state.config)
-        .map_err(|e| match e {
-            crate::enrollment_handover::auth::Error::Unavailable => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Staff authentication unavailable".into(),
-            ),
-            crate::enrollment_handover::auth::Error::Unauthorized => (
-                StatusCode::UNAUTHORIZED,
-                "Invalid or expired staff credential".into(),
-            ),
-        })?;
-    crate::repositories::sis_repository::check_admin(&state.graph, &actor)
-        .await
-        .map_err(|e| match e {
-            lead_repository::RepositoryError::DbError(ref code) if code == "FORBIDDEN" => (
-                StatusCode::FORBIDDEN,
-                "Academic admin access required".into(),
-            ),
-            _ => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Academic service unavailable".into(),
-            ),
-        })?;
-    Ok(actor)
-}
 
 fn bearer_from(headers: &HeaderMap) -> Option<String> {
     headers

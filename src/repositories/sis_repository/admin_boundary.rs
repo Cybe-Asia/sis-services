@@ -29,6 +29,8 @@ pub(super) fn parameters(q: Query, actor: &AdminActor) -> Query {
 pub(super) const SECTION_MANAGE: &str = "academic.section.manage";
 /// Adding students to a class or moving them between classes.
 pub(super) const ENROLMENT_MANAGE: &str = "academic.enrolment.manage";
+/// Admin attendance and grade rosters of a class (sensitive).
+pub(super) const RECORDS_MANAGE: &str = "academic.records.manage";
 /// Reading classes and their members: either of the two.
 pub(super) const CLASS_READ: &[&str] = &[SECTION_MANAGE, ENROLMENT_MANAGE];
 /// The schools where `staff` holds any of `capabilities`, read in the transaction. A school
@@ -83,21 +85,6 @@ async fn one(tx: &mut Txn, q: Query) -> Result<Row, RepositoryError> {
         return Err(forbidden());
     }
     Ok(out.remove(0))
-}
-pub(super) async fn check(graph: &Graph, actor: &AdminActor) -> Result<(), RepositoryError> {
-    let mut rs = graph
-        .execute(parameters(
-            query(&format!("{ACTOR} RETURN a.id AS id")),
-            actor,
-        ))
-        .await
-        .map_err(|_| unavailable())?;
-    if rs.next().await.map_err(|_| unavailable())?.is_none()
-        || rs.next().await.map_err(|_| unavailable())?.is_some()
-    {
-        return Err(forbidden());
-    }
-    Ok(())
 }
 #[derive(Clone, Copy)]
 pub(super) enum Resource<'a> {

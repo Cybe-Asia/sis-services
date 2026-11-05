@@ -12,10 +12,7 @@
 
 mod admin_boundary;
 use crate::handlers::auth_helper::AdminActor;
-use admin_boundary::{execute, invalid, Resource, CHILD, CLASS_READ, ENROLMENT_MANAGE, SECTION_MANAGE};
-pub(crate) async fn check_admin(graph: &Graph, actor: &AdminActor) -> Result<(), RepositoryError> {
-    admin_boundary::check(graph, actor).await
-}
+use admin_boundary::{execute, invalid, Resource, CHILD, CLASS_READ, ENROLMENT_MANAGE, RECORDS_MANAGE, SECTION_MANAGE};
 
 use chrono::Utc;
 use neo4rs::{query, Graph, Node};
@@ -568,7 +565,7 @@ pub async fn upsert_attendance_batch(
     let rs = execute(
         graph,
         actor,
-        &[],
+        &[RECORDS_MANAGE],
         Resource::Section(section_id),
         q,
         Some(("attendance.recorded", section_id)),
@@ -622,7 +619,7 @@ pub async fn list_attendance_for_date(
     ))
     .param("section_id", section_id.to_string())
     .param("date", date.to_string());
-    let rs = execute(graph, actor, &[], Resource::Section(section_id), q, None, None).await?;
+    let rs = execute(graph, actor, &[RECORDS_MANAGE], Resource::Section(section_id), q, None, None).await?;
     let mut out = Vec::new();
     for row in rs {
         out.push(AttendanceRosterRow {
@@ -786,7 +783,7 @@ pub async fn upsert_grades_batch(
     let rs = execute(
         graph,
         actor,
-        &[],
+        &[RECORDS_MANAGE],
         Resource::Section(section_id),
         q,
         Some(("grades.recorded", section_id)),
@@ -845,7 +842,7 @@ pub async fn list_grades_for_subject_term(
     .param("section_id", section_id.to_string())
     .param("subject", subject.to_string())
     .param("term", term.to_string());
-    let rs = execute(graph, actor, &[], Resource::Section(section_id), q, None, None).await?;
+    let rs = execute(graph, actor, &[RECORDS_MANAGE], Resource::Section(section_id), q, None, None).await?;
     let mut out = Vec::new();
     for row in rs {
         out.push(GradeRosterRow {

@@ -83,6 +83,7 @@ pub async fn enrolment(graph: &Graph, student: &str) -> Result<Option<Scope>, Fa
 
 /// The record Admin edits: biodata, the admissions account holder (relationship only) and the
 /// guardians the school recorded. `None` when the Student is not actively enrolled there.
+#[cfg(test)]
 pub async fn read(graph: &Graph, actor: &str, scope: &Scope) -> Result<Option<Value>, Failure> {
     read_as(graph, actor, false, scope).await
 }
@@ -149,6 +150,7 @@ async fn rows(tx: &mut Txn, q: Query) -> Result<Vec<Row>, Failure> {
 
 /// Replaces the biodata, the admissions relationship and the guardian list in one transaction,
 /// CAS on `Student.biodata_version`. The audit row names the changed fields, never their values.
+#[cfg(test)]
 pub async fn save(graph: &Graph, actor: &str, change: &Clean, scope: &Scope, expected: u32) -> Result<Saved, Failure> {
     save_as(graph, actor, false, change, scope, expected).await
 }

@@ -70,6 +70,7 @@ pub async fn init(graph: &Graph) -> Result<(), Box<dyn std::error::Error + Send 
     Ok(())
 }
 /// Lists every room of one school (active and archived) for its administrators.
+#[cfg(test)]
 pub async fn rooms(
     graph: &Graph,
     actor: &str,
@@ -100,6 +101,7 @@ pub async fn rooms_as(
 }
 /// Creates or updates one room under the school lock (CAS on `expectedVersion`, 0 creates).
 /// State and audit commit together; `None` is a revision conflict.
+#[cfg(test)]
 pub async fn save(graph: &Graph, actor: &str, change: &Change) -> Result<Option<i64>, Failure> {
     save_as(graph, actor, false, change).await
 }

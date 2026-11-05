@@ -644,6 +644,12 @@ async fn capability_path(g: &Graph, f: &Fixture) {
     denied(r::assign_students(g, &f.teacher, &f.next, std::slice::from_ref(&f.child)).await);
     denied(r::list_attendance_for_date(g, &f.teacher, &f.next, "2026-10-05").await);
     assert_eq!(count(g, f, "MATCH(a:SISAcademicAudit {school_id:$school,actor_role:'staff',action:'section.created'}) RETURN count(a) AS n").await, 1);
+    // `academic.records.manage` opens the Admin attendance roster of the school's classes.
+    g.run(t(query("CREATE(:AuthorizationRoleTemplate {tenant_id:$tenant,code:'records_desk',name_id:'Meja nilai',name_en:'Records desk',version:1,capabilities:['academic.records.manage'],allowed_scopes:['SCHOOL'],status:'active',updated_at:datetime(),sis_academic_test:$tag}),(:AuthorizationAssignment {id:$tag+'-records-desk',tenant_id:$tenant,staff_member_id:$teacher,template_code:'records_desk',scope_type:'SCHOOL',school_id:$school,status:'active',version:1,updated_at:datetime(),sis_academic_test:$tag})"))).await.unwrap();
+    r::list_attendance_for_date(g, &f.teacher, &f.next, "2026-10-05").await.unwrap();
+    denied(r::list_attendance_for_date(g, &f.teacher, &f.foreign, "2026-10-05").await);
+    g.run(t(query("MATCH(a:AuthorizationAssignment {id:$tag+'-records-desk'}) SET a.status='revoked'"))).await.unwrap();
+    denied(r::list_attendance_for_date(g, &f.teacher, &f.next, "2026-10-05").await);
     g.run(t(query("MATCH(a:AuthorizationAssignment {id:$tag+'-class-desk'}) SET a.status='revoked'"))).await.unwrap();
     denied(r::create_section(g, &f.teacher, &f.input()).await);
     denied(r::list_sections(g, &f.teacher, &r::ListSectionFilters::default()).await);
