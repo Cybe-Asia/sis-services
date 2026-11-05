@@ -66,6 +66,9 @@ pub async fn init(graph: &Graph) -> Result<(), Error> {
         ("school_audit_id", "SchoolPortalAudit", "id"),
         ("school_rsvp_key", "SchoolRsvp", "key"),
         ("school_notice_id", "SchoolNotice", "id"),
+        ("safety_report_id", "SafetyReport", "id"),
+        ("safety_report_public_id", "SafetyReport", "public_id"),
+        ("safety_event_id", "SafetyEvent", "id"),
     ] {
         graph
             .run(query(&format!(
@@ -92,6 +95,7 @@ pub use teacher::{attendance, publish, review};
 pub use teacher::{
     attendance_live, classroom, context, publish_live, review_live, teacher_calendar,
 };
+pub(crate) use teacher::execute_write;
 
 mod growth;
 pub use growth::parent_growth;

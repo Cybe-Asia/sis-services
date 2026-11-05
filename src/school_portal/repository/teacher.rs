@@ -358,7 +358,7 @@ pub async fn review_live(
     review_write(graph, member, section, id, input, Some((config, headers))).await
 }
 
-async fn execute_write(
+pub(crate) async fn execute_write(
     graph: &Graph,
     member: &Teacher,
     section: &str,

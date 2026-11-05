@@ -37,6 +37,13 @@ pub struct AppConfig {
     pub local_test: bool,
     /// `MINIO_*`: the object store for article covers and recitation clips.
     pub object_store: Option<ObjectStoreSettings>,
+    /// `SAFETY_INGEST_TOKEN` (>= 32 bytes): the on-site camera service's token for safety events (ADR 0025).
+    pub safety_ingest_token: Option<String>,
+    /// `NOTIFICATION_SERVICE_URL` and `NOTIFICATION_INTERNAL_TOKEN`: WhatsApp alerts to the safety roster.
+    pub notification_service_url: Option<String>,
+    pub notification_internal_token: Option<String>,
+    /// `SAFETY_ALERT_LINK`: the Safety page an alert points at.
+    pub safety_alert_link: Option<String>,
 }
 
 /// The object store this deployment names; `None` when any required `MINIO_*` value is missing or blank.
@@ -128,6 +135,10 @@ impl AppConfig {
                 == Ok("true"),
             local_test: env::var("APP_ENV").as_deref() == Ok("test"),
             object_store: object_store(),
+            safety_ingest_token: env::var("SAFETY_INGEST_TOKEN").ok().filter(|v| !v.is_empty()),
+            notification_service_url: env::var("NOTIFICATION_SERVICE_URL").ok().filter(|v| !v.is_empty()),
+            notification_internal_token: env::var("NOTIFICATION_INTERNAL_TOKEN").ok().filter(|v| !v.is_empty()),
+            safety_alert_link: env::var("SAFETY_ALERT_LINK").ok().filter(|v| !v.is_empty()),
         })
     }
 }

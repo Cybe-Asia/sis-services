@@ -2,6 +2,7 @@
 pub mod assessment_grades;
 pub(crate) mod auth;
 mod messaging;
+mod safety;
 pub mod model;
 pub mod repository;
 pub(crate) mod staff_capability;
@@ -338,6 +339,35 @@ pub fn router() -> Router<AppState> {
             post(assessment_grades::import),
         )
         .route("/api/leads/v1/messaging/members", get(messaging::members))
+        .route(
+            "/api/v1/sis-service/learning/owner/student/safety/reports",
+            get(safety::student_list).post(safety::student_create),
+        )
+        .route(
+            "/api/leads/v1/me/school/safety/reports",
+            get(safety::parent_list).post(safety::parent_create),
+        )
+        .route(
+            "/api/leads/v1/teacher/school/safety/reports",
+            get(safety::staff_list),
+        )
+        .route(
+            "/api/leads/v1/teacher/school/safety/reports/:id",
+            get(safety::staff_detail).post(safety::staff_update),
+        )
+        .route("/api/leads/v1/teacher/school/safety/events", get(safety::events))
+        .route(
+            "/api/leads/v1/teacher/school/safety/events/:id/rating",
+            post(safety::rate),
+        )
+        .route(
+            "/api/leads/v1/teacher/school/safety/roster",
+            post(safety::roster),
+        )
+        .route(
+            "/api/v1/sis-service/internal/safety/camera-events",
+            post(safety::ingest),
+        )
         .route("/api/leads/v1/me/school", get(parent))
         .route(
             "/api/leads/v1/me/school/growth/:student",
