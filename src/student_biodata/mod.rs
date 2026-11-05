@@ -56,10 +56,25 @@ async fn read(
     let scope = deadline(repository::enrolment(&s.graph, &q.student_id))
         .await?
         .ok_or_else(not_found)?;
-    let (actor, _) = session
-        .administrator(&scope.tenant_id, &scope.school_id)
-        .map_err(|e| if e.0 == StatusCode::FORBIDDEN { not_found() } else { e })?;
-    deadline(repository::read(&s.graph, &actor, &scope))
+    let (actor, capable) = match session.administrator(&scope.tenant_id, &scope.school_id) {
+        Ok((actor, _)) => (actor, false),
+        // ADR 0018 slice 7: other staff of the school while they hold `student.biodata.manage`.
+        Err(e) if e.0 == StatusCode::FORBIDDEN => {
+            let (actor, _) = crate::learning_access::capable_actor(
+                &s.graph,
+                &s.config,
+                &h,
+                &scope.tenant_id,
+                &scope.school_id,
+                BIODATA_MANAGE,
+            )
+            .await
+            .map_err(|e| if e.0 == StatusCode::FORBIDDEN { not_found() } else { e })?;
+            (actor, true)
+        }
+        Err(e) => return Err(e),
+    };
+    deadline(repository::read_as(&s.graph, &actor, capable, &scope))
         .await?
         .map(|data| Json(json!({"data":data})))
         .ok_or_else(not_found)
@@ -73,8 +88,8 @@ async fn change(
     let Json(c) = j.map_err(|_| failure(StatusCode::BAD_REQUEST))?;
     let clean = c.clean().ok_or_else(|| failure(StatusCode::BAD_REQUEST))?;
     let scope = c.scope();
-    let actor = crate::learning_access::administrator(&s.config, &h, &scope.tenant_id, &scope.school_id).await?;
-    match deadline(repository::save(&s.graph, &actor, &clean, &scope, c.expected_version)).await? {
+    let (actor, role) = crate::learning_access::capable_actor(&s.graph, &s.config, &h, &scope.tenant_id, &scope.school_id, BIODATA_MANAGE).await?;
+    match deadline(repository::save_as(&s.graph, &actor, role == "staff", &clean, &scope, c.expected_version)).await? {
         Saved::Version(version) => Ok(Json(json!({"data":{"version":version}}))),
         Saved::Conflict => Err(failure(StatusCode::CONFLICT)),
         Saved::NisnInUse => Err(coded(StatusCode::CONFLICT, "NISN_IN_USE")),
@@ -82,6 +97,9 @@ async fn change(
         Saved::Invalid => Err(failure(StatusCode::BAD_REQUEST)),
     }
 }
+
+/// Student biodata (ADR 0018 slice 7; sensitive, only an Owner grants it).
+pub(crate) const BIODATA_MANAGE: &str = "student.biodata.manage";
 
 pub fn router() -> Router<AppState> {
     Router::new()

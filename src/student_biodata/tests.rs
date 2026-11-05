@@ -233,6 +233,22 @@ async fn admin_saves_biodata_with_version_audit_and_scope() -> Result<(), Box<dy
         assert_eq!(audits[0].2, vec!["actor_id", "actor_role", "changed_fields", "created_at", "guardians_added", "guardians_removed", "guardians_reordered", "guardians_updated", "key", "school_id", "student_id", "tenant_id", "version"]);
         let mut rows = graph.execute(query("MATCH (l:Lead {lead_id:$lead}) RETURN l.relationship AS r").param("lead", format!("{m}-lead"))).await?;
         assert_eq!(rows.next().await?.ok_or("lead")?.get::<String>("r")?, "mother");
+
+        // ADR 0018 slice 7: a teacher of the school with `student.biodata.manage` reads and saves;
+        // the role path alone does not let them in, and a revoked assignment denies the write.
+        use super::repository::{read_as, save_as};
+        let teacher = format!("{m}-teacher");
+        graph.run(query("CREATE (:StaffMember {id:$teacher,membershipStatus:'ACTIVE',roles:['teacher'],schoolIds:[$m],tenantIds:[$m],mark:$m})
+            CREATE (:AuthorizationRoleTemplate {tenant_id:$m,code:'biodata_desk',name_id:'Meja biodata',name_en:'Biodata desk',version:1,capabilities:['student.biodata.manage'],allowed_scopes:['SCHOOL'],status:'active',updated_at:datetime(),mark:$m})
+            CREATE (:AuthorizationAssignment {id:$m+'-biodata',tenant_id:$m,staff_member_id:$teacher,template_code:'biodata_desk',scope_type:'SCHOOL',school_id:$m,status:'active',version:1,updated_at:datetime(),mark:$m})")
+            .param("m", m.clone()).param("teacher", teacher.clone())).await?;
+        assert!(read(&graph, &teacher, &scope).await.map_err(|e| format!("read {}", e.0))?.is_none());
+        assert!(read_as(&graph, &teacher, true, &scope).await.map_err(|e| format!("read {}", e.0))?.is_some());
+        assert_eq!(outcome(save_as(&graph, &teacher, true, &change, &scope, 3).await), "v4");
+        graph.run(query("MATCH (a:AuthorizationAssignment {id:$m+'-biodata'}) SET a.status='revoked'").param("m", m.clone())).await?;
+        assert_eq!(outcome(save_as(&graph, &teacher, true, &next, &scope, 4).await), "failure 403 Forbidden");
+        let mut rows = graph.execute(query("MATCH (a:StudentBiodataAudit {student_id:$student,version:4}) RETURN a.actor_role AS role").param("student", student.clone())).await?;
+        assert_eq!(rows.next().await?.ok_or("audit 4")?.get::<String>("role")?, "staff");
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     }
     .await;

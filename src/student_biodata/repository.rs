@@ -84,8 +84,13 @@ pub async fn enrolment(graph: &Graph, student: &str) -> Result<Option<Scope>, Fa
 /// The record Admin edits: biodata, the admissions account holder (relationship only) and the
 /// guardians the school recorded. `None` when the Student is not actively enrolled there.
 pub async fn read(graph: &Graph, actor: &str, scope: &Scope) -> Result<Option<Value>, Failure> {
-    let admin = crate::education_calendar::repository::ADMIN;
-    let mut rows = graph.execute(scoped(format!("{admin} {STUDENT} {LEAD} RETURN s.fullName AS name,s.dateOfBirth AS birth_date,s.nisn AS nisn,s.birthPlace AS birth_place,s.gender AS gender,s.emergencyContact AS emergency,coalesce(s.biodata_version,0) AS version,size(leads) AS lead_count,CASE WHEN size(leads)=1 THEN leads[0].parent_name END AS lead_name,CASE WHEN size(leads)=1 THEN leads[0].relationship END AS lead_relationship,CASE WHEN size(leads)=1 THEN leads[0].mobile END AS lead_phone1,CASE WHEN size(leads)=1 THEN leads[0].whatsapp END AS lead_phone2,CASE WHEN size(leads)=1 THEN leads[0].email END AS lead_email"), actor, scope)).await.map_err(unavailable)?;
+    read_as(graph, actor, false, scope).await
+}
+/// [`read`] for a member of the school the route found holding `student.biodata.manage`
+/// (`capable`, ADR 0018 slice 7).
+pub async fn read_as(graph: &Graph, actor: &str, capable: bool, scope: &Scope) -> Result<Option<Value>, Failure> {
+    let admin = crate::education_calendar::repository::manager();
+    let mut rows = graph.execute(scoped(format!("{admin} {STUDENT} {LEAD} RETURN s.fullName AS name,s.dateOfBirth AS birth_date,s.nisn AS nisn,s.birthPlace AS birth_place,s.gender AS gender,s.emergencyContact AS emergency,coalesce(s.biodata_version,0) AS version,size(leads) AS lead_count,CASE WHEN size(leads)=1 THEN leads[0].parent_name END AS lead_name,CASE WHEN size(leads)=1 THEN leads[0].relationship END AS lead_relationship,CASE WHEN size(leads)=1 THEN leads[0].mobile END AS lead_phone1,CASE WHEN size(leads)=1 THEN leads[0].whatsapp END AS lead_phone2,CASE WHEN size(leads)=1 THEN leads[0].email END AS lead_email"), actor, scope).param("capable", capable)).await.map_err(unavailable)?;
     let Some(row) = rows.next().await.map_err(unavailable)? else {
         return Ok(None);
     };
@@ -145,8 +150,26 @@ async fn rows(tx: &mut Txn, q: Query) -> Result<Vec<Row>, Failure> {
 /// Replaces the biodata, the admissions relationship and the guardian list in one transaction,
 /// CAS on `Student.biodata_version`. The audit row names the changed fields, never their values.
 pub async fn save(graph: &Graph, actor: &str, change: &Clean, scope: &Scope, expected: u32) -> Result<Saved, Failure> {
+    save_as(graph, actor, false, change, scope, expected).await
+}
+/// [`save`] for a capability holder: `student.biodata.manage` is read again in the transaction.
+pub async fn save_as(graph: &Graph, actor: &str, capable: bool, change: &Clean, scope: &Scope, expected: u32) -> Result<Saved, Failure> {
     let mut tx = graph.start_txn().await.map_err(unavailable)?;
-    let result = write(&mut tx, actor, change, scope, i64::from(expected)).await;
+    let result = if capable
+        && !crate::authorization::reads::permits(
+            &mut crate::authorization::facts::Db::Tx(&mut tx),
+            &scope.tenant_id,
+            &scope.school_id,
+            actor,
+            super::BIODATA_MANAGE,
+        )
+        .await
+        .map_err(unavailable)?
+    {
+        Err(failure(StatusCode::FORBIDDEN))
+    } else {
+        write(&mut tx, actor, capable, change, scope, i64::from(expected)).await
+    };
     match result {
         Ok(Saved::Version(v)) => {
             tx.commit().await.map_err(unavailable)?;
@@ -159,10 +182,10 @@ pub async fn save(graph: &Graph, actor: &str, change: &Clean, scope: &Scope, exp
     }
 }
 
-async fn write(tx: &mut Txn, actor: &str, change: &Clean, scope: &Scope, expected: i64) -> Result<Saved, Failure> {
-    let admin = crate::education_calendar::repository::ADMIN;
+async fn write(tx: &mut Txn, actor: &str, capable: bool, change: &Clean, scope: &Scope, expected: i64) -> Result<Saved, Failure> {
+    let admin = crate::education_calendar::repository::manager();
     // Taking the write lock on the Student first serialises concurrent saves of the same record.
-    let Some(row) = one(tx, scoped(format!("{admin} {STUDENT} SET s.biodata_lock=coalesce(s.biodata_lock,0)+1 WITH actor,s {LEAD} RETURN coalesce(s.biodata_version,0) AS version,s.nisn AS nisn,s.birthPlace AS birth_place,s.gender AS gender,s.emergencyContact AS emergency,size(leads) AS lead_count,CASE WHEN size(leads)=1 THEN leads[0].relationship END AS relationship,CASE WHEN 'owner' IN coalesce(actor.roles,[]) THEN 'owner' ELSE 'school_admin' END AS role"), actor, scope)).await? else {
+    let Some(row) = one(tx, scoped(format!("{admin} {STUDENT} SET s.biodata_lock=coalesce(s.biodata_lock,0)+1 WITH actor,s {LEAD} RETURN coalesce(s.biodata_version,0) AS version,s.nisn AS nisn,s.birthPlace AS birth_place,s.gender AS gender,s.emergencyContact AS emergency,size(leads) AS lead_count,CASE WHEN size(leads)=1 THEN leads[0].relationship END AS relationship,CASE WHEN 'owner' IN coalesce(actor.roles,[]) THEN 'owner' WHEN 'school_admin' IN coalesce(actor.roles,[]) THEN 'school_admin' ELSE 'staff' END AS role"), actor, scope).param("capable", capable)).await? else {
         return Ok(Saved::NotFound);
     };
     let version = row.get::<i64>("version").map_err(unavailable)?;
