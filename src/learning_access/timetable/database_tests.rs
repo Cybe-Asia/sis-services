@@ -784,3 +784,30 @@ async fn legacy_compatibility_and_cas(
     );
     Ok(())
 }
+/// ADR 0018 slice 7: the statements a calendar manager (role `staff`) runs plan in Neo4j, and the
+/// Owner and school-admin statements are unchanged by the capability branch.
+#[tokio::test]
+#[ignore = "requires disposable loopback SCHOOL_PORTAL_TEST_BOLT=127.0.0.1:3223"]
+async fn capable_admin_statements_plan() {
+    assert_eq!(
+        std::env::var("SCHOOL_PORTAL_TEST_BOLT").unwrap(),
+        "127.0.0.1:3223"
+    );
+    let graph = Graph::new("127.0.0.1:3223", "neo4j", "parent-otp-fixture-password")
+        .await
+        .unwrap();
+    assert_eq!(repository::authority("owner"), repository::admin());
+    assert_eq!(repository::authority("school_admin"), repository::admin());
+    assert!(repository::authority("staff").contains("(true AND NOT 'owner' IN coalesce(a.roles,[])"));
+    assert!(!repository::admin().contains("(true AND"));
+    for body in [
+        repository::authority("staff"),
+        repository::admin_as(true).replace("section_id:$class,", ""),
+        format!("{} WITH a,sec {}", repository::authority("staff"), repository::TEACHER),
+    ] {
+        graph
+            .run(query(&format!("EXPLAIN {body} RETURN a.id AS id")))
+            .await
+            .unwrap_or_else(|e| panic!("{e}: {body}"));
+    }
+}

@@ -76,9 +76,19 @@ pub async fn rooms(
     tenant: &str,
     school: &str,
 ) -> Result<Value, Failure> {
-    let admin = crate::education_calendar::repository::ADMIN;
+    rooms_as(graph, actor, false, tenant, school).await
+}
+/// [`rooms`] for a caller the route let in by `academic.calendar.manage` (`capable`, ADR 0018).
+pub async fn rooms_as(
+    graph: &Graph,
+    actor: &str,
+    capable: bool,
+    tenant: &str,
+    school: &str,
+) -> Result<Value, Failure> {
+    let admin = crate::education_calendar::repository::manager();
     let unavailable = || failure(StatusCode::SERVICE_UNAVAILABLE);
-    let mut rows=graph.execute(query(&format!("{admin} MATCH(r:SchoolRoom {{school_id:$school,tenant_id:$tenant}}) RETURN r.id AS id,r.name AS name,r.status AS status,r.version AS version ORDER BY id LIMIT 501")).param("actor",actor).param("school",school).param("tenant",tenant)).await.map_err(|_|unavailable())?;
+    let mut rows=graph.execute(query(&format!("{admin} MATCH(r:SchoolRoom {{school_id:$school,tenant_id:$tenant}}) RETURN r.id AS id,r.name AS name,r.status AS status,r.version AS version ORDER BY id LIMIT 501")).param("actor",actor).param("capable",capable).param("school",school).param("tenant",tenant)).await.map_err(|_|unavailable())?;
     let mut items = vec![];
     while let Some(r) = rows.next().await.map_err(|_| unavailable())? {
         if items.len() == 500 {
@@ -91,15 +101,39 @@ pub async fn rooms(
 /// Creates or updates one room under the school lock (CAS on `expectedVersion`, 0 creates).
 /// State and audit commit together; `None` is a revision conflict.
 pub async fn save(graph: &Graph, actor: &str, change: &Change) -> Result<Option<i64>, Failure> {
+    save_as(graph, actor, false, change).await
+}
+/// [`save`] for a caller the route let in by `academic.calendar.manage`: the capability is read
+/// again under the school lock, so an assignment revoked meanwhile denies.
+pub async fn save_as(
+    graph: &Graph,
+    actor: &str,
+    capable: bool,
+    change: &Change,
+) -> Result<Option<i64>, Failure> {
     use crate::learning_access::timetable::repository::{lock_school, one};
-    let admin = crate::education_calendar::repository::ADMIN;
+    let admin = crate::education_calendar::repository::manager();
     let r = &change.room;
     let unavailable = || failure(StatusCode::SERVICE_UNAVAILABLE);
     let mut tx = graph.start_txn().await.map_err(|_| unavailable())?;
     let result = async {
         lock_school(&mut tx, &r.school_id, &r.tenant_id).await?;
-        let q=query(&format!("{admin} WITH actor OPTIONAL MATCH(old:SchoolRoom {{key:$key}}) WITH actor,old WHERE (old IS NULL AND $version=0) OR (old.version=$version AND old.school_id=$school AND old.tenant_id=$tenant) MERGE(r:SchoolRoom {{key:$key}}) ON CREATE SET r.id=$id,r.school_id=$school,r.tenant_id=$tenant,r.version=0,r.created_at=datetime() SET r.version=r.version+1,r.name=$name,r.status=$status,r.updated_at=datetime() CREATE(:SchoolRoomAudit {{key:$audit,actor_id:actor.id,actor_role:CASE WHEN 'owner' IN coalesce(actor.roles,[]) THEN 'owner' ELSE 'school_admin' END,room_key:r.key,school_id:$school,tenant_id:$tenant,version:r.version,name:$name,status:$status,created_at:datetime()}}) RETURN r.version AS version"))
+        if capable
+            && !crate::authorization::reads::permits(
+                &mut crate::authorization::facts::Db::Tx(&mut tx),
+                &r.tenant_id,
+                &r.school_id,
+                actor,
+                crate::education_calendar::CALENDAR_MANAGE,
+            )
+            .await
+            .map_err(|_| unavailable())?
+        {
+            return Err(failure(StatusCode::FORBIDDEN));
+        }
+        let q=query(&format!("{admin} WITH actor OPTIONAL MATCH(old:SchoolRoom {{key:$key}}) WITH actor,old WHERE (old IS NULL AND $version=0) OR (old.version=$version AND old.school_id=$school AND old.tenant_id=$tenant) MERGE(r:SchoolRoom {{key:$key}}) ON CREATE SET r.id=$id,r.school_id=$school,r.tenant_id=$tenant,r.version=0,r.created_at=datetime() SET r.version=r.version+1,r.name=$name,r.status=$status,r.updated_at=datetime() CREATE(:SchoolRoomAudit {{key:$audit,actor_id:actor.id,actor_role:CASE WHEN 'owner' IN coalesce(actor.roles,[]) THEN 'owner' WHEN 'school_admin' IN coalesce(actor.roles,[]) THEN 'school_admin' ELSE 'staff' END,room_key:r.key,school_id:$school,tenant_id:$tenant,version:r.version,name:$name,status:$status,created_at:datetime()}}) RETURN r.version AS version"))
             .param("actor", actor)
+            .param("capable", capable)
             .param("key", r.key())
             .param("id", r.id.clone())
             .param("school", r.school_id.clone())
@@ -139,9 +173,16 @@ async fn list(
     if !identifier(&q.tenant_id) || !identifier(&q.school_id) {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor =
-        crate::learning_access::administrator(&s.config, &h, &q.tenant_id, &q.school_id).await?;
-    rooms(&s.graph, &actor, &q.tenant_id, &q.school_id)
+    let (actor, role) = crate::learning_access::capable_actor(
+        &s.graph,
+        &s.config,
+        &h,
+        &q.tenant_id,
+        &q.school_id,
+        crate::education_calendar::CALENDAR_MANAGE,
+    )
+    .await?;
+    rooms_as(&s.graph, &actor, role == "staff", &q.tenant_id, &q.school_id)
         .await
         .map(|data| Json(json!({"data":data})))
 }
@@ -154,10 +195,16 @@ async fn change(
     if !c.room.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor =
-        crate::learning_access::administrator(&s.config, &h, &c.room.tenant_id, &c.room.school_id)
-            .await?;
-    match save(&s.graph, &actor, &c).await? {
+    let (actor, role) = crate::learning_access::capable_actor(
+        &s.graph,
+        &s.config,
+        &h,
+        &c.room.tenant_id,
+        &c.room.school_id,
+        crate::education_calendar::CALENDAR_MANAGE,
+    )
+    .await?;
+    match save_as(&s.graph, &actor, role == "staff", &c).await? {
         Some(version) => Ok(Json(json!({"data":{"version":version}}))),
         None => Err(failure(StatusCode::CONFLICT)),
     }

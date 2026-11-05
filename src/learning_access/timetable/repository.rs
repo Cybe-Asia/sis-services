@@ -13,20 +13,56 @@ pub(crate) enum Family {
 }
 
 pub(crate) fn admin() -> String {
-    let current = crate::school_portal::staff_capability::authority(
+    admin_as(false)
+}
+/// `admin()`, also letting in a member of the school whom the route found holding
+/// `academic.calendar.manage` (role `staff`, ADR 0018 slice 7).
+pub(crate) fn admin_as(capable: bool) -> String {
+    let mut current = crate::school_portal::staff_capability::authority(
         "a",
         "'school_admin'",
         "$school",
         "$tenant",
     );
+    if capable {
+        let staff = crate::school_portal::staff_capability::capable("a").replace("$capable", "true");
+        current = format!("({current} OR {staff})");
+    }
     format!("MATCH(a:StaffMember {{id:$actor,membershipStatus:'ACTIVE'}}),(sec:Section {{section_id:$class,school_id:$school,tenant_id:$tenant,status:'active'}}) WHERE {current} AND NOT EXISTS {{MATCH(other:StaffMember {{id:a.id}}) WHERE other<>a}} AND NOT EXISTS {{MATCH(other:Section {{section_id:sec.section_id}}) WHERE other<>sec}} AND EXISTS {{MATCH(:School {{school_id:$school,tenant_id:$tenant}})}} AND NOT EXISTS {{MATCH(one:School {{school_id:$school,tenant_id:$tenant}}),(two:School {{school_id:$school,tenant_id:$tenant}}) WHERE one<>two}}")
 }
 pub(crate) const TEACHER:&str="MATCH(t:StaffMember {id:$teacher,membershipStatus:'ACTIVE'}) WHERE 'teacher' IN coalesce(t.roles,[]) AND $school IN coalesce(t.schoolIds,[]) AND $tenant IN coalesce(t.tenantIds,[]) AND NOT EXISTS {MATCH(other:StaffMember {id:t.id}) WHERE other<>t} AND (sec.homeroom_staff_member_id=t.id OR EXISTS {MATCH(:LearningTeachingGrant {staff_member_id:t.id,section_id:sec.section_id,school_id:$school,tenant_id:$tenant,status:'ACTIVE'})})";
 pub(crate) fn authority(role: &str) -> String {
     if role != "teacher" {
-        return admin();
+        return admin_as(role == "staff");
     }
     "MATCH(a:StaffMember {id:$actor,membershipStatus:'ACTIVE'}),(sec:Section {section_id:$class,school_id:$school,tenant_id:$tenant,status:'active'}) WHERE 'teacher' IN coalesce(a.roles,[]) AND NOT 'owner' IN coalesce(a.roles,[]) AND $school IN coalesce(a.schoolIds,[]) AND $tenant IN coalesce(a.tenantIds,[]) AND NOT EXISTS {MATCH(other:StaffMember {id:a.id}) WHERE other<>a} AND NOT EXISTS {MATCH(other:Section {section_id:sec.section_id}) WHERE other<>sec} AND (sec.homeroom_staff_member_id=a.id OR EXISTS {MATCH(:LearningTeachingGrant {staff_member_id:a.id,section_id:sec.section_id,school_id:$school,tenant_id:$tenant,status:'ACTIVE'})})".into()
+}
+/// The Admin Portal caller, checked again under the write's locks: Owners and school administrators
+/// by role, other staff of the school only while they hold `academic.calendar.manage` (read in the
+/// transaction).
+pub(crate) async fn portal_actor(
+    tx: &mut Txn,
+    config: &crate::config::config::AppConfig,
+    headers: &HeaderMap,
+    tenant: &String,
+    school: &String,
+) -> Result<(String, String), Failure> {
+    let (actor, role) =
+        crate::learning_access::school_staff_actor(config, headers, tenant, school).await?;
+    if role == "staff"
+        && !crate::authorization::reads::permits(
+            &mut crate::authorization::facts::Db::Tx(tx),
+            tenant,
+            school,
+            &actor,
+            crate::education_calendar::CALENDAR_MANAGE,
+        )
+        .await
+        .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
+    {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    Ok((actor, role))
 }
 pub(super) fn scoped(body: &str, actor: &str, m: &Meeting) -> Query {
     query(body)
@@ -212,9 +248,7 @@ async fn change_locked(
         return Err(denied());
     }
     let current = match family {
-        Family::Portal => {
-            super::super::administrator_actor(config, headers, &m.tenant_id, &m.school_id).await?
-        }
+        Family::Portal => portal_actor(tx, config, headers, &m.tenant_id, &m.school_id).await?,
         Family::Learning => {
             let staff =
                 crate::school_portal::auth::teacher_in(config, headers, &m.school_id, &m.tenant_id)
@@ -226,7 +260,7 @@ async fn change_locked(
     if current != (actor.to_string(), role.to_string()) {
         return Err(denied());
     }
-    let authorized=format!("{} WITH a,sec {TEACHER} WITH a,sec,t WHERE sec.academic_year=$year AND (($role='owner' AND 'owner' IN coalesce(a.roles,[])) OR ($role IN ['teacher','school_admin'] AND NOT 'owner' IN coalesce(a.roles,[]))) SET t.timetable_write_lock=coalesce(t.timetable_write_lock,0)+1,sec.timetable_write_lock=coalesce(sec.timetable_write_lock,0)+1 RETURN timestamp() AS now",authority(role));
+    let authorized=format!("{} WITH a,sec {TEACHER} WITH a,sec,t WHERE sec.academic_year=$year AND (($role='owner' AND 'owner' IN coalesce(a.roles,[])) OR ($role IN ['teacher','school_admin','staff'] AND NOT 'owner' IN coalesce(a.roles,[]))) SET t.timetable_write_lock=coalesce(t.timetable_write_lock,0)+1,sec.timetable_write_lock=coalesce(sec.timetable_write_lock,0)+1 RETURN timestamp() AS now",authority(role));
     let row = one(tx, scoped(&authorized, actor, m).param("role", role))
         .await?
         .ok_or_else(denied)?;

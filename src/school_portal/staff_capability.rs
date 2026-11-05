@@ -34,6 +34,12 @@ pub fn live_scope(
 pub fn owner(alias: &str, school: &str, tenant: &str) -> String {
     format!("('owner' IN coalesce({alias}.roles,[]) AND size(coalesce({alias}.teamIds,[]))=0 AND ((size(coalesce({alias}.schoolIds,[]))=0 AND size(coalesce({alias}.tenantIds,[]))=0) OR ({school} IN coalesce({alias}.schoolIds,[]) AND {tenant} IN coalesce({alias}.tenantIds,[]))) AND NOT EXISTS {{MATCH(other:StaffMember {{id:{alias}.id}}) WHERE other<>{alias}}} AND EXISTS {{MATCH(:School {{school_id:{school},tenant_id:{tenant}}})}} AND NOT EXISTS {{MATCH(one:School {{school_id:{school},tenant_id:{tenant}}}),(two:School {{school_id:{school},tenant_id:{tenant}}}) WHERE one<>two}})")
 }
+/// ADR 0018 slice 7: a member of the school (not an Owner, who passes by role) whom the route found
+/// holding the area's capability there (`$capable`). Reads the caller's node, so a membership ended
+/// meanwhile still refuses. Owners and school administrators keep their role predicates beside it.
+pub fn capable(alias: &str) -> String {
+    format!("($capable AND NOT 'owner' IN coalesce({alias}.roles,[]) AND $school IN coalesce({alias}.schoolIds,[]) AND $tenant IN coalesce({alias}.tenantIds,[]) AND NOT EXISTS {{MATCH(other:StaffMember {{id:{alias}.id}}) WHERE other<>{alias}}})")
+}
 pub fn authority(alias: &str, role: &str, school: &str, tenant: &str) -> String {
     format!("{alias}.membershipStatus='ACTIVE' AND ((NOT 'owner' IN coalesce({alias}.roles,[]) AND {role} IN coalesce({alias}.roles,[]) AND {school} IN coalesce({alias}.schoolIds,[]) AND {tenant} IN coalesce({alias}.tenantIds,[])) OR {})", owner(alias,school,tenant))
 }

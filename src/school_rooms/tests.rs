@@ -122,6 +122,22 @@ async fn catalogue_and_meeting_join() -> Result<(), Box<dyn std::error::Error + 
             .map_err(failed)?;
         assert_eq!(listed["items"][0]["name"], "Room 7A (Lab)");
         assert_eq!(listed["items"][0]["version"], 2);
+        // ADR 0018 slice 7: a teacher of the school manages rooms only while holding
+        // `academic.calendar.manage`, read again under the school lock.
+        let denied = |r: Result<Option<i64>, crate::school_portal::Failure>| {
+            matches!(r, Err((code, _)) if code == axum::http::StatusCode::FORBIDDEN)
+        };
+        assert!(denied(save_as(&graph, &stranger, true, &change(&r, 2)).await));
+        let grant = |q: &str| query(q).param("tenant", tenant.clone()).param("school", school.clone()).param("staff", stranger.clone()).param("mark", mark.clone());
+        graph.run(grant("CREATE(:AuthorizationRoleTemplate {tenant_id:$tenant,code:'room_desk',name_id:'Meja ruang',name_en:'Room desk',version:1,capabilities:['academic.calendar.manage'],allowed_scopes:['SCHOOL'],status:'active',updated_at:datetime(),room_test:$mark}),(:AuthorizationAssignment {id:$mark+'-room-desk',tenant_id:$tenant,staff_member_id:$staff,template_code:'room_desk',scope_type:'SCHOOL',school_id:$school,status:'active',version:1,updated_at:datetime(),room_test:$mark})")).await?;
+        r.name = "Room 7A (Science)".into();
+        assert_eq!(save_as(&graph, &stranger, true, &change(&r, 2)).await.map_err(failed)?, Some(3));
+        assert_eq!(save(&graph, &stranger, &change(&r, 3)).await.map_err(failed)?, None, "role path alone");
+        assert_eq!(rooms_as(&graph, &stranger, true, &tenant, &school).await.map_err(failed)?["items"][0]["version"], 3);
+        graph.run(grant("MATCH(a:AuthorizationAssignment {id:$mark+'-room-desk'}) SET a.status='revoked'")).await?;
+        assert!(denied(save_as(&graph, &stranger, true, &change(&r, 3)).await));
+        r.name = "Room 7A (Lab)".into();
+        assert_eq!(save(&graph, &owner, &change(&r, 3)).await.map_err(failed)?, Some(4));
         let join = |graph: Graph| {
             let (school, tenant) = (school.clone(), tenant.clone());
             async move {
@@ -150,8 +166,8 @@ async fn catalogue_and_meeting_join() -> Result<(), Box<dyn std::error::Error + 
         );
         r.status = "archived".into();
         assert_eq!(
-            save(&graph, &owner, &change(&r, 2)).await.map_err(failed)?,
-            Some(3)
+            save(&graph, &owner, &change(&r, 4)).await.map_err(failed)?,
+            Some(5)
         );
         assert_eq!(
             join(graph.clone()).await?.1,
@@ -168,7 +184,7 @@ async fn catalogue_and_meeting_join() -> Result<(), Box<dyn std::error::Error + 
             .await?
             .ok_or("audit")?
             .get::<i64>("n")?;
-        assert_eq!(audits, 3);
+        assert_eq!(audits, 5);
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     }
     .await;

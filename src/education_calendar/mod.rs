@@ -38,8 +38,12 @@ struct ContextPage {
     #[serde(alias = "tenantId")]
     tenant_id: Option<String>,
 }
+/// The education calendar, rooms and weekly timetable (ADR 0018 slice 7): Owners and school
+/// administrators by role, and staff holding this capability at the school.
+pub(crate) const CALENDAR_MANAGE: &str = "academic.calendar.manage";
 /// Actor, schools, tenants and `school|tenant` keys where a staff member who is not an
-/// administrator holds `school.content.manage`; `FORBIDDEN` when there is none.
+/// administrator holds `school.content.manage` (article audiences) or `academic.calendar.manage`
+/// (calendar audiences); `FORBIDDEN` when there is none.
 async fn content_scope(
     s: &AppState,
     h: &HeaderMap,
@@ -72,7 +76,21 @@ async fn content_scope(
         {
             capable.push(format!("{school}|{tenant}"));
         }
+        for school in crate::authorization::reads::permitted_schools(
+            &mut crate::authorization::facts::Db::Graph(&s.graph),
+            tenant,
+            &schools,
+            &actor,
+            CALENDAR_MANAGE,
+        )
+        .await
+        .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
+        {
+            capable.push(format!("{school}|{tenant}"));
+        }
     }
+    capable.sort();
+    capable.dedup();
     if capable.is_empty() {
         return Err(failure(StatusCode::FORBIDDEN));
     }
@@ -130,9 +148,16 @@ async fn list(
     {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let actor =
-        crate::learning_access::administrator(&s.config, &h, &q.tenant_id, &q.school_id).await?;
-    repository::list(&s.graph, &actor, &q)
+    let (actor, role) = crate::learning_access::capable_actor(
+        &s.graph,
+        &s.config,
+        &h,
+        &q.tenant_id,
+        &q.school_id,
+        CALENDAR_MANAGE,
+    )
+    .await?;
+    repository::list(&s.graph, &actor, role == "staff", &q)
         .await
         .map(|data| Json(json!({"data":data})))
         .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))
@@ -146,11 +171,13 @@ async fn change(
     if !v.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let (actor, role) = crate::learning_access::administrator_actor(
+    let (actor, role) = crate::learning_access::capable_actor(
+        &s.graph,
         &s.config,
         &h,
         &v.entry.tenant_id,
         &v.entry.school_id,
+        CALENDAR_MANAGE,
     )
     .await?;
     match repository::change_live(&s.graph, &actor, &role, &v, &s.config, &h).await? {

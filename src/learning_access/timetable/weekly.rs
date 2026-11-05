@@ -245,7 +245,7 @@ async fn apply_locked(
     // Revalidate the caller after taking locks, through its own family (Admin Portal or Learning).
     let current = match family {
         Family::Portal => {
-            super::super::administrator_actor(config, headers, &input.tenant_id, &input.school_id)
+            repository::portal_actor(tx, config, headers, &input.tenant_id, &input.school_id)
                 .await?
         }
         Family::Learning => {
@@ -263,7 +263,7 @@ async fn apply_locked(
     if current != (actor.to_string(), role.to_string()) {
         return Err(denied());
     }
-    let authorized=format!("{} WITH a,sec WHERE sec.academic_year=$year AND (($role='owner' AND 'owner' IN coalesce(a.roles,[])) OR ($role IN ['teacher','school_admin'] AND NOT 'owner' IN coalesce(a.roles,[]))) SET sec.timetable_write_lock=coalesce(sec.timetable_write_lock,0)+1 RETURN timestamp() AS now",repository::authority(role));
+    let authorized=format!("{} WITH a,sec WHERE sec.academic_year=$year AND (($role='owner' AND 'owner' IN coalesce(a.roles,[])) OR ($role IN ['teacher','school_admin','staff'] AND NOT 'owner' IN coalesce(a.roles,[]))) SET sec.timetable_write_lock=coalesce(sec.timetable_write_lock,0)+1 RETURN timestamp() AS now",repository::authority(role));
     let row = repository::one(
         tx,
         query(&authorized)

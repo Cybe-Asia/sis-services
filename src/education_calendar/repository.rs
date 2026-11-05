@@ -6,6 +6,11 @@ use neo4rs::{query, Graph, Query};
 use serde_json::{json, Value};
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub(crate) const ADMIN:&str="MATCH(actor:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) WHERE ((NOT 'owner' IN coalesce(actor.roles,[]) AND 'school_admin' IN coalesce(actor.roles,[]) AND $school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[])) OR ('owner' IN coalesce(actor.roles,[]) AND size(coalesce(actor.teamIds,[]))=0 AND ((size(coalesce(actor.schoolIds,[]))=0 AND size(coalesce(actor.tenantIds,[]))=0) OR ($school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[]))) AND NOT EXISTS {MATCH(other:StaffMember {id:actor.id}) WHERE other<>actor} AND EXISTS {MATCH(:School {school_id:$school,tenant_id:$tenant})} AND NOT EXISTS {MATCH(one:School {school_id:$school,tenant_id:$tenant}),(two:School {school_id:$school,tenant_id:$tenant}) WHERE one<>two}))";
+/// `ADMIN`, or a member of the school whom the route found holding `academic.calendar.manage`
+/// (ADR 0018 slice 7, `$capable`).
+pub(crate) fn manager() -> String {
+    format!("{ADMIN} OR {}", crate::school_portal::staff_capability::capable("actor"))
+}
 pub async fn init(graph: &Graph) -> Result<(), Error> {
     for (name, label) in [
         ("education_calendar_key", "EducationCalendarEntry"),
@@ -46,14 +51,16 @@ pub async fn context(
     }
     Ok(json!({"classes":classes,"next":next}))
 }
-fn change_query(actor: &str, input: &Change) -> Result<Query, Error> {
+fn change_query(actor: &str, capable: bool, input: &Change) -> Result<Query, Error> {
+    let admin = manager();
     let e = &input.entry;
     let key = format!("{}|{}|{}", e.tenant_id, e.school_id, e.id);
     // Authorization precedes the lock; recheck graph membership after acquiring it.
     // The school lock serializes CAS even for first creates. State and audit commit together.
-    let cypher=format!("{ADMIN} WITH actor WHERE $action='archive' OR EXISTS {{ MATCH(s:Section {{school_id:$school,tenant_id:$tenant,academic_year:$year,status:'active'}}) }} MERGE(lock:EducationCalendarLock {{key:$lock}}) ON CREATE SET lock.version=0 SET lock.version=lock.version+1 WITH lock {ADMIN} WITH actor WHERE $action='archive' OR all(id IN $sections WHERE EXISTS {{ MATCH(s:Section {{section_id:id,school_id:$school,tenant_id:$tenant,academic_year:$year,status:'active'}}) }}) OPTIONAL MATCH(old:EducationCalendarEntry {{key:$key}}) WITH actor,old WHERE (old IS NULL AND $version=0 AND $action='save_draft') OR (old.version=$version AND old.school_id=$school AND old.tenant_id=$tenant AND old.academic_year=$year AND ((old.status='draft' AND $action='save_draft') OR (old.payload=$payload AND ((old.status='draft' AND $action='publish') OR (old.status IN ['draft','published'] AND $action='archive'))))) MERGE(r:EducationCalendarEntry {{key:$key}}) ON CREATE SET r.id=$id,r.school_id=$school,r.tenant_id=$tenant,r.academic_year=$year,r.version=0,r.created_at=datetime() SET r.version=r.version+1,r.payload=$payload,r.status=$status,r.audience=$audience,r.section_ids=$sections,r.start_date=$start,r.end_date=$end,r.updated_at=datetime() CREATE(:EducationCalendarAudit {{key:$audit,actor_id:actor.id,actor_role:CASE WHEN 'owner' IN coalesce(actor.roles,[]) THEN 'owner' ELSE 'school_admin' END,entry_key:r.key,school_id:$school,tenant_id:$tenant,academic_year:$year,version:r.version,action:$action,created_at:datetime()}}) RETURN r.version AS version");
+    let cypher=format!("{admin} WITH actor WHERE $action='archive' OR EXISTS {{ MATCH(s:Section {{school_id:$school,tenant_id:$tenant,academic_year:$year,status:'active'}}) }} MERGE(lock:EducationCalendarLock {{key:$lock}}) ON CREATE SET lock.version=0 SET lock.version=lock.version+1 WITH lock {admin} WITH actor WHERE $action='archive' OR all(id IN $sections WHERE EXISTS {{ MATCH(s:Section {{section_id:id,school_id:$school,tenant_id:$tenant,academic_year:$year,status:'active'}}) }}) OPTIONAL MATCH(old:EducationCalendarEntry {{key:$key}}) WITH actor,old WHERE (old IS NULL AND $version=0 AND $action='save_draft') OR (old.version=$version AND old.school_id=$school AND old.tenant_id=$tenant AND old.academic_year=$year AND ((old.status='draft' AND $action='save_draft') OR (old.payload=$payload AND ((old.status='draft' AND $action='publish') OR (old.status IN ['draft','published'] AND $action='archive'))))) MERGE(r:EducationCalendarEntry {{key:$key}}) ON CREATE SET r.id=$id,r.school_id=$school,r.tenant_id=$tenant,r.academic_year=$year,r.version=0,r.created_at=datetime() SET r.version=r.version+1,r.payload=$payload,r.status=$status,r.audience=$audience,r.section_ids=$sections,r.start_date=$start,r.end_date=$end,r.updated_at=datetime() CREATE(:EducationCalendarAudit {{key:$audit,actor_id:actor.id,actor_role:CASE WHEN 'owner' IN coalesce(actor.roles,[]) THEN 'owner' WHEN 'school_admin' IN coalesce(actor.roles,[]) THEN 'school_admin' ELSE 'staff' END,entry_key:r.key,school_id:$school,tenant_id:$tenant,academic_year:$year,version:r.version,action:$action,created_at:datetime()}}) RETURN r.version AS version");
     Ok(query(&cypher)
         .param("actor", actor)
+        .param("capable", capable)
         .param("school", e.school_id.clone())
         .param("tenant", e.tenant_id.clone())
         .param("year", e.academic_year.clone())
@@ -78,7 +85,7 @@ fn change_query(actor: &str, input: &Change) -> Result<Query, Error> {
         .param("audit", uuid::Uuid::new_v4().to_string()))
 }
 pub async fn change(graph: &Graph, actor: &str, input: &Change) -> Result<Option<i64>, Error> {
-    let mut rows = graph.execute(change_query(actor, input)?).await?;
+    let mut rows = graph.execute(change_query(actor, false, input)?).await?;
     let result = rows
         .next()
         .await?
@@ -101,10 +108,9 @@ pub async fn change_live(
     let result=async {
         crate::learning_access::timetable::repository::lock_school(&mut tx,&e.school_id,&e.tenant_id).await?;
         crate::learning_access::timetable::repository::one(&mut tx,query("MATCH(a:StaffMember {id:$actor,membershipStatus:'ACTIVE'}) SET a.calendar_write_lock=coalesce(a.calendar_write_lock,0)+1 RETURN a.id AS id").param("actor",actor)).await?.ok_or_else(||super::failure(axum::http::StatusCode::FORBIDDEN))?;
-        let current=crate::learning_access::administrator_actor(config,headers,&e.tenant_id,&e.school_id).await?;
-        if current!=(actor.to_string(),role.to_string()){return Err(super::failure(axum::http::StatusCode::FORBIDDEN));}
+        crate::learning_access::recheck_capable(&mut tx,config,headers,&e.tenant_id,&e.school_id,super::CALENDAR_MANAGE,(actor,role)).await?;
         crate::learning_access::timetable::calendar_guard::check(&mut tx,input).await?;
-        let q=change_query(actor,input).map_err(|_|unavailable())?;
+        let q=change_query(actor,role=="staff",input).map_err(|_|unavailable())?;
         let row=crate::learning_access::timetable::repository::one(&mut tx,q).await?;
         row.map(|r|r.get::<i64>("version")).transpose().map_err(|_|unavailable())
     }.await;
@@ -123,8 +129,9 @@ pub async fn change_live(
         }
     }
 }
-pub async fn list(graph: &Graph, actor: &str, q: &Scope) -> Result<Value, Error> {
-    let mut rows=graph.execute(query(&format!("{ADMIN} MATCH(r:EducationCalendarEntry {{school_id:$school,tenant_id:$tenant,academic_year:$year}}) WHERE r.id>$after AND ($id='' OR r.id=$id) RETURN r.payload AS payload,r.version AS version,r.status AS status,r.id AS id ORDER BY id LIMIT 101")).param("actor",actor).param("school",q.school_id.clone()).param("tenant",q.tenant_id.clone()).param("year",q.academic_year.clone()).param("after",q.after.clone().unwrap_or_default()).param("id",q.id.clone().unwrap_or_default())).await?;
+pub async fn list(graph: &Graph, actor: &str, capable: bool, q: &Scope) -> Result<Value, Error> {
+    let admin = manager();
+    let mut rows=graph.execute(query(&format!("{admin} MATCH(r:EducationCalendarEntry {{school_id:$school,tenant_id:$tenant,academic_year:$year}}) WHERE r.id>$after AND ($id='' OR r.id=$id) RETURN r.payload AS payload,r.version AS version,r.status AS status,r.id AS id ORDER BY id LIMIT 101")).param("actor",actor).param("capable",capable).param("school",q.school_id.clone()).param("tenant",q.tenant_id.clone()).param("year",q.academic_year.clone()).param("after",q.after.clone().unwrap_or_default()).param("id",q.id.clone().unwrap_or_default())).await?;
     let mut items = vec![];
     let mut next = None;
     let mut bytes = 0;

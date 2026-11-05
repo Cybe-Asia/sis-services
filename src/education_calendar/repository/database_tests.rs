@@ -299,7 +299,7 @@ async fn cross_year_creation_archive_and_bounded_range_pages() {
         after: None,
         id: None,
     };
-    let page = list(&graph, &key, &q).await.unwrap();
+    let page = list(&graph, &key, false, &q).await.unwrap();
     assert!(serde_json::to_vec(&page).unwrap().len() < 1_500_000);
     assert!(page["next"].is_string());
     let mut w = crate::education_calendar::window::Window {

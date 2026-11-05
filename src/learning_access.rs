@@ -229,6 +229,65 @@ pub(crate) async fn school_staff_actor(
     }
     Ok((actor, role))
 }
+/// ADR 0018 slice 7: Owners and school administrators of the school by role, as before, or any other
+/// staff member of the school who holds `capability` there now. Actor and role as Auth has it
+/// (`owner`, `school_admin` or `staff`); a write passes `role == "staff"` to the graph as
+/// `$capable` and checks again with [`recheck_capable`] under its locks.
+pub(crate) async fn capable_actor(
+    graph: &neo4rs::Graph,
+    config: &AppConfig,
+    headers: &HeaderMap,
+    tenant_id: &String,
+    school_id: &String,
+    capability: &str,
+) -> Result<(String, String), Failure> {
+    let (actor, role) = school_staff_actor(config, headers, tenant_id, school_id).await?;
+    if role == "staff"
+        && !crate::authorization::reads::permits(
+            &mut crate::authorization::facts::Db::Graph(graph),
+            tenant_id,
+            school_id,
+            &actor,
+            capability,
+        )
+        .await
+        .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
+    {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    Ok((actor, role))
+}
+/// [`capable_actor`] again inside a write transaction, after its locks: the same session and role,
+/// and for staff the capability read under the caller's locks (an assignment revoked meanwhile
+/// denies).
+pub(crate) async fn recheck_capable(
+    tx: &mut neo4rs::Txn,
+    config: &AppConfig,
+    headers: &HeaderMap,
+    tenant_id: &String,
+    school_id: &String,
+    capability: &str,
+    expected: (&str, &str),
+) -> Result<(), Failure> {
+    let (actor, role) = school_staff_actor(config, headers, tenant_id, school_id).await?;
+    if (actor.as_str(), role.as_str()) != expected {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    if role == "staff"
+        && !crate::authorization::reads::permits(
+            &mut crate::authorization::facts::Db::Tx(tx),
+            tenant_id,
+            school_id,
+            &actor,
+            capability,
+        )
+        .await
+        .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?
+    {
+        return Err(failure(StatusCode::FORBIDDEN));
+    }
+    Ok(())
+}
 impl StaffSession {
     /// As `scope`, naming the role as Auth has it: `owner`, `school_admin` or `staff`.
     pub(crate) fn staff_scope(self) -> (String, String, Vec<String>, Vec<String>) {

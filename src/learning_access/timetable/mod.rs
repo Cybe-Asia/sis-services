@@ -38,12 +38,26 @@ async fn list(
     if !scope.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let (actor, role) =
-        super::administrator_actor(&state.config, &headers, &scope.tenant_id, &scope.school_id)
-            .await?;
+    let calendar = crate::education_calendar::CALENDAR_MANAGE;
+    let (actor, role) = super::capable_actor(
+        &state.graph,
+        &state.config,
+        &headers,
+        &scope.tenant_id,
+        &scope.school_id,
+        calendar,
+    )
+    .await?;
     let data = reads::list(&state.graph, &actor, &role, &scope).await?;
-    if super::administrator_actor(&state.config, &headers, &scope.tenant_id, &scope.school_id)
-        .await?
+    if super::capable_actor(
+        &state.graph,
+        &state.config,
+        &headers,
+        &scope.tenant_id,
+        &scope.school_id,
+        calendar,
+    )
+    .await?
         != (actor, role)
     {
         return Err(failure(StatusCode::FORBIDDEN));
@@ -61,11 +75,13 @@ async fn change(
     if !input.valid() || input.ad_hoc {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let (actor, role) = super::administrator_actor(
+    let (actor, role) = super::capable_actor(
+        &state.graph,
         &state.config,
         &headers,
         &input.meeting.tenant_id,
         &input.meeting.school_id,
+        crate::education_calendar::CALENDAR_MANAGE,
     )
     .await?;
     repository::change(
@@ -188,9 +204,15 @@ async fn portal_weekly(
     if !input.valid() {
         return Err(failure(StatusCode::BAD_REQUEST));
     }
-    let (actor, role) =
-        super::administrator_actor(&state.config, &headers, &input.tenant_id, &input.school_id)
-            .await?;
+    let (actor, role) = super::capable_actor(
+        &state.graph,
+        &state.config,
+        &headers,
+        &input.tenant_id,
+        &input.school_id,
+        crate::education_calendar::CALENDAR_MANAGE,
+    )
+    .await?;
     weekly::apply(
         &state.graph,
         &actor,
