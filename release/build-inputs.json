@@ -166,7 +166,7 @@
     "src/utils/jwt.rs": "dc06927ef716fa5b55eee353fbf309143a26c232501ae5fb0af7bed1c4f469a0",
     "src/utils/mod.rs": "63d7d1b476d50a5a95b26c61a69de6af35b3ef4adb3fee359ebf61d62afc3adc",
     "src/utils/response.rs": "fc7482bd9cdb4baeebc7414e4c0f9eab9399f0d998a6f70f0b0e2280b4ba6af2",
-    "src/school_portal/safety.rs": "d9d0be94edf05565f55eaa1a7d4dc565a9866fb903ba8d381adbc131dd908142"
+    "src/school_portal/safety.rs": "cc54f289f2a8edce4eedcce7c4748ff10cf7ed9f309fc5d71d60fb8ef402818f"
   },
   "testedRuntimeFreeze": {
     "Cargo.lock": "0e912aecca4edad25752a70f20b022e9774b8fb5d66f776eabba3617e40be888",

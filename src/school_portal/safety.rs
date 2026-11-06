@@ -166,11 +166,60 @@ pub(super) async fn student_create(
         return Err(failure(StatusCode::BAD_REQUEST));
     }
     let actor = student_identity::actor(&s.config, &h).await?;
-    created(&s.graph, student_create_query(&v, &actor)).await
+    created(&s, student_create_query(&v, &actor)).await
 }
-async fn created(graph: &Graph, q: GraphQuery) -> Result<Json<Value>, Failure> {
-    let rows = reports(graph, q).await.map_err(unavailable)?;
-    rows.into_iter().next().map(envelope).ok_or_else(|| failure(StatusCode::FORBIDDEN))
+async fn created(s: &AppState, q: GraphQuery) -> Result<Json<Value>, Failure> {
+    let rows = reports(&s.graph, q).await.map_err(unavailable)?;
+    let report = rows.into_iter().next().ok_or_else(|| failure(StatusCode::FORBIDDEN))?;
+    // A repeated send returns the stored report; notification-services drops the repeated delivery by its key.
+    let (state, id) = (s.clone(), report["id"].as_str().unwrap_or_default().to_string());
+    tokio::spawn(async move { notify_staff(&state, &id).await });
+    Ok(envelope(report))
+}
+
+/// The class's homeroom and the school's Owners, by email: staff records hold no phone number.
+fn recipients_query(id: &str) -> GraphQuery {
+    query("MATCH(r:SafetyReport {id:$id}) MATCH(sec:Section {section_id:r.section_id,school_id:r.school_id,tenant_id:r.tenant_id}) OPTIONAL MATCH(h:StaffMember {id:sec.homeroom_staff_member_id,membershipStatus:'ACTIVE'}) OPTIONAL MATCH(o:StaffMember {membershipStatus:'ACTIVE'}) WHERE 'owner' IN coalesce(o.roles,[]) AND ((size(coalesce(o.schoolIds,[]))=0 AND size(coalesce(o.tenantIds,[]))=0) OR (r.school_id IN coalesce(o.schoolIds,[]) AND r.tenant_id IN coalesce(o.tenantIds,[]))) WITH r,sec,collect(DISTINCT toLower(coalesce(h.primaryEmail,h.email)))+collect(DISTINCT toLower(coalesce(o.primaryEmail,o.email))) AS emails RETURN r.public_id AS ref,coalesce(sec.name,'') AS class,r.place AS place,r.happened_on AS day,r.reporter_kind AS kind,[e IN emails WHERE e CONTAINS '@'] AS emails")
+        .param("id", id)
+}
+fn place_label(place: &str) -> &'static str {
+    match place {
+        "classroom" => "kelas", "corridor" => "koridor", "toilet" => "toilet", "canteen" => "kantin",
+        "yard" => "lapangan", "outside" => "luar sekolah", "online" => "online", _ => "lainnya",
+    }
+}
+/// Class, place and day only: no student name and no report text leave SIS by email.
+fn report_email(class: &str, place: &str, day: &str, kind: &str, link: Option<&str>) -> (String, String) {
+    let from = if kind == "parent" { "orang tua" } else { "siswa" };
+    let open = link.map(|l| format!("\nBuka Keamanan untuk membacanya: {l}")).unwrap_or_default();
+    (
+        format!("Laporan keamanan baru · {class}"),
+        format!("Ada laporan keamanan baru dari {from} kelas {class}: tempat {}, tanggal {day}.{open}\n\nA new safety report from a {} in {class} is waiting in Safety.", place_label(place), if kind == "parent" { "parent" } else { "student" }),
+    )
+}
+async fn notify_staff(s: &AppState, id: &str) {
+    let (Some(origin), Some(token)) = (s.config.notification_service_url.as_deref(), s.config.notification_internal_token.as_deref()) else {
+        tracing::warn!("safety report {id}: no notification-services configured, staff not emailed");
+        return;
+    };
+    let row = match s.graph.execute(recipients_query(id)).await {
+        Ok(mut rows) => rows.next().await.ok().flatten(),
+        Err(_) => None,
+    };
+    let Some(r) = row else { tracing::warn!("safety report {id}: recipients unreadable"); return };
+    let text = |k: &str| r.get::<String>(k).unwrap_or_default();
+    let mut emails: Vec<String> = r.get("emails").unwrap_or_default();
+    emails.sort();
+    emails.dedup();
+    let (subject, body) = report_email(&text("class"), &text("place"), &text("day"), &text("kind"), s.config.safety_alert_link.as_deref());
+    for email in emails {
+        let payload = json!({"idempotencyKey": format!("safety-report-{}-{email}", text("ref")), "email": email, "subject": subject, "body": body});
+        let ok = s.http_client.post(format!("{}/api/email/v1/send", origin.trim_end_matches('/')))
+            .header("X-Internal-Token", token).json(&payload)
+            .timeout(std::time::Duration::from_secs(10)).send().await
+            .map(|r| r.status().is_success()).unwrap_or(false);
+        if !ok { tracing::warn!("safety report {id}: one staff email failed") }
+    }
 }
 
 // Parent: reports about the caller's own children.
@@ -189,7 +238,7 @@ pub(super) async fn parent_create(
         return Err(failure(StatusCode::BAD_REQUEST));
     };
     let sub = auth::parent(&s.config, &h)?;
-    created(&s.graph, parent_create_query(&v, &sub, &student)).await
+    created(&s, parent_create_query(&v, &sub, &student)).await
 }
 
 // Staff: the homeroom of the class, or an Owner of the school.
@@ -267,10 +316,7 @@ pub(super) async fn staff_update(
         None => return Err(failure(StatusCode::FORBIDDEN)),
     };
     // A closed report is only annotated, never reopened or re-closed.
-    let body = "MATCH(r:SafetyReport {id:$id,section_id:sec.section_id,school_id:sec.school_id,tenant_id:sec.tenant_id}) WHERE $status='' OR r.status<>'done' SET r.status=CASE WHEN $status='' THEN r.status ELSE $status END,r.outcome=CASE WHEN $outcome='' THEN r.outcome ELSE $outcome END,r.updated_at=datetime() FOREACH(_ IN CASE WHEN $note<>'' THEN [1] ELSE [] END | CREATE(:SafetyReportNote {id:randomUUID(),author_id:t.id,author_name:coalesce(t.displayName,t.fullName,''),text:$note,created_at:datetime()})-[:ON]->(r)) CREATE(:SchoolPortalAudit {id:$audit,actor_id:t.id,kind:'safety_report_update',report_id:r.id,status:$status,school_id:r.school_id,tenant_id:r.tenant_id,created_at:datetime()}) RETURN r.id AS id";
-    let q = repository::teacher_query(&m, body, Some(&section), true, true)
-        .param("id", id).param("status", v.status.as_str()).param("outcome", v.outcome.as_str())
-        .param("note", v.note.trim()).param("audit", uuid::Uuid::new_v4().to_string());
+    let q = update_query(&m, &section, &id, &v);
     match repository::execute_write(&s.graph, &m, &section, q, Some((&s.config, &h))).await {
         Ok(true) => Ok(envelope(json!({"saved": true}))),
         Ok(false) => Err(failure(StatusCode::CONFLICT)),
@@ -279,6 +325,20 @@ pub(super) async fn staff_update(
             Err(_) => failure(StatusCode::SERVICE_UNAVAILABLE),
         }),
     }
+}
+
+/// A closed report is only annotated, never reopened or re-closed. A Parent reporter gets a school notice when the
+/// school acknowledges or closes it; a Student sees the status in "Laporan saya".
+fn update_query(m: &auth::Teacher, section: &str, id: &str, v: &Update) -> GraphQuery {
+    let body = "MATCH(r:SafetyReport {id:$id,section_id:sec.section_id,school_id:sec.school_id,tenant_id:sec.tenant_id}) WHERE $status='' OR r.status<>'done' SET r.status=CASE WHEN $status='' THEN r.status ELSE $status END,r.outcome=CASE WHEN $outcome='' THEN r.outcome ELSE $outcome END,r.updated_at=datetime() FOREACH(_ IN CASE WHEN $note<>'' THEN [1] ELSE [] END | CREATE(:SafetyReportNote {id:randomUUID(),author_id:t.id,author_name:coalesce(t.displayName,t.fullName,''),text:$note,created_at:datetime()})-[:ON]->(r)) CREATE(:SchoolPortalAudit {id:$audit,actor_id:t.id,kind:'safety_report_update',report_id:r.id,status:$status,school_id:r.school_id,tenant_id:r.tenant_id,created_at:datetime()}) WITH r OPTIONAL MATCH(pu:User {id:r.reporter_id}) WHERE r.reporter_kind='parent' AND $status<>'' FOREACH(_ IN CASE WHEN pu IS NULL THEN [] ELSE [1] END | MERGE(n:SchoolNotice {id:'safety-report:'+r.public_id+':'+$status}) ON CREATE SET n.title=$title,n.body=$notice,n.created_at=datetime(),n.is_read=false MERGE(pu)-[:HAS_SCHOOL_NOTICE]->(n)) RETURN r.id AS id";
+    let (title, notice) = match v.status.as_str() {
+        "done" => ("Laporan selesai ditangani", "Sekolah sudah menindaklanjuti laporan Anda dan menutupnya. · The school has followed up on your report and closed it."),
+        _ => ("Laporan diterima sekolah", "Wali kelas sudah menerima laporan Anda dan sedang menanganinya. · The homeroom teacher received your report and is handling it."),
+    };
+    repository::teacher_query(m, body, Some(section), true, true)
+        .param("id", id).param("status", v.status.as_str()).param("outcome", v.outcome.as_str())
+        .param("note", v.note.trim()).param("audit", uuid::Uuid::new_v4().to_string())
+        .param("title", title).param("notice", notice)
 }
 
 // Camera events: posted by the on-site service, listed and rated by school staff.
@@ -568,6 +628,25 @@ mod tests {
         assert_eq!(reports(&g, staff_list_query(&staff("owner", "owner"))).await.unwrap().len(), 2);
         assert!(reports(&g, staff_list_query(&staff("other", "teacher"))).await.unwrap().is_empty());
 
+        // The homeroom and the Owner are emailed about a new report; the subject teacher is not.
+        let id = first[0]["id"].as_str().unwrap().to_string();
+        let mut rows = g.execute(recipients_query(&id)).await.unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let mut emails: Vec<String> = row.get("emails").unwrap();
+        emails.sort();
+        assert_eq!(emails, vec!["owner@example.test".to_string(), "teacher@example.test".to_string()]);
+        assert_eq!(row.get::<String>("class").unwrap(), "7A");
+
+        // Acknowledging the parent's report leaves the mother one notice; repeating it adds none.
+        let ack = Update { status: "acknowledged".into(), outcome: String::new(), note: String::new() };
+        for _ in 0..2 {
+            let mut rows = g.execute(update_query(&staff("teacher", "teacher"), "class", "r-2", &ack)).await.unwrap();
+            while rows.next().await.unwrap().is_some() {}
+        }
+        let mut rows = g.execute(query("MATCH(:User {id:'mother'})-[:HAS_SCHOOL_NOTICE]->(n:SchoolNotice) RETURN count(n) AS n, collect(n.title)[0] AS title")).await.unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        assert_eq!((row.get::<i64>("n").unwrap(), row.get::<String>("title").unwrap()), (1, "Laporan diterima sekolah".to_string()));
+
         // A camera event is stored once; the second post is not fresh and never alerts again.
         let e = CameraEvent { id: "evt-1".into(), school_id: "school".into(), tenant_id: "tenant".into(), kind: "crowd".into(), camera: "DOME-04".into(), zone: "Koridor".into(), count: 9, started_at: "2026-11-05T02:42:00Z".into(), ended_at: None, media_id: None };
         let fresh = |g: &Graph, e: &CameraEvent| { let q = ingest_query(e); let g = g.clone(); async move { g.execute(q).await.unwrap().next().await.unwrap().unwrap().get::<bool>("fresh").unwrap() } };
@@ -576,6 +655,14 @@ mod tests {
         let mut rows = g.execute(query("MATCH(e:SafetyEvent {id:'evt-1'}) RETURN e.ended_at AS ended")).await.unwrap();
         assert_eq!(rows.next().await.unwrap().unwrap().get::<String>("ended").unwrap(), "2026-11-05T02:44:00Z");
         g.run(query("MATCH(n) DETACH DELETE n")).await.unwrap();
+    }
+    #[test]
+    fn report_email_names_no_student() {
+        let (subject, body) = report_email("7A", "corridor", "2026-11-06", "student", Some("https://t/safety"));
+        assert_eq!(subject, "Laporan keamanan baru · 7A");
+        assert!(body.starts_with("Ada laporan keamanan baru dari siswa kelas 7A: tempat koridor, tanggal 2026-11-06."));
+        assert!(body.contains("https://t/safety"));
+        assert!(report_email("7A", "roof", "2026-11-06", "parent", None).1.contains("orang tua kelas 7A: tempat lainnya"));
     }
     #[test]
     fn ingest_token_is_required_and_long() {
