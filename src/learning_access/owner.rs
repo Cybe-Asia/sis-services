@@ -1,9 +1,10 @@
-//! Read-only SIS projection for Learning. The caller never supplies an actor ID.
+//! SIS projection for Learning (read-only except the Student's own check-in). The caller never supplies an actor ID.
 use super::*;
 use axum::routing::get;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use std::collections::{BTreeMap, BTreeSet};
 mod school_classes;
+mod student_check_in;
 mod student_history;
 mod student_profile;
 mod student_school;
@@ -443,6 +444,10 @@ pub(super) fn router() -> Router<AppState> {
         .route(
             "/api/v1/sis-service/learning/owner/student/school",
             get(student_school::handler),
+        )
+        .route(
+            "/api/v1/sis-service/learning/owner/student/check-in",
+            axum::routing::post(student_check_in::handler),
         )
         .route(
             "/api/v1/sis-service/learning/owner/student/profile",

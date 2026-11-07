@@ -88,8 +88,9 @@
     "src/learning_access/class_meetings.rs": "17e25ffc8c65f415d839c6e8dc729fab14601f7aca6f684e71f08e5c4652e2c5",
     "src/learning_access/context.rs": "2aa626c96838bea67602ba45638cb73c0c795daba12caf664b238b86abfd4b79",
     "src/learning_access/database_tests.rs": "376fe12bd8cbecc0c89d864f13b425cbab4bb46357171f5bb4bc23883358d33f",
-    "src/learning_access/owner.rs": "a4feae0a35a36c2323e43d229adbc174f7fdf16852c6fb3c983ff5ba8c255c54",
+    "src/learning_access/owner.rs": "43e5d7d9f483f5be202d97cbb62909f57e04b2e5861af6d63e685178a6fb0cf5",
     "src/learning_access/owner/school_classes.rs": "67ad40eacbeba96f9387c2583a8adb4a3e2967f853e77f8ae93108e95e5957e6",
+    "src/learning_access/owner/student_check_in.rs": "41897c375faa32114cb24bae2f7ae64698521349f4fb4f673438bb83a7793ccc",
     "src/learning_access/owner/student_history.rs": "4174e5fd47c9f5ab2e6cf4fcd6077e9e56e523e88fbd67d3c75131f82abe327c",
     "src/learning_access/owner/student_profile.rs": "25b0e70696f8b904eb9e20863ef3832e66a32918cc586ec7a3e38d9827cefcfa",
     "src/learning_access/owner/student_school.rs": "245b301d96c7146ac17db48b47a24cc4fe26bb9dcfe131b155e3c0b4bc1b125a",
@@ -151,6 +152,7 @@
     "src/school_portal/repository/parent.rs": "cdaff7b59b87ca8ae5dc626f22368562060952f1bf846576585f28fee7bf8d8c",
     "src/school_portal/repository/parent/tests.rs": "92c1a7182ca734286abceb03754ba963b17e7b1b06634f63ab9751cea6b8fc21",
     "src/school_portal/repository/teacher.rs": "5bc0928326b9e1210d6ad9aa95ce6165582ac07b4d98d5d4f4d96b2475567035",
+    "src/school_portal/safety.rs": "cc54f289f2a8edce4eedcce7c4748ff10cf7ed9f309fc5d71d60fb8ef402818f",
     "src/school_portal/staff_capability.rs": "3b30d86cab97df6ea9976390282743ff63af5fb5c8c2501879a15ddaabd32c02",
     "src/school_portal/staff_capability/tests.rs": "408b1477e8ac41c6bc78c230e1049ebe42d194067b23e52437481f7ef0a37b7c",
     "src/school_portal/student_identity.rs": "0de025a071e3ea9294cc4ce48ad4e14d4b8f8457dc174451e05aa2200dae1511",
@@ -165,8 +167,7 @@
     "src/student_biodata/tests.rs": "91b537ed47fddcf192f698c6ff1210a3bfe1ee0af2c9f1203f53077ffb0f857a",
     "src/utils/jwt.rs": "dc06927ef716fa5b55eee353fbf309143a26c232501ae5fb0af7bed1c4f469a0",
     "src/utils/mod.rs": "63d7d1b476d50a5a95b26c61a69de6af35b3ef4adb3fee359ebf61d62afc3adc",
-    "src/utils/response.rs": "fc7482bd9cdb4baeebc7414e4c0f9eab9399f0d998a6f70f0b0e2280b4ba6af2",
-    "src/school_portal/safety.rs": "cc54f289f2a8edce4eedcce7c4748ff10cf7ed9f309fc5d71d60fb8ef402818f"
+    "src/utils/response.rs": "fc7482bd9cdb4baeebc7414e4c0f9eab9399f0d998a6f70f0b0e2280b4ba6af2"
   },
   "testedRuntimeFreeze": {
     "Cargo.lock": "0e912aecca4edad25752a70f20b022e9774b8fb5d66f776eabba3617e40be888",
