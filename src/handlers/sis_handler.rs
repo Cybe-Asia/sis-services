@@ -608,6 +608,10 @@ pub async fn parent_list_grades_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> (StatusCode, Json<ApiResponse<Vec<sis_repository::ParentGradeRow>>>) {
+    let principal = match crate::school_portal::auth::parent(&state.config, &headers) {
+        Ok(id) => id,
+        Err((code, _)) => return (code, Json(ApiResponse::error("Unable to read owned grades", code.as_u16() as i32))),
+    };
     let lead_id = match resolve_lead_id_from_bearer(&state, &headers).await {
         Ok(id) => id,
         Err((code, msg)) => return (code, Json(ApiResponse::error(&msg, code.as_u16() as i32))),
@@ -615,7 +619,7 @@ pub async fn parent_list_grades_handler(
     let lead_ids = user_repository::list_lead_ids_for_user_of_lead(&state.graph, &lead_id)
         .await
         .unwrap_or_else(|_| vec![lead_id.clone()]);
-    match sis_repository::list_grades_for_parent(&state.graph, &lead_ids).await {
+    match sis_repository::list_grades_for_parent(&state.graph, &lead_ids, &principal).await {
         Ok(v) => (StatusCode::OK, Json(ApiResponse::success(v))),
         Err(e) => internal_failure(e),
     }
@@ -644,6 +648,10 @@ pub async fn parent_list_attendance_handler(
     headers: HeaderMap,
     Query(q): Query<ParentAttendanceQuery>,
 ) -> (StatusCode, Json<ApiResponse<Vec<sis_repository::ParentAttendanceRow>>>) {
+    let principal = match crate::school_portal::auth::parent(&state.config, &headers) {
+        Ok(id) => id,
+        Err((code, _)) => return (code, Json(ApiResponse::error("Unable to read owned attendance", code.as_u16() as i32))),
+    };
     let lead_id = match resolve_lead_id_from_bearer(&state, &headers).await {
         Ok(id) => id,
         Err((code, msg)) => return (code, Json(ApiResponse::error(&msg, code.as_u16() as i32))),
@@ -655,7 +663,7 @@ pub async fn parent_list_attendance_handler(
     let today = chrono::Utc::now().date_naive();
     let from = q.from.filter(|s| is_valid_ymd(s)).unwrap_or_else(|| (today - chrono::Duration::days(14)).format("%Y-%m-%d").to_string());
     let to = q.to.filter(|s| is_valid_ymd(s)).unwrap_or_else(|| today.format("%Y-%m-%d").to_string());
-    match sis_repository::list_attendance_for_parent(&state.graph, &lead_ids, &from, &to).await {
+    match sis_repository::list_attendance_for_parent(&state.graph, &lead_ids, &principal, &from, &to).await {
         Ok(v) => (StatusCode::OK, Json(ApiResponse::success(v))),
         Err(e) => internal_failure(e),
     }

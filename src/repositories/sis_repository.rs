@@ -656,13 +656,15 @@ pub struct ParentAttendanceRow {
 pub async fn list_attendance_for_parent(
     graph: &Graph,
     lead_ids: &[String],
+    principal: &str,
     from_date: &str,
     to_date: &str,
 ) -> Result<Vec<ParentAttendanceRow>, RepositoryError> {
-    let q = query(
-        "MATCH (l:Lead)-[:HAS_STUDENT]->(s:Student)-[:ENROLLED_AS]->(e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section) \
-         WHERE l.lead_id IN $lead_ids \
-         MATCH (r:AttendanceRecord {section_id: sec.section_id, applicant_student_id: s.studentId}) \
+    // Same Parent rule as /me/sections: only a verified parent's own children.
+    let q = query(&format!(
+        "{} AND l.lead_id IN $lead_ids WITH DISTINCT l, s \
+         MATCH (s)-[:ENROLLED_AS]->(e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section) \
+         MATCH (r:AttendanceRecord {{section_id: sec.section_id, applicant_student_id: s.studentId}}) \
          WHERE r.date >= $from AND r.date <= $to \
          RETURN \
            s.studentId AS applicantStudentId, \
@@ -670,9 +672,11 @@ pub async fn list_attendance_for_parent(
            sec.name AS sectionName, \
            r.date AS date, \
            r.status AS status \
-         ORDER BY r.date DESC, s.fullName"
-    )
+         ORDER BY r.date DESC, s.fullName",
+        crate::school_portal::repository::PARENT
+    ))
     .param("lead_ids", lead_ids.to_vec())
+    .param("sub", principal)
     .param("from", from_date.to_string())
     .param("to", to_date.to_string());
     let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
@@ -880,11 +884,13 @@ pub struct ParentGradeRow {
 pub async fn list_grades_for_parent(
     graph: &Graph,
     lead_ids: &[String],
+    principal: &str,
 ) -> Result<Vec<ParentGradeRow>, RepositoryError> {
-    let q = query(
-        "MATCH (l:Lead)-[:HAS_STUDENT]->(s:Student)-[:ENROLLED_AS]->(e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section) \
-         WHERE l.lead_id IN $lead_ids \
-         MATCH (g:GradeEntry {section_id: sec.section_id, applicant_student_id: s.studentId}) \
+    // Same Parent rule as /me/sections: only a verified parent's own children.
+    let q = query(&format!(
+        "{} AND l.lead_id IN $lead_ids WITH DISTINCT l, s \
+         MATCH (s)-[:ENROLLED_AS]->(e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section) \
+         MATCH (g:GradeEntry {{section_id: sec.section_id, applicant_student_id: s.studentId}}) \
          RETURN \
            s.studentId AS applicantStudentId, \
            s.fullName AS studentName, \
@@ -894,9 +900,11 @@ pub async fn list_grades_for_parent(
            g.score AS score, \
            g.max_score AS maxScore, \
            toString(g.recorded_at) AS recordedAt \
-         ORDER BY g.recorded_at DESC, s.fullName"
-    )
-    .param("lead_ids", lead_ids.to_vec());
+         ORDER BY g.recorded_at DESC, s.fullName",
+        crate::school_portal::repository::PARENT
+    ))
+    .param("lead_ids", lead_ids.to_vec())
+    .param("sub", principal);
     let mut rs = graph.execute(q).await.map_err(|e| RepositoryError::DbError(e.to_string()))?;
     let mut out = Vec::new();
     while let Some(row) = rs.next().await.map_err(|e| RepositoryError::DbError(e.to_string()))? {
