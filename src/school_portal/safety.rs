@@ -102,6 +102,8 @@ impl NewReport {
             && self.student_id.as_deref().is_none_or(identifier)
             && ["self", "witness"].contains(&self.about.as_str())
             && model::date(&self.happened_on)
+            // A report is about something that already happened; ISO dates compare as text.
+            && self.happened_on <= model::school_today().to_string()
             && self.happened_at.as_deref().is_none_or(|t| {
                 chrono::NaiveTime::parse_from_str(t, "%H:%M").is_ok_and(|p| p.format("%H:%M").to_string() == t)
             })
@@ -566,6 +568,8 @@ mod tests {
         assert!(!NewReport { text: " ".into(), ..report() }.valid());
         assert!(!NewReport { place: "roof".into(), ..report() }.valid());
         assert!(!NewReport { happened_at: Some("9:40".into()), ..report() }.valid());
+        let tomorrow = model::school_today().succ_opt().unwrap().to_string();
+        assert!(!NewReport { happened_on: tomorrow, ..report() }.valid());
         assert!(!NewReport { id: "r 1".into(), ..report() }.valid());
         assert!(NewReport { photo: Some(format!("{PHOTO_PREFIX}/9j/4AAQ")), ..report() }.valid());
         assert!(!NewReport { photo: Some("data:image/png;base64,iVBOR".into()), ..report() }.valid());

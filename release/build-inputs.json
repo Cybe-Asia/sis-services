@@ -152,7 +152,7 @@
     "src/school_portal/repository/parent.rs": "cdaff7b59b87ca8ae5dc626f22368562060952f1bf846576585f28fee7bf8d8c",
     "src/school_portal/repository/parent/tests.rs": "92c1a7182ca734286abceb03754ba963b17e7b1b06634f63ab9751cea6b8fc21",
     "src/school_portal/repository/teacher.rs": "5bc0928326b9e1210d6ad9aa95ce6165582ac07b4d98d5d4f4d96b2475567035",
-    "src/school_portal/safety.rs": "cc54f289f2a8edce4eedcce7c4748ff10cf7ed9f309fc5d71d60fb8ef402818f",
+    "src/school_portal/safety.rs": "4e19e4d18e62d9f8ee63e9eab1d96e3b684b79e02b16d8b430bcff1c11a90398",
     "src/school_portal/staff_capability.rs": "3b30d86cab97df6ea9976390282743ff63af5fb5c8c2501879a15ddaabd32c02",
     "src/school_portal/staff_capability/tests.rs": "408b1477e8ac41c6bc78c230e1049ebe42d194067b23e52437481f7ef0a37b7c",
     "src/school_portal/student_identity.rs": "0de025a071e3ea9294cc4ce48ad4e14d4b8f8457dc174451e05aa2200dae1511",
