@@ -377,6 +377,33 @@ For Payment: `billing.payment.read` and `billing.school_invoice.manage` (both se
 No seed template carries them. School admins and teachers hold none on day one, and Owners hold all through
 derivation. Graph test: `authorization_graph_service_held_read`.
 
+**Catalogue additions (version 3, 2026-11-11).** For the school Shop (`service: shop`, area `shop`, ADR 0027 in
+the Digital Schools workspace): `shop.manage` (catalogue, stock, pick-up slots) and `shop.operate` (prepare and hand
+over orders at a stall), both normal. No seed template carries them: Owners hold both through derivation, and an
+Owner assigns them to canteen and store staff. `GET /api/leads/v1/shop/context` reads them (see below).
+
+### `GET /api/leads/v1/shop/context`
+
+Called by shop-services with the end user's own bearer, so that service holds no SIS or Auth secret. It answers who
+the caller is and where they may shop or work:
+
+```json
+{"data":{"me":{"id":"staff:…|student:…|parent:…","role":"staff|student|parent"},
+         "schools":[{"schoolId":"…","tenantId":"…","shopAdmin":true,"shopStaff":true}],
+         "students":[{"studentId":"<EnrolledStudent.student_id>","name":"…","schoolId":"…"}]}}
+```
+
+- **Student** (Student session, checked live with Auth): exactly their own active enrolment.
+- **Parent** (Parent token): every eligible child with an active enrolment; no children is still `200` with an
+  empty list, a token that names no single eligible Parent is `403`.
+- **Staff** (a Shop staff app token, audience `shop-api`, checked with Auth's membership read; or an Admin portal
+  session): the schools of their membership (every school for an unscoped
+  Owner). `shopAdmin` is true for an Owner, a school administrator, or a holder of `shop.manage` there; `shopStaff`
+  is true for a shop admin or a holder of `shop.operate`.
+
+`studentId` is `EnrolledStudent.student_id`, the id payment-services keeps the Student Credit wallet under; an
+enrolment without it is left out. Graph test: `shop_context_by_caller` (`SHOP_CONTEXT_TEST_BOLT`).
+
 ### `POST /check`
 
 ```json

@@ -155,19 +155,61 @@ pub(crate) fn auth_client(config: &AppConfig, no_proxy: bool) -> Result<reqwest:
     Ok(client)
 }
 pub async fn teacher(config: &AppConfig, headers: &HeaderMap) -> Result<Teacher, Failure> {
+    let member = module_member(config, headers, "learning-api").await?;
+    if !member.valid() {
+        return Err(super::failure(StatusCode::FORBIDDEN));
+    }
+    Ok(member)
+}
+/// The audience of a Staff SSO token for the school Shop staff app (ADR 0027).
+pub const SHOP_AUDIENCE: &str = "shop-api";
+/// Any active staff member on a Shop staff token, whatever their Auth role: canteen and store staff
+/// are not teachers. The caller decides what they may do from their role and capabilities.
+pub async fn shop_staff(config: &AppConfig, headers: &HeaderMap) -> Result<Teacher, Failure> {
+    let member = module_member(config, headers, SHOP_AUDIENCE).await?;
+    let owner = member.is_owner();
+    let scoped = !member.school_ids.is_empty() && !member.tenant_ids.is_empty();
+    let unscoped = member.school_ids.is_empty() && member.tenant_ids.is_empty();
+    if !member.active
+        || !identifier(&member.staff_member_id)
+        || member.roles.is_empty()
+        || ![&member.school_ids, &member.tenant_ids]
+            .iter()
+            .all(|ids| ids.len() <= 64 && ids.iter().all(|id| identifier(id)))
+        || !(scoped || (owner && unscoped))
+    {
+        return Err(super::failure(StatusCode::FORBIDDEN));
+    }
+    Ok(member)
+}
+/// The `aud` claim, unverified: it only chooses which verifier reads the token.
+pub fn claimed_audience(headers: &HeaderMap) -> Option<String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let payload = bearer(headers).ok()?.split('.').nth(1)?;
+    let claims: serde_json::Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).ok()?).ok()?;
+    claims.get("aud")?.as_str().map(str::to_owned)
+}
+/// A staff member as Auth reports them for a module token of `audience`: Auth checks the signature,
+/// the exact client registration and the live session. Role rules are the caller's.
+async fn module_member(
+    config: &AppConfig,
+    headers: &HeaderMap,
+    audience: &str,
+) -> Result<Teacher, Failure> {
     let token = bearer(headers)?;
     // Audience prefilter grants no authority: Auth checks signature, exact registration and live session.
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-    let audience = token
+    let claimed = token
         .split('.')
         .nth(1)
         .and_then(|p| URL_SAFE_NO_PAD.decode(p).ok())
         .and_then(|p| serde_json::from_slice::<serde_json::Value>(&p).ok());
-    if audience
+    if claimed
         .as_ref()
         .and_then(|v| v.get("aud"))
         .and_then(|v| v.as_str())
-        != Some("learning-api")
+        != Some(audience)
     {
         return Err(super::failure(StatusCode::UNAUTHORIZED));
     }
@@ -215,12 +257,7 @@ pub async fn teacher(config: &AppConfig, headers: &HeaderMap) -> Result<Teacher,
         }
         bytes.extend_from_slice(&chunk);
     }
-    let member: Teacher = serde_json::from_slice(&bytes)
-        .map_err(|_| super::failure(StatusCode::SERVICE_UNAVAILABLE))?;
-    if !member.valid() {
-        return Err(super::failure(StatusCode::FORBIDDEN));
-    }
-    Ok(member)
+    serde_json::from_slice(&bytes).map_err(|_| super::failure(StatusCode::SERVICE_UNAVAILABLE))
 }
 #[cfg(test)]
 mod client_tests {

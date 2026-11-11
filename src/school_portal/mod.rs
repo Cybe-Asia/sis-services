@@ -3,6 +3,7 @@ pub mod assessment_grades;
 pub(crate) mod auth;
 mod messaging;
 mod safety;
+mod shop;
 pub mod model;
 pub mod repository;
 pub(crate) mod staff_capability;
@@ -339,6 +340,7 @@ pub fn router() -> Router<AppState> {
             post(assessment_grades::import),
         )
         .route("/api/leads/v1/messaging/members", get(messaging::members))
+        .route("/api/leads/v1/shop/context", get(shop::context))
         .route(
             "/api/v1/sis-service/learning/owner/student/safety/reports",
             get(safety::student_list).post(safety::student_create),
