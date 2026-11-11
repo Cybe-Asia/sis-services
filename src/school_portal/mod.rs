@@ -341,6 +341,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/leads/v1/messaging/members", get(messaging::members))
         .route("/api/leads/v1/shop/context", get(shop::context))
+        .route("/api/leads/v1/shop/staff", get(shop::staff_list))
         .route(
             "/api/v1/sis-service/learning/owner/student/safety/reports",
             get(safety::student_list).post(safety::student_create),
