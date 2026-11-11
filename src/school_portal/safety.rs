@@ -402,12 +402,7 @@ impl CameraEvent {
     }
 }
 fn internal(config: &crate::config::config::AppConfig, h: &HeaderMap) -> Result<(), Failure> {
-    let expected = config.safety_ingest_token.as_deref().filter(|t| t.len() >= 32).ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE))?;
-    let given = h.get("x-internal-token").and_then(|v| v.to_str().ok()).unwrap_or("");
-    if given.len() != expected.len() || given.bytes().zip(expected.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) != 0 {
-        return Err(failure(StatusCode::UNAUTHORIZED));
-    }
-    Ok(())
+    super::auth::internal_token(config.safety_ingest_token.as_deref(), h)
 }
 pub(super) async fn ingest(
     State(s): State<AppState>,

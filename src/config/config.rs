@@ -44,6 +44,8 @@ pub struct AppConfig {
     pub notification_internal_token: Option<String>,
     /// `SAFETY_ALERT_LINK`: the Safety page an alert points at.
     pub safety_alert_link: Option<String>,
+    /// `SHOP_INTERNAL_TOKEN` (>= 32 bytes): shop-services' token for Shop notes on the Parent board.
+    pub shop_internal_token: Option<String>,
 }
 
 /// The object store this deployment names; `None` when any required `MINIO_*` value is missing or blank.
@@ -139,6 +141,10 @@ impl AppConfig {
             notification_service_url: env::var("NOTIFICATION_SERVICE_URL").ok().filter(|v| !v.is_empty()),
             notification_internal_token: env::var("NOTIFICATION_INTERNAL_TOKEN").ok().filter(|v| !v.is_empty()),
             safety_alert_link: env::var("SAFETY_ALERT_LINK").ok().filter(|v| !v.is_empty()),
+            shop_internal_token: env::var("SHOP_INTERNAL_TOKEN")
+                .ok()
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty()),
         })
     }
 }

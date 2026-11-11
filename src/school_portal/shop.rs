@@ -273,6 +273,92 @@ pub(super) async fn staff_list(
     )))
 }
 
+/// A Shop note for the parents of one enrolled student (shop-services' notification worker, spec §7.1).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ParentNotice {
+    /// The Shop's event key; each parent gets one note per key, so a retry writes nothing new.
+    key: String,
+    school_id: String,
+    /// The enrolled student id, as payment-services and the Shop know the child.
+    student_id: String,
+    title: String,
+    /// `{child}` becomes the child's name.
+    body: String,
+}
+const MAX_KEY: usize = 256;
+const MAX_TITLE: usize = 100;
+const MAX_BODY: usize = 1000;
+
+impl ParentNotice {
+    fn valid(&self) -> bool {
+        let key = (1..=MAX_KEY).contains(&self.key.len())
+            && self
+                .key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b));
+        let text = |t: &str, max: usize| {
+            let n = t.trim().chars().count();
+            (1..=max).contains(&n) && !t.chars().any(|c| c.is_control() && c != '\n')
+        };
+        key && identifier(&self.school_id)
+            && identifier(&self.student_id)
+            && text(&self.title, MAX_TITLE)
+            && text(&self.body, MAX_BODY)
+    }
+}
+
+/// Writes the note on one Lead of each eligible parent of the student (the Parent board reads every Lead of the
+/// user, so one is enough) and answers the child's SIS id with each parent's push recipient. A student with no
+/// active enrolment of that id in that school has nobody to tell.
+pub(super) async fn tell_parents(graph: &Graph, n: &ParentNotice) -> Result<Value, Error> {
+    let q = query(&format!(
+        "MATCH(s:Student)-[:ENROLLED_AS]->(e:EnrolledStudent {{student_id:$student,school_id:$school}}) \
+         WHERE e.status='active' \
+         WITH s,head(collect(e)) AS e \
+         CALL {{ WITH s,e MATCH(u:User)-[:HAS_APPLICATION]->(l:Lead)-[:HAS_STUDENT]->(s) WHERE {PARENT_ELIGIBLE} \
+           WITH s,e,u,l ORDER BY l.lead_id WITH s,e,u,head(collect(l)) AS lead \
+           MERGE(lead)-[:HAS_MESSAGE]->(m:Message {{shop_key:$key}}) \
+           ON CREATE SET m.message_id='MSG-'+randomUUID(),m.tenant_id=e.tenant_id,m.title=$title, \
+             m.body=replace($body,'{{child}}',coalesce(s.fullName,'')),m.category='shop',m.is_read=false, \
+             m.created_at=datetime(),m.read_at=null \
+           RETURN collect(DISTINCT 'parent:'+u.id) AS recipients }} \
+         RETURN s.studentId AS student,recipients LIMIT 1"
+    ))
+    .param("student", n.student_id.clone())
+    .param("school", n.school_id.clone())
+    .param("key", n.key.clone())
+    .param("title", n.title.trim())
+    .param("body", n.body.trim());
+    let mut rows = graph.execute(q).await?;
+    let Some(r) = rows.next().await? else {
+        return Ok(json!({"studentId": "", "recipients": []}));
+    };
+    let mut recipients: Vec<String> = r.get("recipients").unwrap_or_default();
+    recipients.sort();
+    recipients.truncate(MAX_ROWS);
+    Ok(json!({"studentId": r.get::<String>("student")?, "recipients": recipients}))
+}
+
+/// `POST /api/leads/v1/internal/shop/parent-notices`: for shop-services only, with `X-Internal-Token`.
+pub(super) async fn parent_notices(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    body: Result<Json<ParentNotice>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<Value>, Failure> {
+    auth::internal_token(s.config.shop_internal_token.as_deref(), &h)?;
+    let Ok(Json(notice)) = body else {
+        return Err(failure(StatusCode::BAD_REQUEST));
+    };
+    if !notice.valid() {
+        return Err(failure(StatusCode::BAD_REQUEST));
+    }
+    let told = tell_parents(&s.graph, &notice)
+        .await
+        .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    Ok(envelope(told))
+}
+
 /// The `role` claim, unverified: it only chooses which verifier reads the token.
 fn claimed_role(headers: &HeaderMap) -> Option<String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -451,5 +537,82 @@ mod tests {
                 json!({"id": "staff:clerk", "name": "Zaki", "email": "clerk@example.test"}),
             ]
         );
+
+        // Shop notes: one per eligible parent and event key, on one of their Leads, with the child's name.
+        g.run(query("MATCH(s:Student {studentId:'child'}) \
+            CREATE(:User {id:'father',email:'father@example.test',role:'parent'}) \
+              -[:HAS_APPLICATION]->(:Lead {lead_id:'LEAD-FATHER',email:'father@example.test',status:'paid'}) \
+              -[:HAS_STUDENT]->(s)")).await.unwrap();
+        let notice = |key: &str, school: &str| ParentNotice {
+            key: key.into(),
+            school_id: school.into(),
+            student_id: "ENR-1".into(),
+            title: "Permintaan isi saldo".into(),
+            body: "{child} meminta isi saldo Rp 20.000.".into(),
+        };
+        let told = json!({"studentId": "child", "recipients": ["parent:father", "parent:mother"]});
+        for _ in 0..2 {
+            let first = notice("top-up-requested:ENR-1:1", "school");
+            assert!(first.valid());
+            assert_eq!(tell_parents(&g, &first).await.unwrap(), told);
+        }
+        assert_eq!(
+            tell_parents(&g, &notice("ticket-forfeited:t1", "other"))
+                .await
+                .unwrap(),
+            json!({"studentId": "", "recipients": []})
+        );
+        let mut notes = g
+            .execute(query("MATCH(u:User)-[:HAS_APPLICATION]->(:Lead)-[:HAS_MESSAGE]->(m:Message {category:'shop'}) \
+                RETURN u.id AS parent,m.body AS body,m.message_id STARTS WITH 'MSG-' AS id ORDER BY parent"))
+            .await
+            .unwrap();
+        let mut seen = vec![];
+        while let Some(r) = notes.next().await.unwrap() {
+            seen.push((
+                r.get::<String>("parent").unwrap(),
+                r.get::<String>("body").unwrap(),
+                r.get::<bool>("id").unwrap(),
+            ));
+        }
+        let body = "Aisha meminta isi saldo Rp 20.000.".to_string();
+        assert_eq!(
+            seen,
+            vec![
+                ("father".to_string(), body.clone(), true),
+                ("mother".to_string(), body, true)
+            ]
+        );
+    }
+
+    #[test]
+    fn parent_notices_need_the_shop_token_and_plain_input() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            "x-internal-token",
+            "0123456789abcdef0123456789abcdef".parse().unwrap(),
+        );
+        assert_eq!(
+            auth::internal_token(None, &h).unwrap_err().0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        let other = Some("fedcba9876543210fedcba9876543210");
+        assert_eq!(
+            auth::internal_token(other, &h).unwrap_err().0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert!(auth::internal_token(Some("0123456789abcdef0123456789abcdef"), &h).is_ok());
+        let notice = |key: &str, title: &str| ParentNotice {
+            key: key.into(),
+            school_id: "school".into(),
+            student_id: "ENR-1".into(),
+            title: title.into(),
+            body: "{child}".into(),
+        };
+        assert!(notice("ticket-ready:1", "Pesanan").valid());
+        assert!(!notice("bad key", "Pesanan").valid());
+        assert!(!notice(&"k".repeat(257), "Pesanan").valid());
+        assert!(!notice("k", " ").valid());
+        assert!(!notice("k", &"t".repeat(101)).valid());
     }
 }

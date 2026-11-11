@@ -183,6 +183,26 @@ pub async fn shop_staff(config: &AppConfig, headers: &HeaderMap) -> Result<Teach
     Ok(member)
 }
 /// The `aud` claim, unverified: it only chooses which verifier reads the token.
+/// A service's `X-Internal-Token`, compared in constant time; a missing or short configured token refuses everyone.
+pub(crate) fn internal_token(expected: Option<&str>, h: &HeaderMap) -> Result<(), Failure> {
+    let expected = expected
+        .filter(|t| t.len() >= 32)
+        .ok_or_else(|| super::failure(StatusCode::SERVICE_UNAVAILABLE))?;
+    let given = h
+        .get("x-internal-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if given.len() != expected.len()
+        || given
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            != 0
+    {
+        return Err(super::failure(StatusCode::UNAUTHORIZED));
+    }
+    Ok(())
+}
 pub fn claimed_audience(headers: &HeaderMap) -> Option<String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     let payload = bearer(headers).ok()?.split('.').nth(1)?;
