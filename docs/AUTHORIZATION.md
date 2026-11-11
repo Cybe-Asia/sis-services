@@ -404,6 +404,21 @@ the caller is and where they may shop or work:
 `studentId` is `EnrolledStudent.student_id`, the id payment-services keeps the Student Credit wallet under; an
 enrolment without it is left out. Graph test: `shop_context_by_caller` (`SHOP_CONTEXT_TEST_BOLT`).
 
+### `GET /api/leads/v1/shop/staff?schoolId=…`
+
+Called by shop-services with the caller's own bearer when a Shop admin assigns staff to a stall. Only a Shop staff
+app token (audience `shop-api`) whose caller is Shop admin of that school (the `shopAdmin` rule above) is answered;
+another token is `401`, another caller `403`. It lists the staff who may work that school's Shop: everyone holding
+`shop.operate` or `shop.manage` for the school, through an assignment at the school, a tenant-wide assignment, or
+derivation (an Owner), sorted by name, at most 200:
+
+```json
+{"data":[{"id":"staff:<StaffMember.id>","name":"<display name>","email":"…"}]}
+```
+
+`id` has the same form as the context's `me.id`. The read loads the tenant's authorization facts once and decides
+each staff member in memory, then reads the listed emails in one query. Graph test: `shop_context_by_caller`.
+
 ### `POST /check`
 
 ```json

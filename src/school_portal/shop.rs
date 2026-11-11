@@ -4,16 +4,21 @@
 //! of their membership. Contract: `docs/AUTHORIZATION.md`, `GET /api/leads/v1/shop/context`.
 use super::{
     auth, envelope, failure,
+    model::identifier,
     repository::{PARENT, PARENT_ELIGIBLE},
     safety::OWNED,
     student_identity, Failure,
 };
 use crate::{
-    authorization::{facts::Db, reads::permitted_schools},
+    authorization::{
+        facts::{self, Db},
+        model::{decide, Scope},
+        reads::permitted_schools,
+    },
     AppState,
 };
 use axum::{
-    extract::State,
+    extract::{Query as Params, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -25,6 +30,8 @@ const MANAGE: &str = "shop.manage";
 const OPERATE: &str = "shop.operate";
 /// More children or schools than this for one caller is a broken data set, not a family or a staff member.
 const MAX_ROWS: usize = 64;
+/// The staff a Shop admin may assign to a stall; a school with more is a broken data set.
+const MAX_WORKERS: usize = 200;
 /// An active enrolment of `s` with the id payment-services keeps the Student Credit wallet under.
 const ENROLMENT: &str = "MATCH(s)-[:ENROLLED_AS]->(e:EnrolledStudent {status:'active'})-[:ENROLLED_IN]->(sec:Section {status:'active'}) \
      WHERE e.school_id=sec.school_id AND e.tenant_id=sec.tenant_id AND coalesce(e.school_id,'')<>'' \
@@ -163,6 +170,109 @@ pub(super) async fn staff(graph: &Graph, member: &Staff) -> Result<Value, Failur
     }))
 }
 
+/// The caller of a Shop staff app token, with the role Auth reports for this session.
+async fn shop_member(
+    config: &crate::config::config::AppConfig,
+    h: &HeaderMap,
+) -> Result<Staff, Failure> {
+    let member = auth::shop_staff(config, h).await?;
+    let role = if member.is_owner() {
+        "owner"
+    } else if member.roles.iter().any(|r| r == "school_admin") {
+        "school_admin"
+    } else {
+        "staff"
+    };
+    Ok(Staff {
+        id: member.staff_member_id,
+        role: role.into(),
+        school_ids: member.school_ids,
+        tenant_ids: member.tenant_ids,
+    })
+}
+
+/// The staff who may work the Shop of `school`: everyone holding `shop.operate` or `shop.manage`
+/// there, through an explicit assignment, a tenant-wide one, or derivation (Owner), sorted by name.
+/// One tenant load and one email read, whatever the number of staff.
+pub(super) async fn workers(
+    graph: &Graph,
+    tenant: &str,
+    school: &str,
+) -> Result<Vec<Value>, Failure> {
+    let mut db = Db::Graph(graph);
+    let facts = facts::load(&mut db, tenant, &[], &[]).await?;
+    let scope = Scope::school(school);
+    let mut people: Vec<(&str, &str)> = facts
+        .staff
+        .iter()
+        .filter(|p| {
+            let holdings = facts.holdings(&p.id);
+            [OPERATE, MANAGE]
+                .iter()
+                .any(|code| decide(&facts, &holdings, code, &scope).is_some())
+        })
+        .map(|p| (p.name.as_str(), p.id.as_str()))
+        .collect();
+    people.sort_by_cached_key(|(name, id)| (name.to_lowercase(), *id));
+    people.truncate(MAX_WORKERS);
+    let ids: Vec<String> = people.iter().map(|(_, id)| (*id).to_owned()).collect();
+    // `holdings` gives nothing to a duplicated node, so each id is one row here.
+    let emails = db
+        .rows(
+            query("MATCH(s:StaffMember) WHERE s.id IN $ids RETURN s.id AS id,coalesce(s.email,'') AS email")
+                .param("ids", ids),
+            MAX_WORKERS,
+        )
+        .await?;
+    let mut by_id = std::collections::HashMap::new();
+    for r in &emails {
+        by_id.insert(
+            facts::get::<String>(r, "id")?,
+            facts::get::<String>(r, "email")?,
+        );
+    }
+    Ok(people
+        .into_iter()
+        .map(|(name, id)| {
+            json!({"id": format!("staff:{id}"), "name": name, "email": by_id.get(id).cloned().unwrap_or_default()})
+        })
+        .collect())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SchoolParam {
+    school_id: String,
+}
+
+/// `GET /api/leads/v1/shop/staff?schoolId=`: for a Shop admin of that school on a Shop staff app
+/// token, the staff they may assign to its stalls.
+pub(super) async fn staff_list(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    Params(p): Params<SchoolParam>,
+) -> Result<Json<Value>, Failure> {
+    if !identifier(&p.school_id) {
+        return Err(failure(StatusCode::BAD_REQUEST));
+    }
+    if auth::claimed_audience(&h).as_deref() != Some(auth::SHOP_AUDIENCE) {
+        return Err(failure(StatusCode::UNAUTHORIZED));
+    }
+    let me = staff(&s.graph, &shop_member(&s.config, &h).await?).await?;
+    // The same Shop admin rule as the context, for this school only.
+    let tenant = me["schools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|v| v["schoolId"] == p.school_id.as_str() && v["shopAdmin"] == true)
+        .and_then(|v| v["tenantId"].as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| failure(StatusCode::FORBIDDEN))?;
+    Ok(envelope(json!(
+        workers(&s.graph, &tenant, &p.school_id).await?
+    )))
+}
+
 /// The `role` claim, unverified: it only chooses which verifier reads the token.
 fn claimed_role(headers: &HeaderMap) -> Option<String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -193,21 +303,7 @@ pub(super) async fn context(
         Err((StatusCode::UNAUTHORIZED, _))
             if auth::claimed_audience(&h).as_deref() == Some(auth::SHOP_AUDIENCE) =>
         {
-            let member = auth::shop_staff(&s.config, &h).await?;
-            let role = if member.is_owner() {
-                "owner"
-            } else if member.roles.iter().any(|r| r == "school_admin") {
-                "school_admin"
-            } else {
-                "staff"
-            };
-            let who = Staff {
-                id: member.staff_member_id,
-                role: role.into(),
-                school_ids: member.school_ids,
-                tenant_ids: member.tenant_ids,
-            };
-            staff(&s.graph, &who).await?
+            staff(&s.graph, &shop_member(&s.config, &h).await?).await?
         }
         Err((StatusCode::UNAUTHORIZED, _)) => {
             let (id, role, school_ids, tenant_ids) =
@@ -330,6 +426,30 @@ mod tests {
         assert_eq!(
             cook["schools"],
             json!([{"schoolId": "school", "tenantId": "tenant", "shopAdmin": false, "shopStaff": false}])
+        );
+
+        // Stall staff to choose from: explicit `shop.operate` here, a tenant-wide grant, an Owner by
+        // derivation; not a grant for another school, nor staff without one. Sorted by name.
+        g.run(query("CREATE(:AuthorizationRoleTemplate {tenant_id:'tenant',code:'canteen',name_id:'Kantin',name_en:'Canteen',version:1,capabilities:['shop.operate'],allowed_scopes:['SCHOOL','TENANT'],status:'active',updated_at:datetime()}) \
+            CREATE(:AuthorizationAssignment {id:'a-cook',tenant_id:'tenant',staff_member_id:'cook',template_code:'canteen',scope_type:'SCHOOL',school_id:'school',status:'active',version:1,updated_at:datetime()}) \
+            CREATE(:StaffMember {id:'baker',displayName:'Ani',email:'baker@example.test',membershipStatus:'ACTIVE',roles:['staff'],schoolIds:['other'],tenantIds:['tenant']}) \
+            CREATE(:AuthorizationAssignment {id:'a-baker',tenant_id:'tenant',staff_member_id:'baker',template_code:'canteen',scope_type:'SCHOOL',school_id:'other',status:'active',version:1,updated_at:datetime()}) \
+            CREATE(:StaffMember {id:'clerk',displayName:'Zaki',email:'clerk@example.test',membershipStatus:'ACTIVE',roles:['staff'],schoolIds:['school','other'],tenantIds:['tenant']}) \
+            CREATE(:AuthorizationAssignment {id:'a-clerk',tenant_id:'tenant',staff_member_id:'clerk',template_code:'canteen',scope_type:'TENANT',status:'active',version:1,updated_at:datetime()}) \
+            CREATE(:StaffMember {id:'head',displayName:'Bu Rina',email:'head@example.test',membershipStatus:'ACTIVE',roles:['owner'],schoolIds:[],tenantIds:[]}) \
+            CREATE(:StaffMember {id:'guard',displayName:'Budi',email:'guard@example.test',membershipStatus:'ACTIVE',roles:['staff'],schoolIds:['school'],tenantIds:['tenant']})")).await.unwrap();
+        let cook = staff(&g, &member("cook", "staff", true)).await.unwrap();
+        assert_eq!(
+            cook["schools"],
+            json!([{"schoolId": "school", "tenantId": "tenant", "shopAdmin": false, "shopStaff": true}])
+        );
+        assert_eq!(
+            workers(&g, "tenant", "school").await.unwrap(),
+            vec![
+                json!({"id": "staff:head", "name": "Bu Rina", "email": "head@example.test"}),
+                json!({"id": "staff:cook", "name": "cook", "email": "cook@example.test"}),
+                json!({"id": "staff:clerk", "name": "Zaki", "email": "clerk@example.test"}),
+            ]
         );
     }
 }

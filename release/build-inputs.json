@@ -137,7 +137,7 @@
     "src/school_portal/auth.rs": "cafd049658c6461457e5d5fb215481952f06520067a22878f4d879621960ca40",
     "src/school_portal/database_tests.rs": "c54c5347881fe52cd7a7175efe8f8be0477ebcea87df2e7e61422a769b8fce8b",
     "src/school_portal/messaging.rs": "14764cc558f736ca6e3fb6c77bf15b924224867470e625834a80f94376acf422",
-    "src/school_portal/mod.rs": "bd1ba08e5efeccbaf3a929759ac10ea4d5a51507ff6122a60b4f77cc269cbf8d",
+    "src/school_portal/mod.rs": "bf2bd4547258c4abd6c7fbb0307efd8866933252b6984e76094d070184115934",
     "src/school_portal/model.rs": "0edb8e84075f6f4a4b41edad2813596d90ae95304620ef1145d1f4de6c189bd6",
     "src/school_portal/model/extracurricular.rs": "f96e87d50736ce0e3bcd1556442875f6525479d82f4f835c07d128b173a31bec",
     "src/school_portal/model/growth.rs": "a3841581dbd6e767305fc3202badff0228da6966ae66592251203df6e9b42e54",
@@ -168,7 +168,7 @@
     "src/utils/jwt.rs": "dc06927ef716fa5b55eee353fbf309143a26c232501ae5fb0af7bed1c4f469a0",
     "src/utils/mod.rs": "63d7d1b476d50a5a95b26c61a69de6af35b3ef4adb3fee359ebf61d62afc3adc",
     "src/utils/response.rs": "fc7482bd9cdb4baeebc7414e4c0f9eab9399f0d998a6f70f0b0e2280b4ba6af2",
-    "src/school_portal/shop.rs": "a7034d9176552568c5e2a2c2346581fd784b2fce539550cb9d64bf8dbf88e9a0"
+    "src/school_portal/shop.rs": "dbd44c409ddff55933511a8bcb6f9109addadb191311bedf2055e68dc82f6d3a"
   },
   "testedRuntimeFreeze": {
     "Cargo.lock": "0e912aecca4edad25752a70f20b022e9774b8fb5d66f776eabba3617e40be888",
