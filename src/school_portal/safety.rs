@@ -30,7 +30,7 @@ const ALERTED: [&str; 6] = [
 ];
 /// The signed-in Student's own active enrolment, from the account alone (no caller-chosen school): the Student
 /// client knows its class, not its school ids. Same account rules as `student_preferences::OWNED`.
-const OWNED: &str = "MATCH(u:User {id:$actor,role:'student'}) MATCH(b:LearningStudentBinding {user_id:u.id,status:'ACTIVE'}) MATCH(s:Student {studentId:b.student_id})-[:ENROLLED_AS]->(en:EnrolledStudent {status:'active',school_id:b.school_id,tenant_id:b.tenant_id})-[:ENROLLED_IN]->(sec:Section {status:'active',school_id:b.school_id,tenant_id:b.tenant_id}) WHERE coalesce(u.staffMemberId,'')='' AND all(role IN coalesce(u.roles,[]) WHERE role='student') AND all(role IN coalesce(u.marketingRoles,[]) WHERE role='student') AND NOT (u)-[:STAFF_PROFILE]->() AND NOT EXISTS {MATCH(staff:StaffMember) WHERE toLower(staff.email)=toLower(u.email)}";
+pub(super) const OWNED: &str = "MATCH(u:User {id:$actor,role:'student'}) MATCH(b:LearningStudentBinding {user_id:u.id,status:'ACTIVE'}) MATCH(s:Student {studentId:b.student_id})-[:ENROLLED_AS]->(en:EnrolledStudent {status:'active',school_id:b.school_id,tenant_id:b.tenant_id})-[:ENROLLED_IN]->(sec:Section {status:'active',school_id:b.school_id,tenant_id:b.tenant_id}) WHERE coalesce(u.staffMemberId,'')='' AND all(role IN coalesce(u.roles,[]) WHERE role='student') AND all(role IN coalesce(u.marketingRoles,[]) WHERE role='student') AND NOT (u)-[:STAFF_PROFILE]->() AND NOT EXISTS {MATCH(staff:StaffMember) WHERE toLower(staff.email)=toLower(u.email)}";
 const PHOTO_PREFIX: &str = "data:image/jpeg;base64,";
 // shortcut: the photo is stored base64 on the node (<= 400 KB, like LearningCheckIn); move to the
 // MinIO attachment path of ADR 0024 §9 when reports carry documents.

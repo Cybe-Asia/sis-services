@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "capabilities": [
     {"code": "learning.class.teach", "service": "learning-api", "area": "learning", "sensitivity": "normal", "classWide": true,
      "description": {"id": "Mengajar di kelas: materi, tugas dan siswa kelas", "en": "Teach a class: its lessons, assignments and students"}},
@@ -86,6 +86,10 @@
     {"code": "billing.payment.read", "service": "payment", "area": "billing", "sensitivity": "sensitive",
      "description": {"id": "Melihat antrean pembayaran dan bukti transfer", "en": "Read the payment review queue and transfer proofs"}},
     {"code": "billing.school_invoice.manage", "service": "payment", "area": "billing", "sensitivity": "sensitive",
-     "description": {"id": "Mengatur tagihan sekolah dan biaya", "en": "Manage school invoices and fees"}}
+     "description": {"id": "Mengatur tagihan sekolah dan biaya", "en": "Manage school invoices and fees"}},
+    {"code": "shop.manage", "service": "shop", "area": "shop", "sensitivity": "normal",
+     "description": {"id": "Mengatur katalog, stok, dan waktu ambil Shop sekolah", "en": "Manage the school Shop catalogue, stock and pick-up slots"}},
+    {"code": "shop.operate", "service": "shop", "area": "shop", "sensitivity": "normal",
+     "description": {"id": "Menyiapkan dan menyerahkan pesanan di stan Shop", "en": "Prepare and hand over orders at a Shop stall"}}
   ]
 }
