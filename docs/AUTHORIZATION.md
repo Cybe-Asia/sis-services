@@ -419,6 +419,23 @@ derivation (an Owner), sorted by name, at most 200:
 `id` has the same form as the context's `me.id`. The read loads the tenant's authorization facts once and decides
 each staff member in memory, then reads the listed emails in one query. Graph test: `shop_context_by_caller`.
 
+### `POST /api/leads/v1/internal/shop/parent-notices`
+
+For shop-services' notification worker only (digital-school `docs/shop/shop-spec.md` §7.1): no user token; the
+`X-Internal-Token` header must equal `SHOP_INTERNAL_TOKEN` (at least 32 bytes; unset answers `503`, a wrong one
+`401`). Body `{key, schoolId, studentId, title ≤100, body ≤1000}` (`studentId` is `EnrolledStudent.student_id`; `key`
+is the Shop's event key, letters, digits and `_.:-`, at most 256). SIS writes one
+`(:Lead)-[:HAS_MESSAGE]->(:Message {category:'shop', shop_key:key})` per eligible parent of the student with an
+active enrolment of that id in that school, on that parent's first Lead (the Parent board reads every Lead of the
+user), once per key, with `{child}` in the body replaced by the child's name, and answers
+
+```json
+{"data":{"studentId":"<Student.studentId>","recipients":["parent:<User.id>"]}}
+```
+
+`recipients` are the Web Push ids messaging-services subscribes Parents under; `studentId` is the child the Parent app
+opens. Unknown students answer `{"studentId":"","recipients":[]}`. Graph test: `shop_context_by_caller`.
+
 ### `POST /check`
 
 ```json
