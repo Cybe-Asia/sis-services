@@ -396,7 +396,8 @@ the caller is and where they may shop or work:
 - **Student** (Student session, checked live with Auth): exactly their own active enrolment.
 - **Parent** (Parent token): every eligible child with an active enrolment; no children is still `200` with an
   empty list, a token that names no single eligible Parent is `403`.
-- **Staff** (Admin portal / Staff SSO session): the schools of their membership (every school for an unscoped
+- **Staff** (a Shop staff app token, audience `shop-api`, checked with Auth's membership read; or an Admin portal
+  session): the schools of their membership (every school for an unscoped
   Owner). `shopAdmin` is true for an Owner, a school administrator, or a holder of `shop.manage` there; `shopStaff`
   is true for a shop admin or a holder of `shop.operate`.
 

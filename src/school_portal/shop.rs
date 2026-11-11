@@ -189,6 +189,26 @@ pub(super) async fn context(
             .map_err(|_| unavailable())?
             .ok_or_else(forbidden)?,
         // Anything the Parent check rejects as unauthorised may be a staff session for Auth.
+        // A Shop staff app token (Staff SSO module token) is checked with Auth's membership read.
+        Err((StatusCode::UNAUTHORIZED, _))
+            if auth::claimed_audience(&h).as_deref() == Some(auth::SHOP_AUDIENCE) =>
+        {
+            let member = auth::shop_staff(&s.config, &h).await?;
+            let role = if member.is_owner() {
+                "owner"
+            } else if member.roles.iter().any(|r| r == "school_admin") {
+                "school_admin"
+            } else {
+                "staff"
+            };
+            let who = Staff {
+                id: member.staff_member_id,
+                role: role.into(),
+                school_ids: member.school_ids,
+                tenant_ids: member.tenant_ids,
+            };
+            staff(&s.graph, &who).await?
+        }
         Err((StatusCode::UNAUTHORIZED, _)) => {
             let (id, role, school_ids, tenant_ids) =
                 crate::learning_access::any_staff_session(&s.config, &h)
