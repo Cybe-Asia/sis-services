@@ -49,6 +49,7 @@ mod learning_access;
 mod school_portal;
 mod education_calendar;
 mod school_articles;
+mod school_broadcasts;
 mod school_rooms;
 mod student_biodata;
 mod extra_curricular;
@@ -164,6 +165,7 @@ async fn main() {
     enrolment_history::init(&graph).await.expect("failed to initialize enrolment history constraints");
     student_biodata::init(&graph).await.expect("failed to initialize student biodata constraints");
     school_articles::repository::init(&graph).await.expect("failed to initialize school article indexes");
+    school_broadcasts::repository::init(&graph).await.expect("failed to initialize the school broadcast constraint");
     extra_curricular::repository::init(&graph).await.expect("extracurricular schema initialization failed");
     // Children placed before entry and graduation years were stored get them from their section; a failure only
     // leaves those years empty for now.
@@ -189,6 +191,7 @@ async fn main() {
         .merge(school_portal::router())
         .merge(education_calendar::router())
         .merge(school_articles::router())
+        .merge(school_broadcasts::router())
         .merge(school_rooms::router())
         .merge(student_biodata::router())
         .merge(academic_teachers::router())

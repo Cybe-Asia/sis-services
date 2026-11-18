@@ -576,6 +576,7 @@ transaction it reads the facts under the caller's locks, so an assignment or tem
 | `GET /academic/teachers`, `/academic/teachers/{id}`, `/academic/staffing-warnings` (`academic_teachers`, slice 6) | `academic.staffing.read` |
 | `GET /academic/teachers/context` (slice 6) | lists the schools where the caller holds `academic.staffing.read` |
 | `GET/POST /school-articles`, `POST /school-articles/cover`, `GET /school-articles/cover` (`school_articles`, slice 6) | `school.content.manage` |
+| `POST /school-broadcasts`, `GET /school-broadcasts/audiences` (`school_broadcasts`, see `SCHOOL_BROADCASTS.md`) | `school.content.manage` |
 | `GET /education-calendar/context` for a caller who is not an administrator (slice 6) | the classes of schools where they hold `school.content.manage` |
 | `POST /admin/sis/sections`, `POST /admin/sis/sections/{id}/homeroom`, `PATCH` section status (2026-11-04) | `academic.section.manage` |
 | `POST /admin/sis/sections/{id}/assign` (2026-11-04) | `academic.enrolment.manage` (sensitive: only an Owner grants it) |

@@ -40,7 +40,7 @@ pub struct Scope {
 /// `school.content.manage` at the school (ADR 0018 slice 6): today's administrators and Owners hold
 /// it, and so does anyone the school assigned it. The graph statement checks the caller's node again.
 const CONTENT_MANAGE: &str = "school.content.manage";
-async fn manager(
+pub(crate) async fn manager(
     s: &AppState,
     h: &HeaderMap,
     tenant: &String,
@@ -62,7 +62,7 @@ async fn manager(
         Err(failure(StatusCode::FORBIDDEN))
     }
 }
-fn capable(id: &str) -> repository::Actor<'_> {
+pub(crate) fn capable(id: &str) -> repository::Actor<'_> {
     repository::Actor { id, capable: true }
 }
 async fn list(

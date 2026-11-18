@@ -24,7 +24,7 @@ impl<'a> From<&'a String> for Actor<'a> {
 }
 /// `ADMIN`, or a staff member of the school whom the route found holding the capability
 /// (`$capable`). Both read the caller's node, so a membership ended meanwhile still refuses.
-fn manager() -> String {
+pub(crate) fn manager() -> String {
     format!("{ADMIN} OR ($capable AND $school IN coalesce(actor.schoolIds,[]) AND $tenant IN coalesce(actor.tenantIds,[]) AND NOT EXISTS {{MATCH(other:StaffMember {{id:actor.id}}) WHERE other<>actor}})")
 }
 use neo4rs::{query, Graph, Query};
