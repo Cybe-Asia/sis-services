@@ -5,6 +5,7 @@
 //! the retention period; the graph keeps the grade history.
 pub mod model;
 pub mod repository;
+pub mod transcode;
 use crate::extra_curricular::auth;
 use crate::AppState;
 use axum::{
@@ -87,6 +88,10 @@ async fn submit(
     }
     let actor = auth::actor(&s.config, &h, &role, &v.scope).await?;
     let store = store(&s.config)?;
+    // Converted only after the caller is known, so nobody else spends the CPU.
+    let (audio, mime) = transcode::playable(audio, &v.mime).await;
+    let mut v = v;
+    v.mime = mime;
     done(repository::submit(&s.graph, store, &actor, &v, audio).await)
 }
 async fn audio(

@@ -187,6 +187,21 @@ async fn a_student_submits_a_coach_grades_and_retention_removes_the_clip() {
     let queue = repository::list(&g, &teacher, &Query { status: Some("submitted".into()), ..q.clone() }).await.unwrap().unwrap();
     assert_eq!(queue["items"].as_array().unwrap().len(), 1);
     assert_eq!(queue["items"][0]["review"]["revision"], 2);
+    // Backfill (needs ffmpeg): a dry run only counts; a real WebM becomes AAC, the fake one above is kept as it is,
+    // and a second run finds only the one ffmpeg refused.
+    let mut real = sub.clone();
+    real.verse = "114:2".into();
+    let tone = include_bytes!("fixtures/tone.webm").to_vec();
+    assert!(matches!(repository::submit(&g, &store, &student, &real, tone).await.unwrap(), Outcome::Done(_)));
+    let counted = repository::backfill(&g, &store, false).await.unwrap();
+    assert_eq!(counted, repository::Backfill { found: 2, converted: 0, kept: 0 });
+    let applied = repository::backfill(&g, &store, true).await.unwrap();
+    assert_eq!(applied, repository::Backfill { found: 2, converted: 1, kept: 1 });
+    let aac_query = Query { verse: Some("114:2".into()), ..clip_query.clone() };
+    let aac = match repository::audio(&g, &store, &teacher, &aac_query).await.unwrap() { Outcome::Done(v) => v, _ => panic!("converted clip missing") };
+    assert_eq!(aac["mime"], "audio/mp4");
+    assert_eq!(repository::backfill(&g, &store, true).await.unwrap(), repository::Backfill { found: 1, converted: 0, kept: 1 });
+    g.run(query("MATCH(r:ExtraCurricularRecitation {verse:'114:2'}) WHERE r.activity_key STARTS WITH $prefix DETACH DELETE r").param("prefix", format!("{tenant}|"))).await.unwrap();
     // Retention: a clip past its date disappears from the store and the record keeps the history.
     g.run(query("MATCH(r:ExtraCurricularRecitation) WHERE r.activity_key STARTS WITH $prefix SET r.delete_after=datetime()-duration({days:1})").param("prefix", format!("{tenant}|"))).await.unwrap();
     assert_eq!(repository::sweep(&g, &store).await.unwrap(), 1);

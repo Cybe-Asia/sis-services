@@ -240,7 +240,7 @@ pub async fn audio(g: &Graph, store: &Store, actor: &Actor, q: &Query) -> Result
         return Ok(Outcome::Missing);
     };
     drop(rows);
-    let bytes = store.get_bounded(&object, MAX_AUDIO_BYTES).await?;
+    let bytes = store.get_bounded(&object, MAX_STORED_BYTES).await?;
     Ok(Outcome::Done(json!({"mime":mime,"bytes":bytes})))
 }
 /// The coach grades the submission at the revision they listened to; a newer take conflicts.
@@ -302,4 +302,52 @@ pub async fn sweep(g: &Graph, store: &Store) -> Result<u32, Error> {
         removed += 1;
     }
     Ok(removed)
+}
+
+/// What the one-off conversion of stored WebM and Ogg clips found and did.
+#[derive(Debug, Default, serde::Serialize, PartialEq)]
+pub struct Backfill {
+    pub found: u32,
+    pub converted: u32,
+    pub kept: u32,
+}
+const UNPLAYABLE: &str = "MATCH(r:ExtraCurricularRecitation) WHERE r.object_key IS NOT NULL AND r.mime IN ['audio/webm','audio/ogg']";
+/// Stores the AAC rendition of every clip still kept as WebM or Ogg. A dry run (`apply` false) only
+/// counts. Safe to repeat: a converted clip is no longer WebM or Ogg, a clip replaced or purged
+/// meanwhile is left alone, and one ffmpeg refuses stays as it is.
+pub async fn backfill(g: &Graph, store: &Store, apply: bool) -> Result<Backfill, Error> {
+    let mut rows = g.execute(query(&format!("{UNPLAYABLE} RETURN r.key AS key,r.object_key AS object,r.mime AS mime ORDER BY key"))).await?;
+    let mut due = vec![];
+    while let Some(row) = rows.next().await? {
+        due.push((row.get::<String>("key")?, row.get::<String>("object")?, row.get::<String>("mime")?));
+    }
+    drop(rows);
+    let mut report = Backfill { found: u32::try_from(due.len()).unwrap_or(u32::MAX), ..Backfill::default() };
+    if !apply {
+        return Ok(report);
+    }
+    for (key, object, mime) in due {
+        // A clip that cannot be read (gone from the store, oversized) is left for a person to look at.
+        let Ok(clip) = store.get_bounded(&object, MAX_AUDIO_BYTES).await else {
+            report.kept += 1;
+            continue;
+        };
+        let (aac, stored) = super::transcode::playable(clip, &mime).await;
+        if stored != super::transcode::PLAYABLE {
+            report.kept += 1;
+            continue;
+        }
+        let rendition = format!("{}.{}", object.rsplit_once('.').map_or(object.as_str(), |(stem, _)| stem), extension(&stored));
+        let size = aac.len() as i64;
+        store.put_as(&rendition, aac, &stored).await?;
+        let mut moved = g.execute(query("MATCH(r:ExtraCurricularRecitation {key:$key,object_key:$object}) SET r.object_key=$rendition,r.mime=$mime,r.size=$size RETURN true AS moved").param("key", key).param("object", object.clone()).param("rendition", rendition.clone()).param("mime", stored).param("size", size)).await?;
+        if moved.next().await?.is_some() {
+            store.delete(&object).await?;
+            report.converted += 1;
+        } else {
+            store.delete(&rendition).await?;
+            report.kept += 1;
+        }
+    }
+    Ok(report)
 }

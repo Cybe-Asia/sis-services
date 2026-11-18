@@ -140,6 +140,17 @@ async fn main() {
         println!("{}", serde_json::to_string(&report).expect("report"));
         return;
     }
+    // Tahfiz clips kept as WebM or Ogg, which iOS cannot play, are stored again as AAC. A dry run (count only) unless
+    // `--apply`; the report is one JSON line on stdout (docs/RECITATION_SUBMISSIONS.md).
+    if std::env::args().nth(1).as_deref() == Some("transcode-recitations") {
+        let apply = std::env::args().nth(2).as_deref() == Some("--apply");
+        let store = school_articles::cover::store(&cfg).expect("the object store is not configured");
+        let report = extra_curricular::recitation::repository::backfill(&graph, store, apply)
+            .await
+            .expect("recitation transcode backfill failed");
+        println!("{}", serde_json::to_string(&report).expect("report"));
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("--migrate-enrollment-handover") {
         enrollment_handover::migrate(&graph)
             .await
