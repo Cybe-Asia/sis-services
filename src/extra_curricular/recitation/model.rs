@@ -16,6 +16,9 @@ pub const MIMES: [&str; 5] = [
 /// Base64 of at most about 2 MB of audio: the same bound as the AI check, so one take fits both.
 pub const MAX_AUDIO_BASE64: usize = 2_800_000;
 pub const MAX_AUDIO_BYTES: usize = 2_200_000;
+/// A stored clip may be the AAC rendition of a sent one, which can be larger than the WebM or Ogg it
+/// came from (64 kbps against the recorder's 32).
+pub const MAX_STORED_BYTES: usize = 4_400_000;
 pub const BODY_LIMIT: usize = 3_000_000;
 /// A clip nobody reviewed is kept this long after it was sent; a reviewed one this long after the review.
 pub const UNREVIEWED_RETENTION_DAYS: i64 = 180;

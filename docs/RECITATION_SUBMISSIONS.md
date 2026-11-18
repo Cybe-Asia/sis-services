@@ -25,10 +25,40 @@ Responses are `{"data":…}` or `{"error":{"code":…}}` with `INVALID_INPUT`, `
 - `PUT /student` JSON `{scope, activityId, verse, mime, audioBase64, verdict}` (3 MB body; `mime`
   one of webm/ogg/mp4/wav/mpeg; the bytes must begin like that type). Replaces the verse's
   submission; the previous clip is deleted. Answer: `{verse, revision, attempts, status, submittedAt}`.
-- `GET /:role/audio?…&studentId&verse` the clip, `Cache-Control: no-store`. Student: own only.
+- `GET /:role/audio?…&studentId&verse` the clip as stored (`Content-Type` = its `mime`, at most 4.4 MB),
+  `Cache-Control: no-store`. Student: own only.
 - `POST /teacher/review` JSON `{scope, activityId, studentId, verse, revision, skills:[{criterionId,
   level}], note?, decision: "pass"|"retry"}`. Every criterion of the activity needs a level; `revision`
   is the submission revision the coach listened to (409 when the student sent a newer take).
+
+## Playable everywhere (AAC)
+
+The iPhone app (`AVAudioPlayer`) cannot play WebM or Ogg, which Chrome, Android and Firefox record. After
+the caller is authorised, a WebM or Ogg clip (Opus or Vorbis) is converted to AAC-LC in MP4, mono, 64 kbps,
+and stored as `audio/mp4` (`.m4a`). MP4, MP3 and WAV are stored as sent. The size limit and the
+"begins like its type" check still apply to what was sent. If the conversion fails (ffmpeg missing, a
+broken clip, over 30 s of work, output over 4.4 MB), the clip is stored as sent. The log line is
+`recitation clip kept as sent` with the reason and type only. Code: `src/extra_curricular/recitation/transcode.rs`.
+
+The image carries a minimal ffmpeg built from the release tarball (Dockerfile stage `ffmpeg`: version and
+sha256 pinned, matroska/ogg demuxers, opus/vorbis decoders, aac encoder, mp4 muxer, file protocol only). It
+adds about 2 MB. Local tests need `ffmpeg` on PATH for the ignored conversion test (`brew install ffmpeg`).
+
+The student recorder (client `web/src/presentation/tahfiz/use-recorder.ts`) asks for
+`audio/mp4;codecs=mp4a.40.2` first, so Safari, and Chrome where it can record AAC, send AAC and need no
+conversion.
+
+### Backfill of stored WebM/Ogg clips
+
+`sis-service transcode-recitations` counts the clips still stored as WebM or Ogg and prints
+`{"found":N,"converted":0,"kept":0}`. It writes nothing. With `--apply`, it stores each clip's AAC
+rendition under the same key with `.m4a`, then moves the record (`object_key`, `mime`, `size`) only if it
+still points at the old object, then deletes the old object. A clip ffmpeg refuses is left as it is
+(`kept`). Re-running is safe: converted clips are no longer WebM or Ogg. Run it in the sis-service pod
+(it needs Neo4j and `MINIO_*`):
+`kubectl -n <ns> exec deploy/sis-service -- ./sis-service transcode-recitations` (count), then `… --apply`.
+Read-only count straight in Neo4j: `MATCH(r:ExtraCurricularRecitation) WHERE r.object_key IS NOT NULL AND
+r.mime IN ['audio/webm','audio/ogg'] RETURN r.mime, count(*)`.
 
 ## Retention
 
