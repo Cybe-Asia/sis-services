@@ -292,3 +292,60 @@ async fn lifecycle_audience_and_one_view_per_family() {
         .unwrap();
     graph.run(query("MATCH(n) WHERE n.test_key=$key OR (n:SchoolArticle AND n.school_id=$key) OR (n:SchoolArticleAudit AND n.school_id=$key) OR (n:SchoolArticleLock AND n.key STARTS WITH $prefix) OR (n:SchoolArticleView AND n.article_key STARTS WITH $prefix) OR (n:SchoolArticleCover AND n.school_id=$key) DETACH DELETE n").param("key",key.clone()).param("prefix",format!("{key}|{key}"))).await.unwrap();
 }
+#[tokio::test]
+#[ignore = "requires disposable loopback SCHOOL_PORTAL_TEST_BOLT=127.0.0.1:3223"]
+async fn a_published_article_claims_its_push_once() {
+    assert_eq!(
+        std::env::var("SCHOOL_PORTAL_TEST_BOLT").unwrap(),
+        "127.0.0.1:3223"
+    );
+    let graph = Graph::new("127.0.0.1:3223", "neo4j", "parent-otp-fixture-password")
+        .await
+        .unwrap();
+    init(&graph).await.unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let (published, draft) = (format!("t|s|{id}"), format!("t|s|draft-{id}"));
+    graph
+        .run(query("CREATE(:SchoolArticle {key:$published,status:'published',test_key:$id}) CREATE(:SchoolArticle {key:$draft,status:'draft',test_key:$id})")
+            .param("published", published.clone())
+            .param("draft", draft.clone())
+            .param("id", id.clone()))
+        .await
+        .unwrap();
+    assert!(
+        !claim_push(&graph, &draft, 1).await.unwrap(),
+        "a draft pushes nothing"
+    );
+    assert!(
+        claim_push(&graph, &published, 2).await.unwrap(),
+        "the first publish pushes"
+    );
+    assert!(
+        !claim_push(&graph, &published, 2).await.unwrap(),
+        "a re-publish pushes nothing"
+    );
+    finish_push(&graph, &published, 1, 1).await.unwrap();
+    let mut rows = graph
+        .execute(query("MATCH(p:SchoolArticlePush {key:$key}) RETURN p.status AS status,p.recipients AS recipients,p.pushed AS pushed,p.push_failed AS failed").param("key", published.clone()))
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    assert_eq!(row.get::<String>("status").unwrap(), "sent");
+    assert_eq!(
+        (
+            row.get::<i64>("recipients").unwrap(),
+            row.get::<i64>("pushed").unwrap(),
+            row.get::<i64>("failed").unwrap()
+        ),
+        (2, 1, 1)
+    );
+    graph
+        .run(
+            query("MATCH(n) WHERE n.test_key=$id OR n.key IN [$published,$draft] DETACH DELETE n")
+                .param("id", id)
+                .param("published", published)
+                .param("draft", draft),
+        )
+        .await
+        .unwrap();
+}

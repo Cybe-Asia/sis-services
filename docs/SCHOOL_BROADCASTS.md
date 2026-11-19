@@ -73,6 +73,28 @@ Known limit: the fan-out runs in the SIS process. If the pod restarts mid-way, t
 the broadcast stays `sending`. The notices are already posted. A retry with the same id does not resume it.
 Staff have no board to read the text yet.
 
+## Article and webinar publish push (2026-11-19)
+
+Publishing an article or webinar (`POST /api/v1/sis-service/school-articles` with `action:"publish"`, admin
+portal → Artikel sekolah) pushes once to the Parents it reaches, with the same fan-out as a broadcast. No new
+route and no board notice: the published article already shows on the Parent board and the Article tab.
+
+- Audience = the article's own: `school` → every eligible Parent of the school; `sections` → the Parents of
+  children enrolled in those classes (the broadcast `class` audience). Same opt-outs as announcements
+  (`school_notifications`, `school_notify_announcements`).
+- Once per article: `(:SchoolArticlePush {key:'<tenant>|<school>|<id>'})` is claimed right after the publish
+  commits (unique key, MERGE). Unpublish + publish again, a retry or a double click pushes nothing new.
+- Lock screen text is fixed by kind and locale, never the title: article `Artikel sekolah / Ada artikel baru dari
+  sekolah.` (en `School article / There is a new article from the school.`), webinar `Webinar sekolah / Ada webinar
+  baru dari sekolah.` (en `School webinar / There is a new webinar from the school.`). `url` =
+  `/parent?article=<id>` (web article link; the app opens the article page). The app reads its data again when a
+  push arrives in the open app and whenever it comes back to the front.
+- Runs off the request after the publish answer; the publish never fails because of push. Outcome on the claim:
+  `status sending→sent`, `recipients`, `pushed`, `push_failed`. Same in-process limit as broadcasts (a restart
+  mid-send leaves the rest unpushed).
+- Check: `MATCH(p:SchoolArticlePush {key:$key}) RETURN p.status,p.recipients,p.pushed,p.push_failed`.
+- Test on a shared environment with an article whose audience is one test class (`sections`), never `school`.
+
 ## Graph
 
 - `(:SchoolBroadcast {id, school_id, tenant_id, actor_id, audience, audience_ids, title, body, recipients, status, created_at, pushed, push_failed, finished_at})`
@@ -98,6 +120,6 @@ The env vars already exist for safety alerts: `NOTIFICATION_SERVICE_URL` and `NO
 3. Check: `MATCH(b:SchoolBroadcast {id:$id}) RETURN b.status,b.recipients,b.pushed,b.push_failed`.
 4. Undo a test notice: `MATCH(n:SchoolNotice) WHERE n.id STARTS WITH 'broadcast:'+$id DETACH DELETE n`.
 
-Tests: `cargo test --bin sis-service school_broadcasts`. The graph tests need a disposable Neo4j:
+Tests: `cargo test --bin sis-service school_broadcasts` and `publish_push`. The graph tests need a disposable Neo4j:
 `docker run --rm -d -p 127.0.0.1:3223:7687 -e NEO4J_AUTH=neo4j/parent-otp-fixture-password neo4j:5.26-community`, then
 `SCHOOL_PORTAL_TEST_BOLT=127.0.0.1:3223 cargo test --bin sis-service school_broadcasts -- --ignored --test-threads=1`.

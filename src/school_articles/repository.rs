@@ -38,6 +38,7 @@ pub async fn init(graph: &Graph) -> Result<(), Error> {
         ("school_article_audit", "SchoolArticleAudit"),
         ("school_article_view", "SchoolArticleView"),
         ("school_article_cover", "SchoolArticleCover"),
+        ("school_article_push", "SchoolArticlePush"),
     ] {
         graph
             .run(query(&format!(
@@ -178,6 +179,33 @@ pub(crate) fn public(a: &Article) -> Value {
     json!({"id":a.id,"kind":a.kind,"category":a.category,"title":a.title,"body":a.body,"date":a.date,"start":a.start,"end":a.end,"joinUrl":a.join_url,"cover":a.cover})
 }
 
+/// Claims the one publish push of a published article: true only for the first claim. An article
+/// taken back and published again finds the claim and pushes nothing.
+pub async fn claim_push(graph: &Graph, key: &str, recipients: i64) -> Result<bool, Error> {
+    let attempt = uuid::Uuid::new_v4().to_string();
+    let mut rows = graph
+        .execute(query("MATCH(a:SchoolArticle {key:$key,status:'published'}) MERGE(p:SchoolArticlePush {key:$key}) ON CREATE SET p.claim=$attempt,p.recipients=$recipients,p.status='sending',p.created_at=datetime() RETURN p.claim=$attempt AS fresh")
+            .param("key", key)
+            .param("attempt", attempt)
+            .param("recipients", recipients))
+        .await?;
+    let fresh = match rows.next().await? {
+        Some(row) => row.get::<bool>("fresh")?,
+        None => false,
+    };
+    while rows.next().await?.is_some() {}
+    Ok(fresh)
+}
+/// Records the publish push outcome once its fan-out ends.
+pub async fn finish_push(graph: &Graph, key: &str, pushed: i64, failed: i64) -> Result<(), Error> {
+    graph
+        .run(query("MATCH(p:SchoolArticlePush {key:$key}) SET p.status='sent',p.pushed=$pushed,p.push_failed=$failed,p.finished_at=datetime()")
+            .param("key", key)
+            .param("pushed", pushed)
+            .param("failed", failed))
+        .await?;
+    Ok(())
+}
 /// Keeps an already normalized photograph for this school and returns the identifier an article
 /// names it by, or `None` when the caller may not write here. The object is written before its
 /// record: a failed write leaves at most an object nothing refers to.

@@ -126,18 +126,19 @@ pub(crate) fn to_push(claim: &Claim, recipients: Vec<Recipient>) -> Vec<Recipien
     }
 }
 
-/// Fans the push out through notification-services `/api/push/v1/send`, `PUSH_BATCH` at a time.
-/// That service drops dead tokens and expired browser subscriptions as it sends.
-// shortcut: the fan-out lives in this process; if it restarts mid-way the rest is not pushed and the
-// broadcast stays `sending` (notices are already posted). Move to a durable outbox if that matters.
-async fn fan_out(s: AppState, id: String, staff: bool, recipients: Vec<Recipient>) {
+/// Fans the push out through notification-services `/api/push/v1/send`, `PUSH_BATCH` at a time, with
+/// [payload] per recipient. That service drops dead tokens and expired browser subscriptions as it
+/// sends. `None` when notification-services is not configured (nothing is sent).
+pub(crate) async fn deliver(
+    s: &AppState,
+    recipients: &[Recipient],
+    payload: impl Fn(&Recipient) -> Value,
+) -> Option<(i64, i64)> {
     let (Some(origin), Some(token)) = (
         s.config.notification_service_url.clone(),
         s.config.notification_internal_token.clone(),
     ) else {
-        tracing::warn!("broadcast {id}: notification-services is not configured, nothing pushed");
-        let _ = repository::finish(&s.graph, &id, 0, recipients.len() as i64).await;
-        return;
+        return None;
     };
     let url = format!("{}/api/push/v1/send", origin.trim_end_matches('/'));
     let (mut pushed, mut failed) = (0_i64, 0_i64);
@@ -148,7 +149,7 @@ async fn fan_out(s: AppState, id: String, staff: bool, recipients: Vec<Recipient
                 .http_client
                 .post(&url)
                 .header("X-Internal-Token", &token)
-                .json(&push_payload(r, staff))
+                .json(&payload(r))
                 .timeout(std::time::Duration::from_secs(15));
             set.spawn(async move {
                 request
@@ -166,6 +167,20 @@ async fn fan_out(s: AppState, id: String, staff: bool, recipients: Vec<Recipient
             }
         }
     }
+    Some((pushed, failed))
+}
+// shortcut: the fan-out lives in this process; if it restarts mid-way the rest is not pushed and the
+// broadcast stays `sending` (notices are already posted). Move to a durable outbox if that matters.
+async fn fan_out(s: AppState, id: String, staff: bool, recipients: Vec<Recipient>) {
+    let (pushed, failed) = match deliver(&s, &recipients, |r| push_payload(r, staff)).await {
+        Some(outcome) => outcome,
+        None => {
+            tracing::warn!(
+                "broadcast {id}: notification-services is not configured, nothing pushed"
+            );
+            (0, recipients.len() as i64)
+        }
+    };
     if repository::finish(&s.graph, &id, pushed, failed)
         .await
         .is_err()
@@ -173,7 +188,6 @@ async fn fan_out(s: AppState, id: String, staff: bool, recipients: Vec<Recipient
         tracing::warn!("broadcast {id}: outcome not recorded");
     }
 }
-
 async fn send(
     State(s): State<AppState>,
     h: HeaderMap,

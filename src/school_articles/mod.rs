@@ -3,6 +3,7 @@
 //! the school portal lets a Parent read the published ones and counts who opened them.
 pub mod cover;
 pub mod model;
+pub(crate) mod publish_push;
 pub mod repository;
 use crate::AppState;
 use axum::{
@@ -99,7 +100,13 @@ async fn change(
     }
     let actor = manager(&s, &h, &v.entry.tenant_id, &v.entry.school_id).await?;
     match repository::change(&s.graph, capable(&actor), &v).await {
-        Ok(Some(version)) => Ok(Json(json!({"data":{"version":version}}))),
+        Ok(Some(version)) => {
+            // Families hear about it once, after the publish is committed (school broadcasts push path).
+            if v.action == "publish" {
+                tokio::spawn(publish_push::announce(s.clone(), v.entry.clone()));
+            }
+            Ok(Json(json!({"data":{"version":version}})))
+        }
         Ok(None) => Err(failure(StatusCode::CONFLICT)),
         Err(_) => Err(failure(StatusCode::SERVICE_UNAVAILABLE)),
     }
