@@ -88,7 +88,7 @@
     "src/learning_access/class_meetings.rs": "17e25ffc8c65f415d839c6e8dc729fab14601f7aca6f684e71f08e5c4652e2c5",
     "src/learning_access/context.rs": "2aa626c96838bea67602ba45638cb73c0c795daba12caf664b238b86abfd4b79",
     "src/learning_access/database_tests.rs": "376fe12bd8cbecc0c89d864f13b425cbab4bb46357171f5bb4bc23883358d33f",
-    "src/learning_access/owner.rs": "43e5d7d9f483f5be202d97cbb62909f57e04b2e5861af6d63e685178a6fb0cf5",
+    "src/learning_access/owner.rs": "4f5a73af14f5653a42b860ca2cd055007f0ccdbe62a66d5a41990c3e2f7315f0",
     "src/learning_access/owner/school_classes.rs": "67ad40eacbeba96f9387c2583a8adb4a3e2967f853e77f8ae93108e95e5957e6",
     "src/learning_access/owner/student_check_in.rs": "41897c375faa32114cb24bae2f7ae64698521349f4fb4f673438bb83a7793ccc",
     "src/learning_access/owner/student_history.rs": "4174e5fd47c9f5ab2e6cf4fcd6077e9e56e523e88fbd67d3c75131f82abe327c",
@@ -107,7 +107,7 @@
     "src/learning_access/timetable/validation.rs": "a9a0b2522505f751996acf59b788eb6688cb39d3960f354c97ceca5392f8b5d2",
     "src/learning_access/timetable/weekly.rs": "6bdee8ce79d9fa69665c2a9235bf071d66bdb7ea04523a796a3a8874ffdb112e",
     "src/learning_access/timetable/weekly/tests.rs": "c2852714177785bc84df552eda3d1a1fe2844850f3122049200dd5b8eb8b31af",
-    "src/main.rs": "0a33b9d2b0c4b078f5d415d18c0820aa071609d4804c43491822bfbcf1ab71bf",
+    "src/main.rs": "8cc2d624021a1711746135c5ef5193f17cf768805b242556e01bf47712ab236b",
     "src/models/attendance_model.rs": "ee56f2f99b7b6530e0a1c6e805600ce290442afc4e0b4b45af7ec6f88d538972",
     "src/models/grade_model.rs": "8bb3b2e6859ff97f6901052cee0e0725d0c2794512406ca68b4e814eb355f798",
     "src/models/mod.rs": "932126d78aa329b67459a410543f4d3a460e6d228f96f3826fe40da656c092dc",
@@ -175,7 +175,11 @@
     "src/extra_curricular/recitation/fixtures/tone.ogg": "32f45daeefd5c9c5d68a60ff792e388ef442778467e53133c1ec4587b7ea43e0",
     "src/extra_curricular/recitation/fixtures/tone.webm": "a30715c898cfa211e385af9804d0895044f3a27450e436cc2d8a242ad3f99c04",
     "src/extra_curricular/recitation/transcode.rs": "8b3031a139ff5992abd3126d88e303a622f25ad2c825aa50e8e89e7ed0803541",
-    "src/school_articles/publish_push.rs": "56391397b7e162123f3360e544e5658565899669eac6e0f0cb566e266bf98f0a"
+    "src/school_articles/publish_push.rs": "56391397b7e162123f3360e544e5658565899669eac6e0f0cb566e266bf98f0a",
+    "src/student_push.rs": "7793096717f1b48d790b13d185fcac4fd85a3281e846eb1d5509fe461d1442b7",
+    "src/student_push/database_tests.rs": "957708b1c9bbe32f952629d2b45f5ea1e648c1a538ac0433788ac2cb5b41b800",
+    "src/student_push/repository.rs": "683812bb8cb75ac2f2395c5b044446574a8373a25eddac05ae935127c62d59a7",
+    "src/student_push/tests.rs": "a667cc36d70017d0b428c38ceac481864b196ccbfcc6154420f36df98315520b"
   },
   "testedRuntimeFreeze": {
     "Cargo.lock": "0e912aecca4edad25752a70f20b022e9774b8fb5d66f776eabba3617e40be888",

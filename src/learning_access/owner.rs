@@ -96,7 +96,7 @@ async fn actor(
         _ => Err(failure(StatusCode::UNAUTHORIZED)),
     }
 }
-pub(super) async fn class_actor(
+pub(crate) async fn class_actor(
     state: &AppState,
     headers: &HeaderMap,
     school: &str,
