@@ -416,6 +416,51 @@ pub async fn list_section_members(
     Ok(out)
 }
 
+/// A Parent of a class member who linked a Block Identity DID from the Parent app. The
+/// presentation is stored unverified; the reader verifies it before using `did`.
+#[derive(Clone, serde::Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockIdentityParentRow {
+    pub parent_user_id: String,
+    pub parent_name: String,
+    pub did: String,
+    pub verifiable_presentation: String,
+}
+
+/// Gate access (Owners and school admins only, by role: no capability grants it): the linked
+/// DIDs of `student`'s eligible Parents, only while the student is an active member of the class.
+pub async fn list_block_identity_parents(
+    graph: &Graph,
+    actor: &AdminActor,
+    section_id: &str,
+    student_id: &str,
+) -> Result<Vec<BlockIdentityParentRow>, RepositoryError> {
+    let eligible = crate::school_portal::repository::PARENT_ELIGIBLE;
+    let q = query(&format!(
+        "MATCH (e:EnrolledStudent)-[:ENROLLED_IN]->(sec:Section {{section_id: $id}}) \
+         MATCH (s:Student {{studentId: $student}})-[:ENROLLED_AS]->(e) WHERE {CHILD} \
+         MATCH (u:User)-[:HAS_APPLICATION]->(l:Lead)-[:HAS_STUDENT]->(s) WHERE {eligible} \
+         MATCH (u)-[:HAS_BLOCK_IDENTITY]->(b:ParentBlockIdentity) \
+         WITH u, b, [n IN collect(DISTINCT l.parent_name) WHERE coalesce(n, '') <> ''] AS names \
+         RETURN u.id AS parentUserId, coalesce(names[0], '') AS parentName, b.did AS did, \
+           b.presentation AS presentation ORDER BY parentName, did LIMIT 10"
+    ))
+    .param("id", section_id.to_string())
+    .param("student", student_id.to_string());
+    let rs = execute(graph, actor, &[], Resource::Section(section_id), q, None, None).await?;
+    Ok(rs
+        .into_iter()
+        .filter_map(|row| {
+            Some(BlockIdentityParentRow {
+                parent_user_id: row.get("parentUserId").ok()?,
+                parent_name: row.get("parentName").unwrap_or_default(),
+                did: row.get("did").ok()?,
+                verifiable_presentation: row.get("presentation").ok()?,
+            })
+        })
+        .collect())
+}
+
 /// Parent-facing: find Sections (plus parent-friendly context) for every
 /// kid an authed parent owns. Returns one row per kid that IS assigned;
 /// kids without an ENROLLED_IN edge are not in the response.

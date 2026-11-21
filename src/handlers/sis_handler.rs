@@ -144,6 +144,47 @@ pub async fn admin_section_detail_handler(
     )
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct BlockIdentityParentsResponse {
+    pub items: Vec<sis_repository::BlockIdentityParentRow>,
+}
+
+/// Gate access: Block Identity DIDs the student's Parents linked from the Parent app.
+#[utoipa::path(
+    get,
+    path = "/api/leads/v1/admin/sis/sections/{section_id}/students/{student_id}/block-identity-parents",
+    responses(
+        (status = 200, body = ApiResponse<BlockIdentityParentsResponse>),
+        (status = 400),
+        (status = 403),
+        (status = 404)
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn admin_block_identity_parents_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((section_id, student_id)): Path<(String, String)>,
+) -> (StatusCode, Json<ApiResponse<BlockIdentityParentsResponse>>) {
+    use crate::repositories::lead_repository::RepositoryError;
+    use crate::school_portal::model::identifier;
+    let admin = match require_staff(&state, &headers).await {
+        Ok(actor) => actor,
+        Err((c, m)) => return (c, Json(ApiResponse::error(&m, c.as_u16() as i32))),
+    };
+    if !identifier(&section_id) || !identifier(&student_id) {
+        return academic_failure(RepositoryError::DbError("INVALID_INPUT".into()));
+    }
+    let read = sis_repository::list_block_identity_parents;
+    match read(&state.graph, &admin, &section_id, &student_id).await {
+        Ok(items) => (
+            StatusCode::OK,
+            Json(ApiResponse::success(BlockIdentityParentsResponse { items })),
+        ),
+        Err(e) => academic_failure(e),
+    }
+}
+
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AssignStudentsRequest {

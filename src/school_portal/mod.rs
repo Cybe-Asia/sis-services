@@ -1,6 +1,7 @@
 //! School-owned classroom operations. Staff Auth and canonical class assignment are both required.
 pub mod assessment_grades;
 pub(crate) mod auth;
+pub(crate) mod block_identity;
 mod messaging;
 mod safety;
 mod shop;
@@ -376,6 +377,10 @@ pub fn router() -> Router<AppState> {
             post(safety::ingest),
         )
         .route("/api/leads/v1/me/school", get(parent))
+        .route(
+            "/api/leads/v1/me/school/block-identity",
+            post(block_identity::link),
+        )
         .route(
             "/api/leads/v1/me/school/growth/:student",
             get(parent_growth),
