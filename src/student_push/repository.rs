@@ -40,6 +40,24 @@ pub async fn student_in_school(
     })
 }
 
+/// True when `user` is a Student account with an active binding and class in any school: the app's device
+/// belongs to the Student's account, and the app does not know its school's ids.
+pub async fn student_enrolled(graph: &Graph, user: &str) -> Result<bool, Error> {
+    let enrolled = ENROLLED
+        .replace("$school", "b.school_id")
+        .replace("$tenant", "b.tenant_id");
+    let mut rows = graph
+        .execute(
+            query(&format!("MATCH(u:User {{id:$user}}) WHERE {STUDENT_ACCOUNT} MATCH(b:LearningStudentBinding {{user_id:u.id,status:'ACTIVE'}}) MATCH{enrolled} WHERE s.studentId=b.student_id RETURN count(*)>0 AS ok"))
+                .param("user", user),
+        )
+        .await?;
+    Ok(match rows.next().await? {
+        Some(row) => row.get::<bool>("ok")?,
+        None => false,
+    })
+}
+
 /// The Student ids of `students` that are not enrolled in the class (empty when all are).
 pub async fn outside_class(
     graph: &Graph,

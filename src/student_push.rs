@@ -44,6 +44,9 @@ pub enum Kind {
     Assessment,
     #[serde(rename = "report_card.published")]
     ReportCard,
+    /// A teacher opened a class's live session; `ref` is the session id.
+    #[serde(rename = "live_class.started")]
+    LiveStarted,
 }
 impl Kind {
     fn slug(self) -> &'static str {
@@ -51,6 +54,7 @@ impl Kind {
             Self::Assignment => "assignment.published",
             Self::Assessment => "assessment.published",
             Self::ReportCard => "report_card.published",
+            Self::LiveStarted => "live_class.started",
         }
     }
     /// Index into `StudentNotificationCategories::STORED`.
@@ -58,6 +62,7 @@ impl Kind {
         match self {
             Self::Assignment | Self::Assessment => 0, // assignments
             Self::ReportCard => 1,                    // grades
+            Self::LiveStarted => 5,                   // learning_reminders
         }
     }
     /// A Student web path; the app opens the same screen.
@@ -66,6 +71,7 @@ impl Kind {
             Self::Assignment => format!("/lessons?assignment={reference}"),
             Self::Assessment => format!("/tests?assessment={reference}"),
             Self::ReportCard => "/report-cards".into(),
+            Self::LiveStarted => format!("/lessons?mode=live&session={reference}"),
         }
     }
     fn text(self, indonesian: bool) -> (&'static str, &'static str) {
@@ -76,6 +82,14 @@ impl Kind {
             (Self::Assessment, false) => ("New quiz", "You have a new quiz or test."),
             (Self::ReportCard, true) => ("Rapor tersedia", "Rapormu sudah bisa dilihat."),
             (Self::ReportCard, false) => ("Report card ready", "Your report card is available."),
+            (Self::LiveStarted, true) => (
+                "Kelas live dimulai",
+                "Gurumu sudah memulai kelas live. Ketuk untuk bergabung.",
+            ),
+            (Self::LiveStarted, false) => (
+                "Live class started",
+                "Your teacher started a live class. Tap to join.",
+            ),
         }
     }
 }
@@ -253,16 +267,37 @@ pub struct Installation {
     installation_id: String,
 }
 
-/// The signed-in Student as a push recipient, only with an active binding and class in the school.
-async fn recipient(s: &AppState, h: &HeaderMap, q: &Scope) -> Result<String, Failure> {
-    if !q.valid() {
-        return Err(invalid());
-    }
+/// A device route's optional school: both ids or neither (the app sends neither).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeviceScope {
+    school_id: Option<String>,
+    tenant_id: Option<String>,
+}
+
+/// The signed-in Student as a push recipient, only with an active binding and class: in the named school,
+/// or in any school when none is named.
+async fn recipient(s: &AppState, h: &HeaderMap, q: &DeviceScope) -> Result<String, Failure> {
+    let school = match (&q.school_id, &q.tenant_id) {
+        (Some(school_id), Some(tenant_id)) => {
+            let scope = Scope {
+                school_id: school_id.clone(),
+                tenant_id: tenant_id.clone(),
+            };
+            if !scope.valid() {
+                return Err(invalid());
+            }
+            Some(scope)
+        }
+        (None, None) => None,
+        _ => return Err(invalid()),
+    };
     let user = crate::school_portal::student_identity::actor(&s.config, h).await?;
-    if !repository::student_in_school(&s.graph, &user, &q.school_id, &q.tenant_id)
-        .await
-        .map_err(unavailable)?
-    {
+    let allowed = match &school {
+        Some(q) => repository::student_in_school(&s.graph, &user, &q.school_id, &q.tenant_id).await,
+        None => repository::student_enrolled(&s.graph, &user).await,
+    };
+    if !allowed.map_err(unavailable)? {
         return Err(refuse(StatusCode::FORBIDDEN, "FORBIDDEN"));
     }
     Ok(format!("student:{user}"))
@@ -303,7 +338,7 @@ async fn devices(
 async fn register(
     State(s): State<AppState>,
     h: HeaderMap,
-    Query(q): Query<Scope>,
+    Query(q): Query<DeviceScope>,
     j: Result<Json<Device>, JsonRejection>,
 ) -> Result<Json<Value>, Failure> {
     let Json(d) = j.map_err(|_| invalid())?;
@@ -318,7 +353,7 @@ async fn register(
 async fn remove(
     State(s): State<AppState>,
     h: HeaderMap,
-    Query(q): Query<Scope>,
+    Query(q): Query<DeviceScope>,
     j: Result<Json<Installation>, JsonRejection>,
 ) -> Result<Json<Value>, Failure> {
     let Json(i) = j.map_err(|_| invalid())?;

@@ -10,7 +10,10 @@ Header: `Authorization: Bearer <Student access token>` (auth-services `POST /api
 Student is checked as for Student preferences: signed HS256 `role=student` token plus the live Auth Student
 session, then an `ACTIVE` `LearningStudentBinding` to a Student enrolled in an active class of the school.
 
-### `POST /api/v1/sis-service/learning/owner/student/push-devices?schoolId=…&tenantId=…`
+`schoolId` and `tenantId` are optional (both or neither, else 400). The Student app sends neither: then any active
+binding and class will do (2026-11-23; the app does not know its school's ids, and the device belongs to the account).
+
+### `POST /api/v1/sis-service/learning/owner/student/push-devices[?schoolId=…&tenantId=…]`
 
 ```json
 {"installationId":"<UUID made once per install>","token":"<FCM registration token>","platform":"android|ios","appVersion":"1.0.0+3","locale":"id"}
@@ -39,6 +42,7 @@ Header: the Teacher's or Owner's own bearer, as Learning already forwards it to 
 {"kind":"assignment.published","ref":"<assignment id>","classId":"<section id>"}
 {"kind":"assessment.published","ref":"<assessment id>","classId":"<section id>"}
 {"kind":"report_card.published","ref":"<publication id>","classId":"<section id>","studentIds":["<Student.studentId>"]}
+{"kind":"live_class.started","ref":"<live session id>","classId":"<section id>"}
 ```
 
 `202 {"data":{"recipients":N,"duplicate":false}}`; the push runs after the answer.
@@ -47,13 +51,14 @@ Header: the Teacher's or Owner's own bearer, as Learning already forwards it to 
   Owner. Students and Parents get 403. Every `studentIds` entry (1–60, unique) must be enrolled in the class, else 403.
 - Recipients: Student accounts with an `ACTIVE` binding to an active enrolment in the class. A Student is pushed only
   when `student_notifications` is on and the kind's category is on (`assignments` for assignments and quizzes,
-  `grades` for report cards; same rule as `StudentNotificationCategories::stored`).
+  `grades` for report cards, `learning_reminders` for a live class; same rule as `StudentNotificationCategories::stored`).
 - Once per fact: `(:StudentPush {key:"<tenant>|<school>|<kind>|<class>|<ref>"})`, unique. A repeat answers
   `duplicate:true` and pushes nothing.
 - At most 20 new facts per class per day (Asia/Jakarta): 429 `RATE_LIMITED`.
 - 21:00–06:00 WIB: the claim is recorded and nobody is pushed (skipped, not delayed).
 - Lock screen text is fixed by kind and `student_locale` (`id…` Indonesian, otherwise English), never a title,
-  name, subject or score. `url`: `/lessons?assignment=<ref>`, `/tests?assessment=<ref>`, `/report-cards`.
+  name, subject or score. `url`: `/lessons?assignment=<ref>`, `/tests?assessment=<ref>`, `/report-cards`,
+  `/lessons?mode=live&session=<ref>` (a live class: "Kelas live dimulai" / "Live class started").
 - Outcome on the claim: `status sending→sent`, `recipients`, `pushed`, `push_failed`, `skipped`.
 
 Errors use `{"error":{"code":…}}`: 400 `INVALID_INPUT`, 401 `UNAUTHORIZED`, 403 `FORBIDDEN`, 429 `RATE_LIMITED`,
