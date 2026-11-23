@@ -71,6 +71,8 @@ async fn students_register_their_own_device_and_only_willing_students_of_the_cla
         assert!(repository::student_in_school(&graph, &u(5), &m, &m).await?);
         assert!(!repository::student_in_school(&graph, &u(4), &m, &m).await?);
         assert!(!repository::student_in_school(&graph, &u(1), "other-school", &m).await?);
+        assert!(repository::student_enrolled(&graph, &u(1)).await?);
+        assert!(!repository::student_enrolled(&graph, &u(4)).await?);
 
         // Once per fact, and at most `cap` new facts per class and day.
         for (key, expected) in [("one", "fresh"), ("one", "duplicate"), ("two", "fresh"), ("three", "capped"), ("one", "duplicate")] {
@@ -122,6 +124,10 @@ async fn students_register_their_own_device_and_only_willing_students_of_the_cla
         let r = client.delete(&devices).bearer_auth(credential(&u(1))).json(&json!({"installationId":"3f2b8c1e-9d4a-4c55-8f0e-2a1b3c4d5e6f"})).send().await?;
         assert_eq!(r.status(), 200);
         assert_eq!(client.post(&devices).json(&device).send().await?.status(), 401);
+        // The app names no school: any active binding and class will do.
+        let unscoped = format!("{sis}/api/v1/sis-service/learning/owner/student/push-devices");
+        assert_eq!(client.post(&unscoped).bearer_auth(credential(&u(1))).json(&device).send().await?.status(), 200);
+        assert_eq!(client.post(format!("{unscoped}?schoolId={m}")).bearer_auth(credential(&u(1))).json(&device).send().await?.status(), 400);
         *who.lock().unwrap() = u(4);
         assert_eq!(client.post(&devices).bearer_auth(credential(&u(4))).json(&device).send().await?.status(), 403);
         // A Student token cannot ask for a class push, even for the Student's own class.
@@ -131,7 +137,7 @@ async fn students_register_their_own_device_and_only_willing_students_of_the_cla
         assert_eq!(r.status(), 403);
         {
             let calls = calls.lock().unwrap();
-            assert_eq!(calls.len(), 2, "{calls:?}");
+            assert_eq!(calls.len(), 3, "{calls:?}");
             assert_eq!(calls[0].0, "/api/push/v1/devices");
             assert_eq!(calls[0].1["recipientId"], format!("student:{}", u(1)));
             assert_eq!(calls[0].1["token"], "fcm-token");

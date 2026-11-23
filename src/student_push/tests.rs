@@ -26,8 +26,11 @@ fn the_lock_screen_text_is_fixed_per_kind_and_language_and_links_only_an_id() {
     let r = push_payload(&reader("id-ID", true), Kind::ReportCard, "R-1");
     assert_eq!(r["body"], "Rapormu sudah bisa dilihat.");
     assert_eq!(r["url"], "/report-cards");
+    let l = push_payload(&reader("id", true), Kind::LiveStarted, "S-1");
+    assert_eq!(l["title"], "Kelas live dimulai");
+    assert_eq!(l["url"], "/lessons?mode=live&session=S-1");
     // Exactly the four fields notification-services takes; nothing else rides along.
-    for v in [a, q, r] {
+    for v in [a, q, r, l] {
         assert_eq!(v.as_object().unwrap().len(), 4, "{v}");
     }
 }
@@ -38,6 +41,10 @@ fn each_kind_follows_its_student_category() {
     assert_eq!(C::STORED[Kind::Assignment.category()], "assignments");
     assert_eq!(C::STORED[Kind::Assessment.category()], "assignments");
     assert_eq!(C::STORED[Kind::ReportCard.category()], "grades");
+    assert_eq!(
+        C::STORED[Kind::LiveStarted.category()],
+        "learning_reminders"
+    );
 }
 
 #[test]
@@ -60,6 +67,7 @@ fn only_students_who_want_it_get_it_and_nobody_in_quiet_hours() {
 #[test]
 fn a_notice_names_a_known_kind_an_id_and_a_class_and_nothing_else() {
     assert!(notice(json!({"kind":"assignment.published","ref":"A-1","classId":"7a"})).is_some());
+    assert!(notice(json!({"kind":"live_class.started","ref":"S-1","classId":"7a"})).is_some());
     assert!(notice(
         json!({"kind":"report_card.published","ref":"R-1","classId":"7a","studentIds":["s1","s2"]})
     )
