@@ -29,8 +29,21 @@ fn the_lock_screen_text_is_fixed_per_kind_and_language_and_links_only_an_id() {
     let l = push_payload(&reader("id", true), Kind::LiveStarted, "S-1");
     assert_eq!(l["title"], "Kelas live dimulai");
     assert_eq!(l["url"], "/lessons?mode=live&session=S-1");
+    let c = push_payload(&reader("id", true), Kind::ContentUpdated, "C-1@2026112409");
+    assert_eq!(c["title"], "Materi diperbarui");
+    assert_eq!(
+        c["body"],
+        "Gurumu memperbarui materi. Buka app supaya materi di tablet ikut terbaru."
+    );
+    assert_eq!(c["url"], "/lessons");
+    let c_en = push_payload(&reader("en", true), Kind::ContentUpdated, "C-1@2026112409");
+    assert_eq!(c_en["title"], "Lessons updated");
+    assert_eq!(
+        c_en["body"],
+        "Your teacher updated your lessons. Open the app to get the latest."
+    );
     // Exactly the four fields notification-services takes; nothing else rides along.
-    for v in [a, q, r, l] {
+    for v in [a, q, r, l, c, c_en] {
         assert_eq!(v.as_object().unwrap().len(), 4, "{v}");
     }
 }
@@ -43,6 +56,10 @@ fn each_kind_follows_its_student_category() {
     assert_eq!(C::STORED[Kind::ReportCard.category()], "grades");
     assert_eq!(
         C::STORED[Kind::LiveStarted.category()],
+        "learning_reminders"
+    );
+    assert_eq!(
+        C::STORED[Kind::ContentUpdated.category()],
         "learning_reminders"
     );
 }
@@ -68,6 +85,10 @@ fn only_students_who_want_it_get_it_and_nobody_in_quiet_hours() {
 fn a_notice_names_a_known_kind_an_id_and_a_class_and_nothing_else() {
     assert!(notice(json!({"kind":"assignment.published","ref":"A-1","classId":"7a"})).is_some());
     assert!(notice(json!({"kind":"live_class.started","ref":"S-1","classId":"7a"})).is_some());
+    assert!(
+        notice(json!({"kind":"content.updated","ref":"course-1@2026112409","classId":"7a"}))
+            .is_some()
+    );
     assert!(notice(
         json!({"kind":"report_card.published","ref":"R-1","classId":"7a","studentIds":["s1","s2"]})
     )
@@ -77,6 +98,13 @@ fn a_notice_names_a_known_kind_an_id_and_a_class_and_nothing_else() {
         json!({"kind":"assignment.published","ref":"A 1","classId":"7a"}),
         json!({"kind":"assignment.published","ref":"A-1","classId":""}),
         json!({"kind":"assignment.published","ref":"A-1"}),
+        // `@` belongs to content.updated only, and there it must be followed by YYYYMMDDHH.
+        json!({"kind":"assignment.published","ref":"A-1@2026112409","classId":"7a"}),
+        json!({"kind":"content.updated","ref":"course-1","classId":"7a"}),
+        json!({"kind":"content.updated","ref":"course-1@20261124","classId":"7a"}),
+        json!({"kind":"content.updated","ref":"course-1@202611240x","classId":"7a"}),
+        json!({"kind":"content.updated","ref":"@2026112409","classId":"7a"}),
+        json!({"kind":"content.updated","ref":"a b@2026112409","classId":"7a"}),
         json!({"kind":"assignment.published","ref":"A-1","classId":"7a","title":"Fractions"}),
         json!({"kind":"assignment.published","ref":"A-1","classId":"7a","recipientId":"student:x"}),
         json!({"kind":"report_card.published","ref":"R-1","classId":"7a","studentIds":[]}),

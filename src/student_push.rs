@@ -47,6 +47,10 @@ pub enum Kind {
     /// A teacher opened a class's live session; `ref` is the session id.
     #[serde(rename = "live_class.started")]
     LiveStarted,
+    /// A teacher changed what a class reads; `ref` is `<course id>@<YYYYMMDDHH WIB>`, so a burst of edits
+    /// to one course in one hour is one push. The app re-reads its content manifest.
+    #[serde(rename = "content.updated")]
+    ContentUpdated,
 }
 impl Kind {
     fn slug(self) -> &'static str {
@@ -55,6 +59,7 @@ impl Kind {
             Self::Assessment => "assessment.published",
             Self::ReportCard => "report_card.published",
             Self::LiveStarted => "live_class.started",
+            Self::ContentUpdated => "content.updated",
         }
     }
     /// Index into `StudentNotificationCategories::STORED`.
@@ -62,7 +67,7 @@ impl Kind {
         match self {
             Self::Assignment | Self::Assessment => 0, // assignments
             Self::ReportCard => 1,                    // grades
-            Self::LiveStarted => 5,                   // learning_reminders
+            Self::LiveStarted | Self::ContentUpdated => 5, // learning_reminders
         }
     }
     /// A Student web path; the app opens the same screen.
@@ -72,6 +77,7 @@ impl Kind {
             Self::Assessment => format!("/tests?assessment={reference}"),
             Self::ReportCard => "/report-cards".into(),
             Self::LiveStarted => format!("/lessons?mode=live&session={reference}"),
+            Self::ContentUpdated => "/lessons".into(),
         }
     }
     fn text(self, indonesian: bool) -> (&'static str, &'static str) {
@@ -89,6 +95,14 @@ impl Kind {
             (Self::LiveStarted, false) => (
                 "Live class started",
                 "Your teacher started a live class. Tap to join.",
+            ),
+            (Self::ContentUpdated, true) => (
+                "Materi diperbarui",
+                "Gurumu memperbarui materi. Buka app supaya materi di tablet ikut terbaru.",
+            ),
+            (Self::ContentUpdated, false) => (
+                "Lessons updated",
+                "Your teacher updated your lessons. Open the app to get the latest.",
             ),
         }
     }
@@ -122,7 +136,8 @@ impl Scope {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Notice {
     pub kind: Kind,
-    /// The published record's id in Learning (assignment, assessment or report card publication).
+    /// The published record's id in Learning (assignment, assessment or report card publication), or
+    /// `<course id>@<YYYYMMDDHH>` for `content.updated`.
     #[serde(rename = "ref")]
     pub reference: String,
     pub class_id: String,
@@ -131,7 +146,14 @@ pub struct Notice {
 }
 impl Notice {
     fn valid(&self) -> bool {
-        identifier(&self.reference)
+        let reference = match self.kind {
+            Kind::ContentUpdated => self
+                .reference
+                .split_once('@')
+                .filter(|(_, hour)| hour.len() == 10 && hour.bytes().all(|b| b.is_ascii_digit())),
+            _ => Some((self.reference.as_str(), "")),
+        };
+        reference.is_some_and(|(id, _)| identifier(id))
             && identifier(&self.class_id)
             && self.student_ids.as_ref().is_none_or(|ids| {
                 let mut unique: Vec<&String> = ids.iter().collect();

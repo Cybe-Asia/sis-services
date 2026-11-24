@@ -176,10 +176,10 @@
     "src/extra_curricular/recitation/fixtures/tone.webm": "a30715c898cfa211e385af9804d0895044f3a27450e436cc2d8a242ad3f99c04",
     "src/extra_curricular/recitation/transcode.rs": "8b3031a139ff5992abd3126d88e303a622f25ad2c825aa50e8e89e7ed0803541",
     "src/school_articles/publish_push.rs": "56391397b7e162123f3360e544e5658565899669eac6e0f0cb566e266bf98f0a",
-    "src/student_push.rs": "855b0292ac7881286fb19ede4f342f691768603e835d0cc20395f48f32e80422",
+    "src/student_push.rs": "32885b6f341e835ce20ca92a2ff0bd3c0deecadaa3001d48b2eb13910ebc7ab3",
     "src/student_push/database_tests.rs": "1af5c0f61d4cadbfef05bb01ebce75ffb499956fb6a7d9b51845922d1412910c",
     "src/student_push/repository.rs": "b62085fd7833acaf8611fcc3e1a8b85104d6fd363d4e25087523bdfe94d12ae2",
-    "src/student_push/tests.rs": "46cbf900f851cf19da25fa92b8882bad629120cb4a28d9d5c5721b50a558d531",
+    "src/student_push/tests.rs": "17ac6e5f597c4d3db0cda9d442f8aa3a6210018f8bef09a5d811a12d03b2ac93",
     "src/school_portal/block_identity.rs": "87305793394ab9660862e30a50f26f26e859ed4e3715f9b6292cadd56417058d"
   },
   "testedRuntimeFreeze": {

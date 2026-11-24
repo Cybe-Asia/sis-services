@@ -43,7 +43,14 @@ Header: the Teacher's or Owner's own bearer, as Learning already forwards it to 
 {"kind":"assessment.published","ref":"<assessment id>","classId":"<section id>"}
 {"kind":"report_card.published","ref":"<publication id>","classId":"<section id>","studentIds":["<Student.studentId>"]}
 {"kind":"live_class.started","ref":"<live session id>","classId":"<section id>"}
+{"kind":"content.updated","ref":"<course id>@<YYYYMMDDHH WIB>","classId":"<section id>"}
 ```
+
+`content.updated` (2026-11-24, Student app offline-first ADR 0001 phase 3c): Learning sends it after a course or
+revision-draft publish and after a paper publish, revise, close, archive or restore. The hour in `ref` makes a burst
+of edits to one course in one hour a single push (once per fact, below). `ref` is the only place `@` is accepted:
+an identifier, `@`, then exactly 10 digits. The app checks its content manifest at once instead of waiting for the
+15-minute poll.
 
 `202 {"data":{"recipients":N,"duplicate":false}}`; the push runs after the answer.
 
@@ -51,14 +58,16 @@ Header: the Teacher's or Owner's own bearer, as Learning already forwards it to 
   Owner. Students and Parents get 403. Every `studentIds` entry (1–60, unique) must be enrolled in the class, else 403.
 - Recipients: Student accounts with an `ACTIVE` binding to an active enrolment in the class. A Student is pushed only
   when `student_notifications` is on and the kind's category is on (`assignments` for assignments and quizzes,
-  `grades` for report cards, `learning_reminders` for a live class; same rule as `StudentNotificationCategories::stored`).
+  `grades` for report cards, `learning_reminders` for a live class and updated lessons; same rule as `StudentNotificationCategories::stored`).
 - Once per fact: `(:StudentPush {key:"<tenant>|<school>|<kind>|<class>|<ref>"})`, unique. A repeat answers
   `duplicate:true` and pushes nothing.
 - At most 20 new facts per class per day (Asia/Jakarta): 429 `RATE_LIMITED`.
 - 21:00–06:00 WIB: the claim is recorded and nobody is pushed (skipped, not delayed).
 - Lock screen text is fixed by kind and `student_locale` (`id…` Indonesian, otherwise English), never a title,
   name, subject or score. `url`: `/lessons?assignment=<ref>`, `/tests?assessment=<ref>`, `/report-cards`,
-  `/lessons?mode=live&session=<ref>` (a live class: "Kelas live dimulai" / "Live class started").
+  `/lessons?mode=live&session=<ref>` (a live class: "Kelas live dimulai" / "Live class started"), `/lessons` (updated
+  lessons: "Materi diperbarui" / "Gurumu memperbarui materi. Buka app supaya materi di tablet ikut terbaru.", en
+  "Lessons updated" / "Your teacher updated your lessons. Open the app to get the latest.").
 - Outcome on the claim: `status sending→sent`, `recipients`, `pushed`, `push_failed`, `skipped`.
 
 Errors use `{"error":{"code":…}}`: 400 `INVALID_INPUT`, 401 `UNAUTHORIZED`, 403 `FORBIDDEN`, 429 `RATE_LIMITED`,
@@ -72,7 +81,7 @@ No new settings: `NOTIFICATION_SERVICE_URL` and `NOTIFICATION_INTERNAL_TOKEN` (a
 ## Tests
 
 - Unit (`student_push::tests`): fixed text per kind and language, kind → category, quiet hours, body validation
-  (unknown kind, extra fields, `recipientId`, bad `studentIds`).
+  (unknown kind, extra fields, `recipientId`, bad `studentIds`, `content.updated` ref shape).
 - Disposable graph (`student_push::database_tests`, ignored; `SIS_STUDENT_TEST_NEO4J_URI=bolt://127.0.0.1:3385`
   plus `_USER`/`_PASSWORD`): recipients by binding, class, switch and category; `studentIds` outside the class; claim
   fresh/duplicate/capped; register/remove through synthetic Auth and notification-services (recipient from the
